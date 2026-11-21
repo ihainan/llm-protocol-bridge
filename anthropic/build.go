@@ -35,6 +35,9 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// Messages.
+	var err error
+	var tcRaw json.RawMessage
+	var thinkingRaw json.RawMessage
 	messages, err := buildMessages(req.Messages, names, env, dia)
 	if err != nil {
 		return nil, err
@@ -52,17 +55,17 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		wireTools = append(wireTools, wt)
 	}
 
-	// Tool choice.
-	var tcRaw json.RawMessage
-	if req.ToolChoice.Mode != "" {
-		tcRaw, err = buildToolChoice(req.ToolChoice, env)
+	// Tool choice. Emitted when ToolChoice.Mode is set, or when
+	// ParallelToolCalls is set to false (Anthropic expresses it via
+	// disable_parallel_tool_use on the tool_choice object).
+	if req.ToolChoice.Mode != "" || (req.ParallelToolCalls != nil && !*req.ParallelToolCalls) {
+		tcRaw, err = buildToolChoice(req.ToolChoice, req.ParallelToolCalls, env)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	// Thinking config.
-	var thinkingRaw json.RawMessage
 	if req.Reasoning != nil {
 		thinkingRaw, err = buildThinking(req.Reasoning, env)
 		if err != nil {
@@ -99,8 +102,16 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		out.Raw("thinking", thinkingRaw)
 	}
 
+	// Sampling parameters.
 	if req.Temperature != nil {
-		tb, _ := jsonx.Marshal(*req.Temperature)
+		t := *req.Temperature
+		if t > 1.0 {
+			if err := env.Lose(ir.LossSamplingClamp, ir.Root.Key("temperature"), "clamped to 1.0 (Anthropic max)"); err != nil {
+				return nil, err
+			}
+			t = 1.0
+		}
+		tb, _ := jsonx.Marshal(t)
 		out.Raw("temperature", tb)
 	}
 	if req.TopP != nil {
@@ -109,6 +120,29 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 	if req.TopK != nil {
 		out.Int("top_k", int64(*req.TopK))
+	}
+	// Anthropic does not support presence/frequency penalty.
+	if req.PresencePenalty != nil && *req.PresencePenalty != 0 {
+		if err := env.Lose(ir.LossSamplingPenalty, ir.Root.Key("presence_penalty"), "not supported by Anthropic"); err != nil {
+			return nil, err
+		}
+	}
+	if req.FrequencyPenalty != nil && *req.FrequencyPenalty != 0 {
+		if err := env.Lose(ir.LossSamplingPenalty, ir.Root.Key("frequency_penalty"), "not supported by Anthropic"); err != nil {
+			return nil, err
+		}
+	}
+	// Anthropic does not support logprobs.
+	if req.Logprobs != nil && *req.Logprobs {
+		if err := env.Lose(ir.LossSamplingLogprobs, ir.Root.Key("logprobs"), "not supported by Anthropic"); err != nil {
+			return nil, err
+		}
+	}
+	// Seed is an allowed-by-default loss; record it so it appears in Plan.Losses.
+	if req.Seed != nil {
+		if err := env.Lose(ir.LossSamplingSeed, ir.Root.Key("seed"), "not supported by Anthropic"); err != nil {
+			return nil, err
+		}
 	}
 	if len(req.Stop) > 0 {
 		sb, _ := jsonx.Marshal(req.Stop)
@@ -369,17 +403,18 @@ func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env) (wireTool, error)
 
 var schema_emptyObj = json.RawMessage(`{"type":"object","properties":{}}`)
 
-func buildToolChoice(tc ir.ToolChoice, env *ir.Env) (json.RawMessage, error) {
+func buildToolChoice(tc ir.ToolChoice, parallelToolCalls *bool, env *ir.Env) (json.RawMessage, error) {
+	disableParallel := parallelToolCalls != nil && !*parallelToolCalls
 	switch tc.Mode {
-	case ir.ToolChoiceAuto:
-		return jsonx.Marshal(wireToolChoiceAuto{Type: "auto"})
+	case ir.ToolChoiceAuto, "":
+		return jsonx.Marshal(wireToolChoiceAuto{Type: "auto", DisableParallelToolUse: disableParallel})
 	case ir.ToolChoiceRequired:
-		return jsonx.Marshal(wireToolChoiceAny{Type: "any"})
+		return jsonx.Marshal(wireToolChoiceAny{Type: "any", DisableParallelToolUse: disableParallel})
 	case ir.ToolChoiceTool:
-		return jsonx.Marshal(wireToolChoiceTool{Type: "tool", Name: tc.Name})
+		return jsonx.Marshal(wireToolChoiceTool{Type: "tool", Name: tc.Name, DisableParallelToolUse: disableParallel})
 	case ir.ToolChoiceNone:
 		// Anthropic has no "none" mode; closest is auto (model may still use tools).
-		return jsonx.Marshal(wireToolChoiceAuto{Type: "auto"})
+		return jsonx.Marshal(wireToolChoiceAuto{Type: "auto", DisableParallelToolUse: disableParallel})
 	}
 	return nil, nil
 }

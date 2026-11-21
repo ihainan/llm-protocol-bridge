@@ -105,19 +105,19 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 	// sampling
 	if req.Temperature != nil {
-		writeNum(out, "temperature", *req.Temperature)
+		writeNum(&out, "temperature", *req.Temperature)
 	}
 	if req.TopP != nil {
-		writeNum(out, "top_p", *req.TopP)
+		writeNum(&out, "top_p", *req.TopP)
 	}
 	if req.Candidates != nil && *req.Candidates > 1 {
 		out.Int("n", int64(*req.Candidates))
 	}
 	if req.PresencePenalty != nil && *req.PresencePenalty != 0 {
-		writeNum(out, "presence_penalty", *req.PresencePenalty)
+		writeNum(&out, "presence_penalty", *req.PresencePenalty)
 	}
 	if req.FrequencyPenalty != nil && *req.FrequencyPenalty != 0 {
-		writeNum(out, "frequency_penalty", *req.FrequencyPenalty)
+		writeNum(&out, "frequency_penalty", *req.FrequencyPenalty)
 	}
 	if req.Logprobs != nil && *req.Logprobs {
 		out.Bool("logprobs", true)
@@ -129,12 +129,27 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		out.Int("seed", *req.Seed)
 	}
 
-	// stop
+	// top_k is not supported by Chat format.
+	if req.TopK != nil {
+		if err := b.env.Lose(ir.LossSamplingTopK, ir.Root.Key("top_k"), "not supported by Chat Completions"); err != nil {
+			return nil, err
+		}
+	}
+
+	// stop — OpenAI accepts at most 4 stop sequences.
+	const chatMaxStop = 4
 	if len(req.Stop) > 0 {
-		if len(req.Stop) == 1 {
-			out.Str("stop", req.Stop[0])
+		stops := req.Stop
+		if len(stops) > chatMaxStop {
+			if err := b.env.Lose(ir.LossStopLimit, ir.Root.Key("stop"), "Chat Completions accepts at most 4 stop sequences; extras truncated"); err != nil {
+				return nil, err
+			}
+			stops = stops[:chatMaxStop]
+		}
+		if len(stops) == 1 {
+			out.Str("stop", stops[0])
 		} else {
-			sBytes, _ := jsonx.Marshal(req.Stop)
+			sBytes, _ := jsonx.Marshal(stops)
 			out.Raw("stop", sBytes)
 		}
 	}
@@ -528,7 +543,7 @@ func jsonRaw(s string) json.RawMessage {
 }
 
 // writeNum writes a float64 field.
-func writeNum(out jsonx.Obj, k string, v float64) {
+func writeNum(out *jsonx.Obj, k string, v float64) {
 	out.Raw(k, mustFloat(v))
 }
 

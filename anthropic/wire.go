@@ -90,14 +90,17 @@ type wireTool struct {
 
 // wireToolChoice shapes.
 type wireToolChoiceAuto struct {
-	Type string `json:"type"` // "auto"
+	Type                   string `json:"type"` // "auto"
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
 }
 type wireToolChoiceAny struct {
-	Type string `json:"type"` // "any"
+	Type                   string `json:"type"` // "any"
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
 }
 type wireToolChoiceTool struct {
-	Type string `json:"type"` // "tool"
-	Name string `json:"name"`
+	Type                   string `json:"type"` // "tool"
+	Name                   string `json:"name"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
 }
 
 // wireResponse is the non-streaming response body.

@@ -90,6 +90,12 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if req.TopP != nil {
 		out.Raw("top_p", writeFloat(*req.TopP))
 	}
+	// top_k is not supported by Responses API.
+	if req.TopK != nil {
+		if err := env.Lose(ir.LossSamplingTopK, ir.Root.Key("top_k"), "not supported by Responses API"); err != nil {
+			return nil, err
+		}
+	}
 	if req.MaxOutputTokens != nil {
 		out.Int("max_output_tokens", int64(*req.MaxOutputTokens))
 	}
@@ -101,6 +107,12 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 	if req.FrequencyPenalty != nil {
 		out.Raw("frequency_penalty", writeFloat(*req.FrequencyPenalty))
+	}
+	// logprobs is not supported by Responses API.
+	if req.Logprobs != nil && *req.Logprobs {
+		if err := env.Lose(ir.LossSamplingLogprobs, ir.Root.Key("logprobs"), "not supported by Responses API"); err != nil {
+			return nil, err
+		}
 	}
 
 	// stop.

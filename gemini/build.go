@@ -78,7 +78,16 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// Generation config.
-	gc := buildGenerationConfig(req, dia)
+	gc, err := buildGenerationConfig(req, dia, env)
+	if err != nil {
+		return nil, err
+	}
+	// parallel_tool_calls is not supported by Gemini.
+	if req.ParallelToolCalls != nil {
+		if err := env.Lose(ir.LossToolParallel, ir.Root.Key("parallel_tool_calls"), "not supported by Gemini"); err != nil {
+			return nil, err
+		}
+	}
 
 	// Assemble wire request.
 	wr := wireRequest{
@@ -317,7 +326,7 @@ func buildToolConfig(tc ir.ToolChoice, env *ir.Env) (*wireToolConfig, error) {
 	return cfg, nil
 }
 
-func buildGenerationConfig(req *ir.Request, dia Dialect) *wireGenerationConfig {
+func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGenerationConfig, error) {
 	gc := &wireGenerationConfig{}
 	any := false
 
@@ -348,6 +357,23 @@ func buildGenerationConfig(req *ir.Request, dia Dialect) *wireGenerationConfig {
 	if req.Seed != nil {
 		gc.Seed = req.Seed
 		any = true
+	}
+	// Gemini does not support presence/frequency penalty.
+	if req.PresencePenalty != nil && *req.PresencePenalty != 0 {
+		if err := env.Lose(ir.LossSamplingPenalty, ir.Root.Key("presence_penalty"), "not supported by Gemini"); err != nil {
+			return nil, err
+		}
+	}
+	if req.FrequencyPenalty != nil && *req.FrequencyPenalty != 0 {
+		if err := env.Lose(ir.LossSamplingPenalty, ir.Root.Key("frequency_penalty"), "not supported by Gemini"); err != nil {
+			return nil, err
+		}
+	}
+	// Gemini does not support logprobs.
+	if req.Logprobs != nil && *req.Logprobs {
+		if err := env.Lose(ir.LossSamplingLogprobs, ir.Root.Key("logprobs"), "not supported by Gemini"); err != nil {
+			return nil, err
+		}
 	}
 	if req.Output != nil {
 		switch req.Output.Type {
@@ -384,7 +410,7 @@ func buildGenerationConfig(req *ir.Request, dia Dialect) *wireGenerationConfig {
 	}
 
 	if !any {
-		return nil
+		return nil, nil
 	}
-	return gc
+	return gc, nil
 }

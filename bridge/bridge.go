@@ -27,6 +27,7 @@ type Options struct {
 	Responses responses.Dialect
 
 	Allow   ir.LossSet
+	Deny    ir.LossSet
 	OnLoss  func(ir.Loss)
 	Unknown ir.UnknownPolicy
 	Repair  ir.RepairSet
@@ -479,6 +480,7 @@ func clientEnv(opts Options, client ir.Format) *ir.Env {
 		ProviderID: opts.ProviderID,
 		Profile:    opts.Profile,
 		Allow:      opts.Allow,
+		Deny:       opts.Deny,
 		OnLoss:     opts.OnLoss,
 		Unknown:    opts.Unknown,
 		Repair:     opts.Repair,
@@ -495,6 +497,7 @@ func upstreamEnv(opts Options, upstream ir.Format) *ir.Env {
 		ProviderID: opts.ProviderID,
 		Profile:    opts.Profile,
 		Allow:      opts.Allow,
+		Deny:       opts.Deny,
 		OnLoss:     opts.OnLoss,
 		Unknown:    opts.Unknown,
 		Repair:     opts.Repair,
