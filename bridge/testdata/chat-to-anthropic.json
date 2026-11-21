@@ -1,0 +1,83 @@
+{
+  "max_tokens": 16384,
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "look",
+          "type": "text"
+        },
+        {
+          "source": {
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            "media_type": "image/png",
+            "type": "base64"
+          },
+          "type": "image"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "id": "call_1",
+          "input": {
+            "path": "/x"
+          },
+          "name": "Read",
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "file \"body\"\n",
+          "tool_use_id": "call_1",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "go on é",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "metadata": {
+    "user_id": "u"
+  },
+  "model": "m1",
+  "stop_sequences": [
+    "\n\n"
+  ],
+  "system": "be brief",
+  "temperature": 1,
+  "thinking": {
+    "type": "enabled"
+  },
+  "tool_choice": {
+    "type": "auto"
+  },
+  "tools": [
+    {
+      "description": "Reads",
+      "input_schema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "Read"
+    }
+  ]
+}

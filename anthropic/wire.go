@@ -1,0 +1,159 @@
+package anthropic
+
+import "encoding/json"
+
+// Wire types for the Anthropic Messages request and response.
+
+// wireRequest is the JSON shape of an Anthropic Messages request.
+type wireRequest struct {
+	Model    string         `json:"model"`
+	Messages []wireMessage  `json:"messages"`
+	System   json.RawMessage `json:"system,omitempty"` // string | []wireContentBlock
+
+	MaxTokens   int     `json:"max_tokens"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	TopK        *int     `json:"top_k,omitempty"`
+	Stop        []string `json:"stop_sequences,omitempty"`
+	Stream      *bool    `json:"stream,omitempty"`
+
+	Tools      []wireTool      `json:"tools,omitempty"`
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
+
+	Thinking *wireThinkingConfig `json:"thinking,omitempty"`
+
+	Metadata *wireMetadata `json:"metadata,omitempty"`
+}
+
+type wireMetadata struct {
+	UserID string `json:"user_id,omitempty"`
+}
+
+type wireThinkingConfig struct {
+	Type         string `json:"type"`          // "enabled" | "disabled"
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
+// wireMessage is one conversation turn.
+type wireMessage struct {
+	Role    string          `json:"role"` // user | assistant
+	Content json.RawMessage `json:"content"` // string | []wireContentBlock
+}
+
+// wireContentBlock is one block of content.
+type wireContentBlock struct {
+	Type string `json:"type"`
+	// text
+	Text string `json:"text,omitempty"`
+	// image
+	Source *wireImageSource `json:"source,omitempty"`
+	// document
+	Title   string `json:"title,omitempty"`
+	Context string `json:"context,omitempty"`
+	// tool_use
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+	// tool_result
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	IsError   *bool           `json:"is_error,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"` // string | []wireContentBlock
+	// thinking / redacted_thinking
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Data      string `json:"data,omitempty"`
+	// cache_control
+	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
+}
+
+type wireImageSource struct {
+	Type      string `json:"type"`       // base64 | url | file
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+	FileID    string `json:"file_id,omitempty"`
+}
+
+type wireCacheControl struct {
+	Type string `json:"type"` // ephemeral
+	TTL  string `json:"ttl,omitempty"` // 5m | 1h
+}
+
+// wireTool is a tool definition.
+type wireTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema"`
+	Type        string          `json:"type,omitempty"` // "custom" for custom tools
+	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
+}
+
+// wireToolChoice shapes.
+type wireToolChoiceAuto struct {
+	Type string `json:"type"` // "auto"
+}
+type wireToolChoiceAny struct {
+	Type string `json:"type"` // "any"
+}
+type wireToolChoiceTool struct {
+	Type string `json:"type"` // "tool"
+	Name string `json:"name"`
+}
+
+// wireResponse is the non-streaming response body.
+type wireResponse struct {
+	ID           string             `json:"id"`
+	Type         string             `json:"type"` // "message"
+	Role         string             `json:"role"`
+	Model        string             `json:"model"`
+	Content      []wireContentBlock `json:"content"`
+	StopReason   string             `json:"stop_reason,omitempty"`
+	StopSequence string             `json:"stop_sequence,omitempty"`
+	Usage        *wireUsage         `json:"usage,omitempty"`
+}
+
+// wireUsage is the usage object.
+type wireUsage struct {
+	InputTokens                  int `json:"input_tokens"`
+	OutputTokens                 int `json:"output_tokens"`
+	CacheReadInputTokens         int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens     int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// wireStreamEvent is one SSE event in a streamed Anthropic response.
+// The type field selects which other fields are present.
+type wireStreamEvent struct {
+	Type  string          `json:"type"`
+	Index int             `json:"index"`
+	Delta *wireDelta      `json:"delta,omitempty"`
+	// message_start
+	Message *wireResponse `json:"message,omitempty"`
+	// content_block_start
+	ContentBlock *wireContentBlock `json:"content_block,omitempty"`
+	// message_delta
+	Usage    *wireUsage    `json:"usage,omitempty"`
+	// error
+	Error    *wireAPIError `json:"error,omitempty"`
+}
+
+type wireDelta struct {
+	Type         string `json:"type,omitempty"`
+	Text         string `json:"text,omitempty"`
+	Thinking     string `json:"thinking,omitempty"`
+	Signature    string `json:"signature,omitempty"`
+	PartialJSON  string `json:"partial_json,omitempty"`
+	StopReason   string `json:"stop_reason,omitempty"`
+	StopSequence string `json:"stop_sequence,omitempty"`
+}
+
+// wireAPIError is the error object in a streaming event or top-level error body.
+type wireAPIError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// wireErrorResponse wraps wireAPIError at the top level.
+type wireErrorResponse struct {
+	Type  string       `json:"type"` // "error"
+	Error wireAPIError `json:"error"`
+}

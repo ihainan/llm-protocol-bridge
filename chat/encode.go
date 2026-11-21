@@ -1,0 +1,333 @@
+package chat
+
+import (
+	"encoding/json"
+
+	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
+	"github.com/ihainan/llm-protocol-bridge/ir"
+	"github.com/ihainan/llm-protocol-bridge/sse"
+)
+
+// StreamEncoder converts ir.Events into Chat Completions SSE chunks.
+type StreamEncoder struct {
+	opts      EncodeOptions
+	id        string
+	model     string
+	created   int64
+	started   bool
+	// seqByIdx tracks the number of tool call objects emitted for each choice
+	// index, for assigning the streaming tool_calls[].index field.
+	callIdxBy map[int]int
+}
+
+// NewStreamEncoder returns a Chat Completions stream encoder.
+func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
+	return &StreamEncoder{
+		opts:      opts,
+		callIdxBy: map[int]int{},
+	}
+}
+
+// Encode serialises one ir.Event to Chat SSE bytes and appends to dst.
+// Not all events produce output; the return is nil-extended when there is nothing to send.
+func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
+	switch ev.Type {
+	case ir.EvStart:
+		e.id = ev.ID
+		if e.id == "" {
+			e.id = "chatcmpl-" + e.opts.Env.NewID("", 24)
+		}
+		e.model = e.opts.Model
+		if e.model == "" && ev.Model != "" {
+			e.model = ev.Model
+		}
+		e.created = e.opts.Env.Now().Unix()
+
+		// Emit the role chunk.
+		if !e.started {
+			e.started = true
+			chunk := e.baseChunk(0)
+			chunk["choices"] = []map[string]any{{
+				"index": 0,
+				"delta": map[string]any{"role": "assistant", "content": ""},
+				"finish_reason": nil,
+			}}
+			dst = e.appendChunk(dst, chunk)
+		}
+
+	case ir.EvText:
+		chunk := e.baseChunk(ev.Index)
+		chunk["choices"] = []map[string]any{{
+			"index": ev.Index,
+			"delta": map[string]any{"content": ev.Text},
+			"finish_reason": nil,
+		}}
+		dst = e.appendChunk(dst, chunk)
+
+	case ir.EvReasoning:
+		chunk := e.baseChunk(ev.Index)
+		chunk["choices"] = []map[string]any{{
+			"index": ev.Index,
+			"delta": map[string]any{"reasoning_content": ev.Text},
+			"finish_reason": nil,
+		}}
+		dst = e.appendChunk(dst, chunk)
+
+	case ir.EvToolStart:
+		idx := e.callIdxBy[ev.Index]
+		e.callIdxBy[ev.Index] = idx + 1
+		chunk := e.baseChunk(ev.Index)
+		tc := map[string]any{
+			"index": idx,
+			"id":    ev.ID,
+			"type":  "function",
+			"function": map[string]any{
+				"name":      ev.Name,
+				"arguments": "",
+			},
+		}
+		chunk["choices"] = []map[string]any{{
+			"index":        ev.Index,
+			"delta":        map[string]any{"tool_calls": []any{tc}},
+			"finish_reason": nil,
+		}}
+		dst = e.appendChunk(dst, chunk)
+
+	case ir.EvToolArgs:
+		idx := e.callIdxBy[ev.Index] - 1
+		if idx < 0 {
+			idx = 0
+		}
+		chunk := e.baseChunk(ev.Index)
+		tc := map[string]any{
+			"index": idx,
+			"function": map[string]any{
+				"arguments": ev.Text,
+			},
+		}
+		chunk["choices"] = []map[string]any{{
+			"index":        ev.Index,
+			"delta":        map[string]any{"tool_calls": []any{tc}},
+			"finish_reason": nil,
+		}}
+		dst = e.appendChunk(dst, chunk)
+
+	case ir.EvStop:
+		finish := finishFromStop(ev.Stop)
+		chunk := e.baseChunk(ev.Index)
+		chunk["choices"] = []map[string]any{{
+			"index":        ev.Index,
+			"delta":        map[string]any{},
+			"finish_reason": finish,
+		}}
+		dst = e.appendChunk(dst, chunk)
+		// Reset per-choice tool index for the next candidate.
+		delete(e.callIdxBy, ev.Index)
+
+	case ir.EvUsage:
+		if ev.Usage != nil {
+			u := buildUsage(*ev.Usage)
+			chunk := e.baseChunk(0)
+			chunk["choices"] = []any{}
+			chunk["usage"] = u
+			dst = e.appendChunk(dst, chunk)
+		}
+
+	case ir.EvError:
+		if ev.Err != nil {
+			dst = BuildStreamError(dst, ev.Err)
+		}
+	}
+	return dst, nil
+}
+
+// Close writes the [DONE] SSE marker.
+func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
+	dst = append(dst, "data: [DONE]\n\n"...)
+	return dst, nil
+}
+
+// Keepalive writes a Chat SSE comment (: keepalive).
+func (e *StreamEncoder) Keepalive(dst []byte) []byte {
+	return sse.AppendComment(dst, "keepalive", true)
+}
+
+func (e *StreamEncoder) baseChunk(idx int) map[string]any {
+	_ = idx
+	return map[string]any{
+		"id":      e.id,
+		"object":  "chat.completion.chunk",
+		"created": e.created,
+		"model":   e.model,
+	}
+}
+
+func (e *StreamEncoder) appendChunk(dst []byte, chunk map[string]any) []byte {
+	b, err := jsonx.Marshal(chunk)
+	if err != nil {
+		return dst
+	}
+	return sse.AppendData(dst, b)
+}
+
+// BuildResponse serialises a whole ir.Response to a non-streaming Chat Completions body.
+func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
+	env := opts.Env
+	if env == nil {
+		env = &ir.Env{}
+	}
+	id := resp.ID
+	if id == "" {
+		id = "chatcmpl-" + env.NewID("", 24)
+	}
+	model := opts.Model
+	if model == "" {
+		model = resp.Model
+	}
+	created := resp.Created
+	if created == 0 {
+		created = env.Now().Unix()
+	}
+
+	choices := make([]wireChoice, 0, len(resp.Outputs))
+	for _, out := range resp.Outputs {
+		wm := buildAssistantMessage(out.Parts)
+		choices = append(choices, wireChoice{
+			Index:        out.Index,
+			Message:      wm,
+			FinishReason: finishFromStop(&out.Stop),
+		})
+	}
+
+	wr := wireResponse{
+		ID:      id,
+		Object:  "chat.completion",
+		Created: created,
+		Model:   model,
+		Choices: choices,
+	}
+	u := buildUsage(resp.Usage)
+	if u != nil {
+		raw, _ := jsonx.Marshal(u)
+		_ = raw // attach below
+		wr.Usage = usageToWire(resp.Usage)
+	}
+	return jsonx.Marshal(wr)
+}
+
+// buildAssistantMessage converts output parts to a wireMessage.
+func buildAssistantMessage(parts []ir.Part) wireMessage {
+	wm := wireMessage{Role: "assistant"}
+	var textParts []wireContentPart
+	var toolCalls []wireToolCall
+	var reasoning string
+
+	for _, p := range parts {
+		switch p.Type {
+		case ir.PartText:
+			textParts = append(textParts, wireContentPart{Type: "text", Text: p.Text})
+		case ir.PartRefusal:
+			wm.Refusal = p.Text
+		case ir.PartReasoning:
+			if p.Reasoning != nil {
+				reasoning += p.Reasoning.Text
+			}
+		case ir.PartToolCall:
+			if p.Call != nil {
+				tc := wireToolCall{
+					ID:   p.Call.ID,
+					Type: "function",
+					Function: wireFunctionCall{
+						Name:      p.Call.Name,
+						Arguments: string(p.Call.Arguments),
+					},
+				}
+				toolCalls = append(toolCalls, tc)
+			}
+		}
+	}
+
+	if reasoning != "" {
+		wm.ReasoningContent = reasoning
+	}
+	if len(toolCalls) > 0 {
+		wm.ToolCalls = toolCalls
+	}
+	switch len(textParts) {
+	case 0:
+		if len(toolCalls) > 0 {
+			wm.Content = jsonRaw("null")
+		}
+	case 1:
+		wm.Content = jsonRawString(textParts[0].Text)
+	default:
+		b, _ := jsonx.Marshal(textParts)
+		wm.Content = b
+	}
+	return wm
+}
+
+// finishFromStop maps ir.Stop to a Chat finish_reason string.
+func finishFromStop(s *ir.Stop) string {
+	if s == nil {
+		return "stop"
+	}
+	switch s.Reason {
+	case ir.StopEndTurn, ir.StopPauseTurn, ir.StopSequence:
+		return "stop"
+	case ir.StopMaxTokens, ir.StopContextWindow:
+		return "length"
+	case ir.StopToolUse:
+		return "tool_calls"
+	case ir.StopContentFilter, ir.StopRefusal:
+		return "content_filter"
+	}
+	return "stop"
+}
+
+// buildUsage assembles the wire usage object from ir.Usage.
+func buildUsage(u ir.Usage) map[string]any {
+	prompt := u.PromptTokens()
+	completion := u.OutputTokens
+	total := prompt + completion
+
+	out := map[string]any{
+		"prompt_tokens":     prompt,
+		"completion_tokens": completion,
+		"total_tokens":      total,
+	}
+	if u.Has(ir.UCacheRead) {
+		out["prompt_tokens_details"] = map[string]any{
+			"cached_tokens": u.CacheReadTokens,
+		}
+	}
+	if u.Has(ir.UReasoning) {
+		out["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": u.ReasoningTokens,
+		}
+	}
+	return out
+}
+
+// usageToWire converts ir.Usage to wireUsage for non-streaming response.
+func usageToWire(u ir.Usage) *wireUsage {
+	wu := &wireUsage{
+		PromptTokens:     u.PromptTokens(),
+		CompletionTokens: u.OutputTokens,
+		TotalTokens:      u.PromptTokens() + u.OutputTokens,
+	}
+	if u.Has(ir.UCacheRead) {
+		wu.PromptTokensDetails = &wirePromptTokensDetails{
+			CachedTokens: u.CacheReadTokens,
+		}
+	}
+	if u.Has(ir.UReasoning) {
+		wu.CompletionTokensDetails = &wireCompletionTokensDetails{
+			ReasoningTokens: u.ReasoningTokens,
+		}
+	}
+	return wu
+}
+
+// suppress unused import warning
+var _ = json.Marshal

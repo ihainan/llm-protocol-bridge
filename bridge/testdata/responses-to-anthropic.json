@@ -1,0 +1,73 @@
+{
+  "max_tokens": 16384,
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "hi",
+          "type": "text"
+        },
+        {
+          "source": {
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            "media_type": "image/png",
+            "type": "base64"
+          },
+          "type": "image"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "id": "call_1",
+          "input": {
+            "path": "/x"
+          },
+          "name": "Read",
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "done\t\"x\"",
+          "tool_use_id": "call_1",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "go on",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "m1",
+  "system": "be brief — ok",
+  "thinking": {
+    "type": "enabled"
+  },
+  "tools": [
+    {
+      "description": "Reads",
+      "input_schema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "Read"
+    }
+  ]
+}
