@@ -80,6 +80,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		if cand.FinishReason != "" && cand.FinishReason != "FINISH_REASON_UNSPECIFIED" {
 			stop := geminiStop(cand.FinishReason)
 			out = append(out, ir.Event{Type: ir.EvStop, Index: idx, Stop: &stop})
+			d.terminal = true
 		}
 	}
 

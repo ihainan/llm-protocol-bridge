@@ -75,6 +75,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
 		}
 		// Stop is handled by output_item.done events.
+		d.terminal = true
 
 	case "response.incomplete":
 		stop := ir.Stop{Reason: ir.StopMaxTokens, Raw: "incomplete"}
