@@ -1,0 +1,5 @@
+This module has no third-party dependencies. It uses the Go standard library
+only (Go 1.24).
+
+The Go standard library is distributed under the BSD-style license found at
+https://go.dev/LICENSE.

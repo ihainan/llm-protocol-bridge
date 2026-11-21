@@ -1,0 +1,11 @@
+title = "gitleaks config for llm-protocol-bridge"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "test fixtures use synthetic placeholder values, not real keys"
+paths = [
+  '''bridge/testdata/.*\.json''',
+  '''.*/.*_test\.go''',
+]
