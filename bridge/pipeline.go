@@ -400,24 +400,29 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 				f.lastCallKey[bc.candIdx] = ""
 			}
 			if tl := f.timeline[bc.candIdx]; len(tl) > 0 {
-				kept := tl[:0]
+				var remaining []queuedEntry
+				blocked := false
 				for _, entry := range tl {
-					if entry.callKey != key {
-						kept = append(kept, entry)
+					if entry.callKey == key {
+						continue
 					}
+					// Drain non-call events not blocked by any preceding non-intercepted
+					// call (intercepted calls are never emitted to the client).
+					if !blocked && entry.callKey == "" {
+						out = append(out, entry.ev)
+						continue
+					}
+					if entry.callKey != "" {
+						if c := f.calls[entry.callKey]; c != nil && !c.intercepted {
+							blocked = true
+						}
+					}
+					remaining = append(remaining, entry)
 				}
-				// Drain any leading non-call events now unblocked so subsequent
-				// events cannot overtake them if no pending calls remain ahead.
-				drain := 0
-				for drain < len(kept) && kept[drain].callKey == "" {
-					out = append(out, kept[drain].ev)
-					drain++
-				}
-				kept = kept[drain:]
-				if len(kept) == 0 {
+				if len(remaining) == 0 {
 					delete(f.timeline, bc.candIdx)
 				} else {
-					f.timeline[bc.candIdx] = kept
+					f.timeline[bc.candIdx] = remaining
 				}
 			}
 			return out
@@ -766,10 +771,22 @@ func (bc *bufferedToolCall) validate() (json.RawMessage, string, string) {
 	}
 	if bc.kind == ir.ToolCustom {
 		if len(bc.finalArgs) > 0 {
-			var s string
-			if json.Unmarshal(bc.finalArgs, &s) == nil {
-				return bc.finalArgs, s, ""
+			if jsonx.Kind(bc.finalArgs) == '"' {
+				var s string
+				if json.Unmarshal(bc.finalArgs, &s) == nil {
+					return bc.finalArgs, s, ""
+				}
 			}
+			if jsonx.Kind(bc.finalArgs) == '{' && json.Valid(bc.finalArgs) {
+				var wrapped struct {
+					Input *string `json:"input"`
+				}
+				if json.Unmarshal(bc.finalArgs, &wrapped) == nil && wrapped.Input != nil {
+					raw, _ := jsonx.Marshal(*wrapped.Input)
+					return raw, *wrapped.Input, ""
+				}
+			}
+			return nil, "", "custom tool call arguments must be a valid {\"input\": string} JSON object"
 		}
 		s := bc.args.String()
 		raw, _ := jsonx.Marshal(s)

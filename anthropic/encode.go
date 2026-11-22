@@ -292,6 +292,11 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			}
 			var cb map[string]any
 			if !ev.Builtin.IsResult {
+				if ev.Builtin.Origin != ir.FormatAnthropic && len(ev.Builtin.Raw) > 0 {
+					if err := e.opts.Env.Lose(ir.LossBuiltinActivity, ir.Root.Key("content"), "cross-format builtin call metadata cannot be fully represented in Anthropic server_tool_use"); err != nil {
+						return dst, err
+					}
+				}
 				var inObj any = map[string]any{}
 				if len(ev.Builtin.Input) > 0 {
 					inObj = json.RawMessage(ev.Builtin.Input)
@@ -700,7 +705,17 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 				id = "srvtoolu_" + env.NewID("", 16)
 			}
 			if !part.Builtin.IsResult {
+				if part.Builtin.Origin != ir.FormatAnthropic && len(part.Builtin.Raw) > 0 {
+					if err := env.Lose(ir.LossBuiltinActivity, p, "cross-format builtin call metadata cannot be fully represented in Anthropic server_tool_use"); err != nil {
+						return nil, err
+					}
+				}
 				inRaw := part.Builtin.Input
+				if len(inRaw) == 0 && part.Builtin.Query != "" {
+					inRaw, _ = jsonx.Marshal(map[string]any{"query": part.Builtin.Query})
+				} else if len(inRaw) == 0 && part.Builtin.URL != "" {
+					inRaw, _ = jsonx.Marshal(map[string]any{"url": part.Builtin.URL})
+				}
 				if len(inRaw) == 0 {
 					inRaw = json.RawMessage(`{}`)
 				}

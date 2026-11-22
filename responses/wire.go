@@ -96,7 +96,7 @@ type wireOutputItem struct {
 	Namespace string `json:"namespace,omitempty"`
 	Input     string `json:"input,omitempty"`
 	// web_search_call fields
-	// (uses Status and ID above)
+	Action json.RawMessage `json:"action,omitempty"`
 }
 
 // wireOutputPart is one content part of a message output item.

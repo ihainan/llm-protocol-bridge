@@ -435,10 +435,12 @@ func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []
 				var obj struct {
 					Input *string `json:"input"`
 				}
-				if json.Unmarshal([]byte(argsStr), &obj) == nil && obj.Input != nil {
+				if jsonx.Kind([]byte(argsStr)) == '{' && json.Unmarshal([]byte(argsStr), &obj) == nil && obj.Input != nil {
 					argsRaw, _ = jsonx.Marshal(*obj.Input)
-				} else if argsStr != "" {
-					argsRaw, _ = jsonx.Marshal(argsStr)
+				} else if argsStr == "" {
+					argsRaw = json.RawMessage(`{}`)
+				} else {
+					argsRaw = json.RawMessage(argsStr)
 				}
 			} else {
 				if argsStr == "" {
@@ -738,13 +740,17 @@ func parseAssistantMessage(wm wireMessage, p ir.Path, names map[string]ir.ToolRe
 				if ref.Kind != "" {
 					part.Call.Kind = ref.Kind
 				}
-				if part.Call.Kind == ir.ToolCustom && part.Call.Input == "" && len(part.Call.Arguments) > 0 {
+				if part.Call.Kind == ir.ToolCustom && part.Call.Input == "" {
 					var wrapped struct {
 						Input *string `json:"input"`
 					}
-					if jsonx.Kind(part.Call.Arguments) == '{' && json.Unmarshal(part.Call.Arguments, &wrapped) == nil && wrapped.Input != nil {
+					if len(part.Call.Arguments) > 0 && jsonx.Kind(part.Call.Arguments) == '{' && json.Unmarshal(part.Call.Arguments, &wrapped) == nil && wrapped.Input != nil {
 						part.Call.Input = *wrapped.Input
 						part.Call.Arguments = nil
+					} else if len(part.Call.Arguments) == 0 {
+						// Distinguish missing/empty wrapper arguments from valid {"input":""}
+						// so downstream tool validation rejects missing wrappers after truncation checks.
+						part.Call.Arguments = json.RawMessage(`{}`)
 					}
 				}
 			}

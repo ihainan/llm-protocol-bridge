@@ -286,12 +286,8 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				}
 			case "web_search_call":
 				out = append(out, ir.Event{
-					Type: ir.EvBuiltin,
-					Builtin: &ir.BuiltinActivity{
-						Kind:   ir.BuiltinWebSearch,
-						ID:     se.Item.ID,
-						Origin: ir.FormatResponses,
-					},
+					Type:    ir.EvBuiltin,
+					Builtin: decodeWebSearchCallItem(*se.Item),
 				})
 			}
 		}
@@ -569,16 +565,30 @@ func outputItemToIR(item wireOutputItem, p ir.Path, names map[string]ir.ToolRef,
 
 	case "web_search_call":
 		return []ir.Part{{
-			Type: ir.PartBuiltinCall,
-			Builtin: &ir.BuiltinActivity{
-				Kind:   ir.BuiltinWebSearch,
-				ID:     item.ID,
-				Origin: ir.FormatResponses,
-			},
+			Type:    ir.PartBuiltinCall,
+			Builtin: decodeWebSearchCallItem(item),
 		}}, ir.Stop{}, nil
 	}
 
 	return nil, ir.Stop{}, nil
+}
+
+func decodeWebSearchCallItem(item wireOutputItem) *ir.BuiltinActivity {
+	b := &ir.BuiltinActivity{
+		Kind:   ir.BuiltinWebSearch,
+		ID:     item.ID,
+		Origin: ir.FormatResponses,
+	}
+	if len(item.Action) > 0 && !jsonx.IsNull(item.Action) {
+		b.Raw = append(json.RawMessage(nil), item.Action...)
+		var act struct {
+			Query string `json:"query"`
+		}
+		if json.Unmarshal(item.Action, &act) == nil && act.Query != "" {
+			b.Query = act.Query
+		}
+	}
+	return b
 }
 
 func outputPartToIR(cp wireOutputPart, p ir.Path, env *ir.Env) (ir.Part, error) {

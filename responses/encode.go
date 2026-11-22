@@ -382,6 +382,9 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 				"id":     itemID,
 				"status": "completed",
 			}
+			if ev.Builtin.Origin == ir.FormatResponses && len(ev.Builtin.Raw) > 0 && !jsonx.IsNull(ev.Builtin.Raw) {
+				doneItem["action"] = json.RawMessage(ev.Builtin.Raw)
+			}
 			e.outputs = append(e.outputs, doneItem)
 			dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
 				"sequence_number": e.nextSeq(),
@@ -1107,7 +1110,11 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 			if id == "" {
 				id = "ws_" + env.NewID("", 16)
 			}
-			return []wireOutputItem{{Type: "web_search_call", ID: id, Status: "completed"}}, nil
+			item := wireOutputItem{Type: "web_search_call", ID: id, Status: "completed"}
+			if p.Builtin.Origin == ir.FormatResponses && len(p.Builtin.Raw) > 0 && !jsonx.IsNull(p.Builtin.Raw) {
+				item.Action = append(json.RawMessage(nil), p.Builtin.Raw...)
+			}
+			return []wireOutputItem{item}, nil
 		}
 		if err := env.Lose(ir.LossBuiltinActivity, fp, "builtin activity not supported in Responses output"); err != nil {
 			return nil, err
@@ -1124,6 +1131,10 @@ func webSearchHasLossyDetails(b *ir.BuiltinActivity) bool {
 		return false
 	}
 	if b.IsResult || len(b.Hits) > 0 || b.Content != "" || b.Error != "" {
+		return true
+	}
+	preservesAction := b.Origin == ir.FormatResponses && len(b.Raw) > 0 && !jsonx.IsNull(b.Raw)
+	if !preservesAction && b.Query != "" {
 		return true
 	}
 	if s := strings.TrimSpace(string(b.Input)); s != "" && s != "{}" && s != "null" {

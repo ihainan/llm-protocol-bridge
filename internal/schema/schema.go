@@ -280,6 +280,18 @@ func mergeRefOpenAPI(dst, src map[string]any, dropped map[string]bool) {
 		switch k {
 		case "description", "example", "default", "propertyOrdering":
 			dst[k] = sv
+		case "type":
+			// A sibling with an explicit non-nullable type excludes null, so
+			// clear nullable:true inherited from the $ref target.
+			if src["nullable"] != true && dst["nullable"] == true {
+				delete(dst, "nullable")
+			}
+			rv, has := dst[k]
+			if !has {
+				dst[k] = sv
+			} else if !reflect.DeepEqual(rv, sv) && dropped != nil {
+				dropped[k] = true
+			}
 		case "nullable":
 			sNull, _ := sv.(bool)
 			if !sNull {
