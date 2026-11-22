@@ -128,6 +128,19 @@ policies while keeping zero-value defaults backward-compatible:
 | `Limits.MaxBufferedBytes` | `8 MiB` | Caps buffered tool arguments and deferred multi-candidate stream events in the filter pipeline and stream encoders. |
 | `Limits.MaxStopSequences` / `MaxStopSequenceBytes` | `0` (unlimited) | Caps stop sequence count and total byte length accepted by `bridge.Build` (e.g. `64` and `16384` under `StopEmulate`). |
 
+## Known Limitations
+
+- **Chat streaming tool-name deduplication**: OpenAI-compatible Chat streaming
+  upstreams vary in how they transmit tool call names (single chunk, split
+  fragments, repeated full name on every chunk, or prefix followed by full
+  name). `chat.StreamDecoder` merges incoming name fragments deterministically
+  without guessing from other declared tools: an identical fragment is treated
+  as a resend, a fragment prefixed by the current accumulated name replaces it,
+  and all other fragments are appended. Consequently, a genuine split into
+  identical consecutive fragments (e.g. `"foo"` followed by `"foo"` for a tool
+  named `"foofoo"` or `"foofoobar"`) is indistinguishable from a resent chunk on
+  the wire and collapses the repeated fragment (`"foo"` / `"foobar"`).
+
 ## Install
 
 ```

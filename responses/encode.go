@@ -67,7 +67,7 @@ type StreamEncoder struct {
 	textAccum        strings.Builder
 	textAnnotations  []map[string]any
 	msgTrimmedRunes  int
-	pendingTrimRunes int
+	pendingTrimRunes map[int]int
 	argAccum         strings.Builder
 	reasonAccum      strings.Builder
 	reasonIsSummary  bool
@@ -82,7 +82,12 @@ type StreamEncoder struct {
 
 // NewStreamEncoder returns a Responses stream encoder.
 func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
-	return &StreamEncoder{opts: opts, outputIndex: -1, pendingByKey: map[respCallKey]*pendingRespTool{}}
+	return &StreamEncoder{
+		opts:             opts,
+		outputIndex:      -1,
+		pendingByKey:     map[respCallKey]*pendingRespTool{},
+		pendingTrimRunes: map[int]int{},
+	}
 }
 
 func (e *StreamEncoder) ensureStarted(dst []byte) []byte {
@@ -156,15 +161,18 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if e.opts.TrimLeadingNewlines && openingMsg {
 			// When opted in, strip leading newlines before opening a message item
 			// (preventing empty newline-only messages before tool calls) and record
-			// trimmed rune count so subsequent citations stay aligned.
+			// trimmed rune count per candidate so subsequent citations stay aligned.
 			trimmed := strings.TrimLeft(text, "\r\n")
 			deltaTrim := utf8.RuneCountInString(text) - utf8.RuneCountInString(trimmed)
 			if trimmed == "" {
-				e.pendingTrimRunes += deltaTrim
+				if e.pendingTrimRunes == nil {
+					e.pendingTrimRunes = map[int]int{}
+				}
+				e.pendingTrimRunes[ev.Index] += deltaTrim
 				break
 			}
-			totalTrim = e.pendingTrimRunes + deltaTrim
-			e.pendingTrimRunes = 0
+			totalTrim = e.pendingTrimRunes[ev.Index] + deltaTrim
+			delete(e.pendingTrimRunes, ev.Index)
 			text = trimmed
 		}
 		dst = e.ensureStarted(dst)
@@ -185,7 +193,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.textAccum.WriteString(text)
 
 	case ir.EvRefusal:
-		e.pendingTrimRunes = 0
+		delete(e.pendingTrimRunes, ev.Index)
 		dst = e.ensureStarted(dst)
 		dst = e.ensureRefusalOpen(dst, ev.Index)
 		if e.errored {
@@ -238,7 +246,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvReasoningStart:
-		e.pendingTrimRunes = 0
+		delete(e.pendingTrimRunes, ev.Index)
 		dst = e.ensureStarted(dst)
 		dst = e.closeItem(dst)
 		if e.errored {
@@ -265,7 +273,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		})
 
 	case ir.EvReasoning:
-		e.pendingTrimRunes = 0
+		delete(e.pendingTrimRunes, ev.Index)
 		dst = e.ensureStarted(dst)
 		if e.openItemType != "reasoning" || e.openItemCand != ev.Index {
 			dst = e.closeItem(dst)
@@ -343,7 +351,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvSealed:
-		e.pendingTrimRunes = 0
+		delete(e.pendingTrimRunes, ev.Index)
 		if ev.Sealed == nil {
 			break
 		}
@@ -403,7 +411,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.openItemType = ""
 
 	case ir.EvToolStart:
-		e.pendingTrimRunes = 0
+		delete(e.pendingTrimRunes, ev.Index)
 		dst = e.ensureStarted(dst)
 		if e.openItemType == "function_call" || e.openItemType == "custom_tool_call" {
 			hdrBytes := len(ev.ID) + len(ev.Name) + len(ev.Namespace)
@@ -520,7 +528,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvBuiltin:
-		e.pendingTrimRunes = 0
+		delete(e.pendingTrimRunes, ev.Index)
 		if ev.Builtin == nil {
 			break
 		}
@@ -571,7 +579,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvStop:
-		e.pendingTrimRunes = 0
+		delete(e.pendingTrimRunes, ev.Index)
 		st := ir.Stop{}
 		if ev.Stop != nil {
 			st = *ev.Stop
@@ -886,6 +894,7 @@ func (e *StreamEncoder) failStream(dst []byte, msg string) []byte {
 	e.pendingBytes = 0
 	e.deferredOtherCand = nil
 	e.deferredBytes = 0
+	e.pendingTrimRunes = nil
 	respObj := e.buildResponseObject("failed", false)
 	respObj["error"] = map[string]any{
 		"code":    "server_error",

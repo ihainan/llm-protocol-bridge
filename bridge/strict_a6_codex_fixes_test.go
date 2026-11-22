@@ -48,20 +48,110 @@ func TestStrictA6_CodexReviewFixes(t *testing.T) {
 		}
 	})
 
-	// P2 #3: Repeated legitimate tool name fragments ("foo" + "foo" -> "foofoo") preserved when known.
-	t.Run("P2_03_chat_stream_tool_name_merge_preserves_repeated_syllable_tool", func(t *testing.T) {
-		reqBody := []byte(`{"model":"m","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"go"}],"tools":[{"name":"foofoo","input_schema":{"type":"object"}}]}`)
-		plan, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, reqBody, bridge.Options{})
+	// FixA7 #1 (r3 #1 & #3): Deterministic Chat streaming tool-name merge matching
+	// the four-branch rule without guessing from other declared tool prefixes.
+	t.Run("FixA7_01_chat_stream_tool_name_merge_deterministic_and_stream_nonstream_parity", func(t *testing.T) {
+		// r3 #1: declaring both foobar and foofoobarbaz; receiving "foo" then "foobar"
+		// must produce "foobar" (not "foofoobar"), matching non-streaming.
+		reqR3_1 := []byte(`{
+			"model": "m",
+			"max_tokens": 100,
+			"stream": true,
+			"messages": [{"role": "user", "content": "go"}],
+			"tools": [
+				{"name": "foobar", "input_schema": {"type": "object"}},
+				{"name": "foofoobarbaz", "input_schema": {"type": "object"}}
+			]
+		}`)
+		plan1, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, reqR3_1, bridge.Options{})
 		if err != nil {
-			t.Fatalf("Convert: %v", err)
+			t.Fatalf("Convert r3 #1: %v", err)
 		}
-		rawSSE := `data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"foo"}}]}}]}` + "\n\n" +
-			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"foo","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
+		rawSSE1 := `data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"foo"}}]}}]}` + "\n\n" +
+			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"foobar","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
 			"data: [DONE]\n\n"
-		out := string(feedSSE(t, plan.NewStream(), rawSSE))
-		parsed := parseAnthropicSSE(t, out)
-		if parsed.Errors != 0 || len(parsed.Blocks) != 1 || parsed.Blocks[0].Name != "foofoo" {
-			t.Fatalf("expected tool name \"foofoo\", got blocks=%+v errors=%d\n%s", parsed.Blocks, parsed.Errors, out)
+		out1 := string(feedSSE(t, plan1.NewStream(), rawSSE1))
+		parsed1 := parseAnthropicSSE(t, out1)
+		if parsed1.Errors != 0 || len(parsed1.Blocks) != 1 || parsed1.Blocks[0].Name != "foobar" {
+			t.Fatalf("r3 #1: want tool name \"foobar\", got blocks=%+v errors=%d\n%s", parsed1.Blocks, parsed1.Errors, out1)
+		}
+		nsBody1 := []byte(`{"id":"1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"foobar","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		nsOut1, _, err := plan1.ConvertResponse(nsBody1)
+		if err != nil {
+			t.Fatalf("ConvertResponse r3 #1: %v", err)
+		}
+		if !strings.Contains(string(nsOut1), `"name":"foobar"`) {
+			t.Fatalf("r3 #1 non-stream mismatch: %s", nsOut1)
+		}
+
+		// Standard upstream patterns: once full name, prefix then full, split fragments,
+		// and repeated full name all match non-streaming "get_weather".
+		reqStd := []byte(`{"model":"m","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"go"}],"tools":[{"name":"get_weather","input_schema":{"type":"object"}}]}`)
+		planStd, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, reqStd, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert std: %v", err)
+		}
+		nsStd, _, err := planStd.ConvertResponse([]byte(`{"id":"1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+		if err != nil || !strings.Contains(string(nsStd), `"name":"get_weather"`) {
+			t.Fatalf("std non-stream failed: err=%v body=%s", err, nsStd)
+		}
+		patterns := []struct {
+			name   string
+			chunks []string
+		}{
+			{"single_full_name", []string{
+				`{"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			}},
+			{"prefix_then_full", []string{
+				`{"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"get_"}}]}}]}`,
+				`{"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			}},
+			{"split_fragments", []string{
+				`{"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"get_"}}]}}]}`,
+				`{"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			}},
+			{"repeated_full_name", []string{
+				`{"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"get_weather"}}]}}]}`,
+				`{"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			}},
+		}
+		for _, pt := range patterns {
+			var sb strings.Builder
+			for _, ch := range pt.chunks {
+				sb.WriteString("data: " + ch + "\n\n")
+			}
+			sb.WriteString("data: [DONE]\n\n")
+			out := string(feedSSE(t, planStd.NewStream(), sb.String()))
+			parsed := parseAnthropicSSE(t, out)
+			if parsed.Errors != 0 || len(parsed.Blocks) != 1 || parsed.Blocks[0].Name != "get_weather" {
+				t.Fatalf("%s: want \"get_weather\", got blocks=%+v errors=%d\n%s", pt.name, parsed.Blocks, parsed.Errors, out)
+			}
+		}
+
+		// r3 #3 pinned known limitation (documented in README): identical consecutive
+		// fragments ("foo", "foo", "bar") collapse the duplicate "foo" -> "foobar".
+		reqLim := []byte(`{
+			"model": "m",
+			"max_tokens": 100,
+			"stream": true,
+			"messages": [{"role": "user", "content": "go"}],
+			"tools": [
+				{"name": "foo", "input_schema": {"type": "object"}},
+				{"name": "foofoobar", "input_schema": {"type": "object"}}
+			]
+		}`)
+		planLim, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, reqLim, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert r3 #3: %v", err)
+		}
+		rawSSELim := `data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"foo"}}]}}]}` + "\n\n" +
+			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"foo"}}]}}]}` + "\n\n" +
+			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"bar","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
+			"data: [DONE]\n\n"
+		outLim := string(feedSSE(t, planLim.NewStream(), rawSSELim))
+		parsedLim := parseAnthropicSSE(t, outLim)
+		if parsedLim.Errors != 0 || len(parsedLim.Blocks) != 1 || parsedLim.Blocks[0].Name != "foobar" {
+			t.Fatalf("r3 #3 pinned known limitation: want \"foobar\", got blocks=%+v errors=%d\n%s", parsedLim.Blocks, parsedLim.Errors, outLim)
 		}
 	})
 
@@ -242,26 +332,30 @@ func TestStrictA6_CodexReviewFixes(t *testing.T) {
 		if !strings.Contains(string(dst2), `"start_index":0`) || !strings.Contains(string(dst2), `"end_index":5`) {
 			t.Fatalf("pendingTrimRunes leaked across EvBuiltin boundary:\n%s", dst2)
 		}
+
+		// FixA7 #2 (r3 #2): candidate 1 EvStop must NOT clear candidate 0's pendingTrimRunes.
+		enc3 := responses.NewStreamEncoder(responses.EncodeOptions{Env: &ir.Env{}, Model: "m", TrimLeadingNewlines: true})
+		var dst3 []byte
+		for _, ev := range []ir.Event{
+			{Type: ir.EvText, Index: 0, Text: "\n\n"},
+			{Type: ir.EvStop, Index: 1, Stop: &ir.Stop{Reason: ir.StopEndTurn}},
+			{Type: ir.EvText, Index: 0, Text: "Paris"},
+			{Type: ir.EvCitation, Index: 0, Citation: &ir.Citation{Type: "url_citation", URL: "https://example.test", Title: "Paris", StartIndex: 2, EndIndex: 7}},
+			{Type: ir.EvStop, Index: 0, Stop: &ir.Stop{Reason: ir.StopEndTurn}},
+		} {
+			dst3, err = enc3.Encode(dst3, ev)
+			if err != nil {
+				t.Fatalf("Encode enc3: %v", err)
+			}
+		}
+		dst3, _ = enc3.Close(dst3)
+		if !strings.Contains(string(dst3), `"start_index":0`) || !strings.Contains(string(dst3), `"end_index":5`) {
+			t.Fatalf("r3 #2: candidate 1 EvStop cleared candidate 0 pendingTrimRunes:\n%s", dst3)
+		}
 	})
 
-	// Follow-up P2: mid-name repeated syllable ("foo" + "foo" + "bar" -> "foofoobar") and
-	// KeepTurns counting merged consecutive assistant turns.
-	t.Run("R2_P2_mid_name_repeated_prefix_and_merged_keep_turns", func(t *testing.T) {
-		reqBody := []byte(`{"model":"m","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"go"}],"tools":[{"name":"foofoobar","input_schema":{"type":"object"}}]}`)
-		plan, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, reqBody, bridge.Options{})
-		if err != nil {
-			t.Fatalf("Convert: %v", err)
-		}
-		rawSSE := `data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"foo"}}]}}]}` + "\n\n" +
-			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"foo"}}]}}]}` + "\n\n" +
-			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"bar","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
-			"data: [DONE]\n\n"
-		out := string(feedSSE(t, plan.NewStream(), rawSSE))
-		parsed := parseAnthropicSSE(t, out)
-		if parsed.Errors != 0 || len(parsed.Blocks) != 1 || parsed.Blocks[0].Name != "foofoobar" {
-			t.Fatalf("expected tool name \"foofoobar\", got blocks=%+v errors=%d\n%s", parsed.Blocks, parsed.Errors, out)
-		}
-
+	// Follow-up P2: KeepTurns counting merged consecutive assistant turns.
+	t.Run("R2_P2_merged_keep_turns", func(t *testing.T) {
 		// Consecutive assistant messages in the latest turn both keep thinking under KeepTurns=1.
 		ktBody := []byte(`{
 			"model": "claude-sonnet-4",

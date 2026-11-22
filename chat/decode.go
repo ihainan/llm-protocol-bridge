@@ -235,31 +235,26 @@ func (d *StreamDecoder) flushUnstartedToolCalls(out []ir.Event, ci int) []ir.Eve
 	return out
 }
 
-func mergeToolNameFragment(current, fragment string, known map[string]ir.ToolRef) string {
-	if fragment == "" {
+// mergeToolNameFragment accumulates a streamed Chat tool name across chunks.
+// Upstreams differ: most send the full name once, some split it into fragments
+// ("get_" + "weather"), some resend the full name on every chunk, and some send
+// a prefix followed by the full name. A fragment equal to the current name is
+// treated as a resend; a fragment that starts with the current name replaces it;
+// all other fragments are appended.
+//
+// Known limitation: a genuine split into identical consecutive fragments
+// (e.g. "foo" + "foo") is indistinguishable from a resend and collapses to "foo".
+func mergeToolNameFragment(current, fragment string) string {
+	switch {
+	case fragment == "" || fragment == current:
 		return current
-	}
-	if current == "" {
+	case current == "":
 		return fragment
-	}
-	if known != nil {
-		_, curKnown := known[current]
-		if !curKnown {
-			concat := current + fragment
-			for k := range known {
-				if strings.HasPrefix(k, concat) {
-					return concat
-				}
-			}
-		}
-	}
-	if fragment == current {
-		return current
-	}
-	if strings.HasPrefix(fragment, current) {
+	case strings.HasPrefix(fragment, current):
 		return fragment
+	default:
+		return current + fragment
 	}
-	return current + fragment
 }
 
 func (d *StreamDecoder) resolveCallName(call *openCall) {
@@ -323,7 +318,7 @@ func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolC
 		call.id = tc.ID
 	}
 	if tc.Function.Name != "" {
-		call.rawName = mergeToolNameFragment(call.rawName, tc.Function.Name, d.names)
+		call.rawName = mergeToolNameFragment(call.rawName, tc.Function.Name)
 	}
 
 	// Defer EvToolStart until arguments arrive (so multi-chunk names such as
