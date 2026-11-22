@@ -20,12 +20,14 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported by the Responses format"))
 	}
 
+	nameMap := ir.BuildToolNameMap(req.Tools)
 	names := map[string]ir.ToolRef{}
 	b := &built{
-		env:    env,
-		dia:    opts.Dialect,
-		names:  names,
-		losses: nil,
+		env:     env,
+		dia:     opts.Dialect,
+		names:   names,
+		nameMap: nameMap,
+		losses:  nil,
 	}
 
 	// 1. Tools (filter when ToolChoiceAllowed is set)
@@ -255,10 +257,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 // built is the state used during one BuildRequest call.
 type built struct {
-	env    *ir.Env
-	dia    Dialect
-	names  map[string]ir.ToolRef
-	losses []ir.Loss
+	env     *ir.Env
+	dia     Dialect
+	names   map[string]ir.ToolRef
+	nameMap *ir.ToolNameMap
+	losses  []ir.Loss
 }
 
 var customToolSchema = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}`)
@@ -282,7 +285,8 @@ func (b *built) buildTool(t ir.Tool, p ir.Path) (wireTool, error) {
 	if kind != ir.ToolFunction && kind != ir.ToolCustom {
 		return wireTool{}, b.env.Err(ir.Invalid(p.Key("kind"), "only function and custom tools are supported"))
 	}
-	wireName := flattenToolName(t.Namespace, t.Name)
+	wireName := b.nameMap.WireName(t.Namespace, t.Name)
+	desc := b.nameMap.Description(t.Namespace, t.Name, t.Description)
 	// Record the name mapping (sanitised name -> original ir.ToolRef).
 	ref := ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: kind}
 	b.names[wireName] = ref
@@ -293,7 +297,6 @@ func (b *built) buildTool(t ir.Tool, p ir.Path) (wireTool, error) {
 		}
 	}
 	params := t.Schema
-	desc := t.Description
 	if kind == ir.ToolCustom {
 		params = customToolSchema
 		if t.Grammar != nil && t.Grammar.Definition != "" {
@@ -439,7 +442,7 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 				ID:   part.Call.ID,
 				Type: "function",
 				Function: wireFunctionCall{
-					Name:      flattenToolName(part.Call.Namespace, part.Call.Name),
+					Name:      b.nameMap.WireName(part.Call.Namespace, part.Call.Name),
 					Arguments: args,
 				},
 			}
@@ -610,7 +613,7 @@ func buildToolChoice(tc ir.ToolChoice, b *built) ([]byte, error) {
 	case ir.ToolChoiceTool:
 		wtc := wireToolChoice{
 			Type:     "function",
-			Function: &wireToolChoiceFunc{Name: flattenToolName(tc.Namespace, tc.Name)},
+			Function: &wireToolChoiceFunc{Name: b.nameMap.WireName(tc.Namespace, tc.Name)},
 		}
 		return jsonx.Marshal(wtc)
 	case ir.ToolChoiceAllowed:

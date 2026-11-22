@@ -211,3 +211,70 @@ func AssignToolWireName(names map[string]ToolRef, t Tool) (wireName, desc string
 	}
 	return wireName, desc
 }
+
+// ToolNameMap holds consistent forward and reverse wire-name mappings across
+// tool definitions, historical calls, tool results, and tool_choice entries.
+type ToolNameMap struct {
+	ToWire   map[string]string
+	FromWire map[string]ToolRef
+	Descs    map[string]string
+	BareWire map[string]string
+}
+
+// BuildToolNameMap precomputes collision-free wire names for all tools in order.
+func BuildToolNameMap(tools []Tool) *ToolNameMap {
+	m := &ToolNameMap{
+		ToWire:   map[string]string{},
+		FromWire: map[string]ToolRef{},
+		Descs:    map[string]string{},
+		BareWire: map[string]string{},
+	}
+	bareCount := map[string]int{}
+	for _, t := range tools {
+		if t.Name == "" {
+			continue
+		}
+		bareCount[t.Name]++
+		wire, desc := AssignToolWireName(m.FromWire, t)
+		key := t.Namespace + "\x00" + t.Name
+		m.ToWire[key] = wire
+		m.Descs[key] = desc
+	}
+	for _, t := range tools {
+		if t.Name != "" && bareCount[t.Name] == 1 {
+			m.BareWire[t.Name] = m.ToWire[t.Namespace+"\x00"+t.Name]
+		}
+	}
+	return m
+}
+
+// WireName returns the assigned wire name for (ns, name).
+func (m *ToolNameMap) WireName(ns, name string) string {
+	if name == "" {
+		return ""
+	}
+	if m != nil {
+		if w, ok := m.ToWire[ns+"\x00"+name]; ok {
+			return w
+		}
+		if ns == "" {
+			if w, ok := m.BareWire[name]; ok {
+				return w
+			}
+		}
+	}
+	if ns != "" {
+		return ns + "__" + name
+	}
+	return name
+}
+
+// Description returns the precomputed description for (ns, name) if present.
+func (m *ToolNameMap) Description(ns, name, fallback string) string {
+	if m != nil {
+		if d, ok := m.Descs[ns+"\x00"+name]; ok {
+			return d
+		}
+	}
+	return fallback
+}

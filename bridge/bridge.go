@@ -131,15 +131,16 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported for Responses-to-Responses requests"))
 	}
 
-	// When StopEmulate is enabled against Responses (which has no native stop param),
-	// tolerate the stop.limit loss during request build so the local filter enforces stops.
-	if opts.StopMode == ir.StopEmulate && upstream == ir.FormatResponses {
-		allow := ir.LossSet{}
-		for k, v := range env.Allow {
-			allow[k] = v
-		}
-		allow[ir.LossStopLimit] = true
-		env.Allow = allow
+	// Per design.md §9.6, StopEmulate does not send native stop sequences to the
+	// upstream (so the upstream cannot strip them before the local filter sees
+	// them) and streams from the upstream so non-streamed clients can be served
+	// by collecting the filtered stream.
+	buildReq := req
+	if opts.StopMode == ir.StopEmulate && len(req.Stop) > 0 {
+		cp := *req
+		cp.Stop = nil
+		cp.Stream = true
+		buildReq = &cp
 	}
 	var body []byte
 	var model string
@@ -148,25 +149,25 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 
 	switch upstream {
 	case ir.FormatChat:
-		built, err := chat.BuildRequest(req, chat.BuildOptions{Env: env, Dialect: opts.Chat})
+		built, err := chat.BuildRequest(buildReq, chat.BuildOptions{Env: env, Dialect: opts.Chat})
 		if err != nil {
 			return nil, err
 		}
 		body, model, stream, names = built.Body, built.Model, built.Stream, built.Names
 	case ir.FormatResponses:
-		built, err := responses.BuildRequest(req, responses.BuildOptions{Env: env, Dialect: opts.Responses})
+		built, err := responses.BuildRequest(buildReq, responses.BuildOptions{Env: env, Dialect: opts.Responses})
 		if err != nil {
 			return nil, err
 		}
 		body, model, stream, names = built.Body, built.Model, built.Stream, built.Names
 	case ir.FormatAnthropic:
-		built, err := anthropic.BuildRequest(req, anthropic.BuildOptions{Env: env, Dialect: opts.Anthropic})
+		built, err := anthropic.BuildRequest(buildReq, anthropic.BuildOptions{Env: env, Dialect: opts.Anthropic})
 		if err != nil {
 			return nil, err
 		}
 		body, model, stream, names = built.Body, built.Model, built.Stream, built.Names
 	case ir.FormatGemini:
-		built, err := gemini.BuildRequest(req, gemini.BuildOptions{Env: env, Dialect: opts.Gemini})
+		built, err := gemini.BuildRequest(buildReq, gemini.BuildOptions{Env: env, Dialect: opts.Gemini})
 		if err != nil {
 			return nil, err
 		}

@@ -16,7 +16,8 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 	env.Style = ir.StyleBracket
 
-	names := map[string]ir.ToolRef{}
+	nameMap := ir.BuildToolNameMap(req.Tools)
+	names := nameMap.FromWire
 	out := jsonx.Start(nil)
 	out.Str("model", req.Model)
 
@@ -26,7 +27,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// input items.
-	items, err := buildInputItems(req.Messages, names, env)
+	items, err := buildInputItems(req.Messages, nameMap, env)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +42,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		var rawTools []json.RawMessage
 		for i, t := range req.Tools {
 			fp := ir.Root.Key("tools").At(i)
-			wt, err := buildTool(t, fp, env, names)
+			wt, err := buildTool(t, fp, env, nameMap)
 			if err != nil {
 				return nil, err
 			}
@@ -87,7 +88,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 	// tool_choice.
 	if req.ToolChoice.Mode != "" {
-		tcBytes, err := buildToolChoice(req.ToolChoice, env)
+		tcBytes, err := buildToolChoice(req.ToolChoice, nameMap, env)
 		if err != nil {
 			return nil, err
 		}
@@ -220,11 +221,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	return &Built{Body: body, Model: req.Model, Stream: req.Stream, Names: names}, nil
 }
 
-func buildInputItems(msgs []ir.Message, names map[string]ir.ToolRef, env *ir.Env) ([]wireInputItem, error) {
+func buildInputItems(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env) ([]wireInputItem, error) {
 	var items []wireInputItem
 	for i, msg := range msgs {
 		fp := ir.Root.Key("input").At(i)
-		its, err := messageToItems(msg, fp, env)
+		its, err := messageToItems(msg, fp, nameMap, env)
 		if err != nil {
 			return nil, err
 		}
@@ -233,10 +234,10 @@ func buildInputItems(msgs []ir.Message, names map[string]ir.ToolRef, env *ir.Env
 	return items, nil
 }
 
-func messageToItems(msg ir.Message, p ir.Path, env *ir.Env) ([]wireInputItem, error) {
+func messageToItems(msg ir.Message, p ir.Path, nameMap *ir.ToolNameMap, env *ir.Env) ([]wireInputItem, error) {
 	switch msg.Role {
 	case ir.RoleAssistant:
-		return assistantPartsToItems(msg.Parts, p, env)
+		return assistantPartsToItems(msg.Parts, p, nameMap, env)
 	case ir.RoleUser, ir.RoleSystem, ir.RoleDeveloper:
 		role := string(msg.Role)
 		contentParts, toolResults, err := userPartsToContent(msg.Parts, p, env)
@@ -334,7 +335,7 @@ func userPartsToContent(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireContentP
 	return content, results, nil
 }
 
-func assistantPartsToItems(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireInputItem, error) {
+func assistantPartsToItems(parts []ir.Part, p ir.Path, nameMap *ir.ToolNameMap, env *ir.Env) ([]wireInputItem, error) {
 	var items []wireInputItem
 	var textParts []wireContentPart
 	flushText := func() {
@@ -423,11 +424,10 @@ func assistantPartsToItems(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireInput
 					}
 				}
 				items = append(items, wireInputItem{
-					Type:      "custom_tool_call",
-					CallID:    c.ID,
-					Name:      c.Name,
-					Namespace: c.Namespace,
-					Input:     input,
+					Type:   "custom_tool_call",
+					CallID: c.ID,
+					Name:   nameMap.WireName(c.Namespace, c.Name),
+					Input:  input,
 				})
 			default:
 				argsStr := string(c.Arguments)
@@ -437,7 +437,7 @@ func assistantPartsToItems(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireInput
 				items = append(items, wireInputItem{
 					Type:      "function_call",
 					CallID:    c.ID,
-					Name:      c.Name,
+					Name:      nameMap.WireName(c.Namespace, c.Name),
 					Arguments: argsStr,
 				})
 			}
@@ -452,7 +452,7 @@ func assistantPartsToItems(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireInput
 	return items, nil
 }
 
-func buildTool(t ir.Tool, p ir.Path, env *ir.Env, names map[string]ir.ToolRef) (wireTool, error) {
+func buildTool(t ir.Tool, p ir.Path, env *ir.Env, nameMap *ir.ToolNameMap) (wireTool, error) {
 	if t.Name == "" {
 		return wireTool{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
@@ -461,7 +461,8 @@ func buildTool(t ir.Tool, p ir.Path, env *ir.Env, names map[string]ir.ToolRef) (
 			return wireTool{}, err
 		}
 	}
-	wireName, desc := ir.AssignToolWireName(names, t)
+	wireName := nameMap.WireName(t.Namespace, t.Name)
+	desc := nameMap.Description(t.Namespace, t.Name, t.Description)
 	if t.Kind == ir.ToolCustom {
 		wt := wireTool{
 			Type:        "custom",
@@ -495,7 +496,7 @@ func buildTool(t ir.Tool, p ir.Path, env *ir.Env, names map[string]ir.ToolRef) (
 	return wt, nil
 }
 
-func buildToolChoice(tc ir.ToolChoice, env *ir.Env) (json.RawMessage, error) {
+func buildToolChoice(tc ir.ToolChoice, nameMap *ir.ToolNameMap, env *ir.Env) (json.RawMessage, error) {
 	switch tc.Mode {
 	case ir.ToolChoiceAuto:
 		return json.RawMessage(`"auto"`), nil
@@ -504,7 +505,7 @@ func buildToolChoice(tc ir.ToolChoice, env *ir.Env) (json.RawMessage, error) {
 	case ir.ToolChoiceRequired:
 		return json.RawMessage(`"required"`), nil
 	case ir.ToolChoiceTool:
-		b, _ := jsonx.Marshal(map[string]any{"type": "function", "name": tc.Name})
+		b, _ := jsonx.Marshal(map[string]any{"type": "function", "name": nameMap.WireName(tc.Namespace, tc.Name)})
 		return b, nil
 	case ir.ToolChoiceAllowed:
 		mode := "auto"
@@ -517,10 +518,8 @@ func buildToolChoice(tc ir.ToolChoice, env *ir.Env) (json.RawMessage, error) {
 			if ref.Kind == ir.ToolCustom {
 				typ = "custom"
 			}
-			entry := map[string]any{"type": typ, "name": ref.Name}
-			if ref.Namespace != "" {
-				entry["namespace"] = ref.Namespace
-			}
+			wireName := nameMap.WireName(ref.Namespace, ref.Name)
+			entry := map[string]any{"type": typ, "name": wireName}
 			tools = append(tools, entry)
 		}
 		b, _ := jsonx.Marshal(map[string]any{"type": "allowed_tools", "mode": mode, "tools": tools})

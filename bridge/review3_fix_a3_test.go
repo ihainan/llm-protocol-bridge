@@ -366,3 +366,253 @@ func TestReview3_P2_8_AnthropicServerToolArgsEnforcesMaxBufferedBytes(t *testing
 		t.Fatalf("expected buffer limit error when server_tool_use exceeds MaxBufferedBytes=1024, got out:\n%s", string(out))
 	}
 }
+
+// Review3 A3 #6: Tool wire-name flattening & collision suffixes must stay
+// consistent across tool definitions, historical calls, tool results, and
+// tool_choice (Gemini allowedFunctionNames, Anthropic forced choice), and
+// Responses non-streaming custom_tool_call must apply reverse name mapping.
+func TestReview3_A3_06_ToolRenameConsistentAcrossHistoryChoiceAndCustomDecode(t *testing.T) {
+	t.Run("gemini_history_result_and_allowedFunctionNames_renamed", func(t *testing.T) {
+		req := &ir.Request{
+			Model: "gemini-2.5-flash",
+			Tools: []ir.Tool{
+				{Name: "a__read", Kind: ir.ToolFunction, Schema: json.RawMessage(`{"type":"object"}`)},
+				{Namespace: "a", Name: "read", Kind: ir.ToolFunction, Schema: json.RawMessage(`{"type":"object"}`)},
+			},
+			ToolChoice: ir.ToolChoice{
+				Mode:        ir.ToolChoiceAllowed,
+				AllowedMode: ir.ToolChoiceRequired,
+				Allowed:     []ir.ToolRef{{Namespace: "a", Name: "read"}},
+			},
+			Messages: []ir.Message{
+				{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("read file")}},
+				{Role: ir.RoleAssistant, Parts: []ir.Part{{
+					Type: ir.PartToolCall,
+					Call: &ir.ToolCall{ID: "c1", Namespace: "a", Name: "read", Arguments: json.RawMessage(`{}`)},
+				}}},
+				{Role: ir.RoleUser, Parts: []ir.Part{{
+					Type:   ir.PartToolResult,
+					Result: &ir.ToolResult{CallID: "c1", Name: "read", Content: []ir.Part{ir.TextPart("ok")}},
+				}}},
+			},
+		}
+		plan, err := bridge.Build(req, ir.FormatResponses, ir.FormatGemini, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		var doc struct {
+			Contents []struct {
+				Parts []struct {
+					FunctionCall *struct {
+						Name string `json:"name"`
+					} `json:"functionCall"`
+					FunctionResponse *struct {
+						Name string `json:"name"`
+					} `json:"functionResponse"`
+				} `json:"parts"`
+			} `json:"contents"`
+			ToolConfig struct {
+				FunctionCallingConfig struct {
+					AllowedFunctionNames []string `json:"allowedFunctionNames"`
+				} `json:"functionCallingConfig"`
+			} `json:"toolConfig"`
+		}
+		if err := json.Unmarshal(plan.Body, &doc); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		// a__read takes "a__read", so (a, read) gets collision suffix "a__read_2".
+		want := "a__read_2"
+		if doc.Contents[1].Parts[0].FunctionCall == nil || doc.Contents[1].Parts[0].FunctionCall.Name != want {
+			t.Fatalf("history functionCall.name = %v, want %q\nbody=%s", doc.Contents[1].Parts[0].FunctionCall, want, string(plan.Body))
+		}
+		if doc.Contents[2].Parts[0].FunctionResponse == nil || doc.Contents[2].Parts[0].FunctionResponse.Name != want {
+			t.Fatalf("history functionResponse.name = %v, want %q\nbody=%s", doc.Contents[2].Parts[0].FunctionResponse, want, string(plan.Body))
+		}
+		if len(doc.ToolConfig.FunctionCallingConfig.AllowedFunctionNames) != 1 || doc.ToolConfig.FunctionCallingConfig.AllowedFunctionNames[0] != want {
+			t.Fatalf("allowedFunctionNames = %v, want [%q]", doc.ToolConfig.FunctionCallingConfig.AllowedFunctionNames, want)
+		}
+	})
+
+	t.Run("anthropic_forced_choice_and_history_renamed", func(t *testing.T) {
+		req := &ir.Request{
+			Model: "claude-sonnet-4",
+			Tools: []ir.Tool{
+				{Namespace: "a", Name: "read", Kind: ir.ToolFunction, Schema: json.RawMessage(`{"type":"object"}`)},
+			},
+			ToolChoice: ir.ToolChoice{Mode: ir.ToolChoiceTool, Namespace: "a", Name: "read"},
+			Messages: []ir.Message{
+				{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("read")}},
+				{Role: ir.RoleAssistant, Parts: []ir.Part{{
+					Type: ir.PartToolCall,
+					Call: &ir.ToolCall{ID: "c1", Namespace: "a", Name: "read", Arguments: json.RawMessage(`{}`)},
+				}}},
+				{Role: ir.RoleUser, Parts: []ir.Part{{
+					Type:   ir.PartToolResult,
+					Result: &ir.ToolResult{CallID: "c1", Content: []ir.Part{ir.TextPart("ok")}},
+				}}},
+			},
+		}
+		plan, err := bridge.Build(req, ir.FormatResponses, ir.FormatAnthropic, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if !strings.Contains(string(plan.Body), `"tool_choice":{"name":"a__read","type":"tool"}`) && !strings.Contains(string(plan.Body), `"tool_choice":{"type":"tool","name":"a__read"}`) {
+			t.Fatalf("Anthropic forced tool_choice did not use renamed wire name a__read:\n%s", string(plan.Body))
+		}
+		if !strings.Contains(string(plan.Body), `"type":"tool_use","id":"c1","name":"a__read"`) {
+			t.Fatalf("Anthropic history tool_use did not use renamed wire name a__read:\n%s", string(plan.Body))
+		}
+	})
+
+	t.Run("responses_nonstream_custom_tool_reverse_mapped", func(t *testing.T) {
+		req := &ir.Request{
+			Model: "gpt-5",
+			Tools: []ir.Tool{
+				{Namespace: "a", Name: "exec", Kind: ir.ToolCustom},
+			},
+			Messages: []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("run")}}},
+		}
+		plan, err := bridge.Build(req, ir.FormatResponses, ir.FormatResponses, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		upBody := []byte(`{"id":"resp_1","object":"response","model":"gpt-5","status":"completed","output":[{"type":"custom_tool_call","id":"ctc_1","call_id":"c1","name":"a__exec","input":"ls"}]}`)
+		_, irResp, err := plan.ConvertResponse(upBody)
+		if err != nil {
+			t.Fatalf("ConvertResponse: %v", err)
+		}
+		call := irResp.Outputs[0].Parts[0].Call
+		if call == nil || call.Namespace != "a" || call.Name != "exec" {
+			t.Fatalf("Responses non-streaming custom_tool_call reverse mapping failed: %+v", call)
+		}
+	})
+}
+
+// Review3 A3 #10: StopEmulate must strip native stop sequences from the
+// upstream body and force UpstreamStream=true (design.md §9.6).
+func TestReview3_A3_10_StopEmulateStripsUpstreamStopAndStreamsUpstream(t *testing.T) {
+	reqBody := []byte(`{"model":"gpt-5","max_tokens":256,"stop_sequences":["END"],"messages":[{"role":"user","content":"go"}],"stream":false}`)
+	plan, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, reqBody, bridge.Options{
+		StopMode: ir.StopEmulate,
+	})
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	if strings.Contains(string(plan.Body), `"stop"`) {
+		t.Fatalf("StopEmulate must not send native stop to upstream:\n%s", string(plan.Body))
+	}
+	if !plan.UpstreamStream {
+		t.Fatalf("StopEmulate must set Plan.UpstreamStream=true (design.md §9.6)")
+	}
+	if plan.ClientStream {
+		t.Fatalf("Plan.ClientStream should stay false for non-streaming client")
+	}
+	if len(plan.Request.Stop) != 1 || plan.Request.Stop[0] != "END" {
+		t.Fatalf("Plan.Request.Stop must retain original stop sequences for local filter, got %v", plan.Request.Stop)
+	}
+}
+
+// Review3 A3 #18: Responses SSE output_item.done web_search_call must decode
+// to EvBuiltin, and Anthropic search/fetch results must preserve Raw
+// (encrypted_content, page_age, error objects) on same-origin round trip while
+// reporting loss across formats when fields cannot be represented.
+func TestReview3_A3_18_ResponsesSSEWebSearchAndAnthropicRawResultPreserved(t *testing.T) {
+	t.Run("responses_sse_web_search_call_decodes", func(t *testing.T) {
+		reqBody := []byte(`{"model":"gpt-5","stream":true,"input":"search"}`)
+		plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, reqBody, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		raw := "event: response.created\n" +
+			`data: {"type":"response.created","sequence_number":0,"response":{"id":"r1","model":"gpt-5","status":"in_progress"}}` + "\n\n" +
+			"event: response.output_item.done\n" +
+			`data: {"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed"}}` + "\n\n" +
+			"event: response.completed\n" +
+			`data: {"type":"response.completed","sequence_number":2,"response":{"id":"r1","model":"gpt-5","status":"completed","output":[{"type":"web_search_call","id":"ws_1","status":"completed"}]}}` + "\n\n"
+		out := string(feedSSE(t, plan.NewStream(), raw))
+		if !strings.Contains(out, `"web_search_call"`) || !strings.Contains(out, `"ws_1"`) {
+			t.Fatalf("Responses SSE web_search_call was dropped:\n%s", out)
+		}
+	})
+
+	t.Run("anthropic_same_origin_preserves_raw_encrypted_content_and_page_age", func(t *testing.T) {
+		reqBody := []byte(`{"model":"claude-sonnet-4","max_tokens":256,"messages":[{"role":"user","content":"search"}]}`)
+		plan, err := bridge.Convert(ir.FormatAnthropic, ir.FormatAnthropic, reqBody, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		upBody := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4","content":[{"type":"web_search_tool_result","tool_use_id":"srv_1","content":[{"type":"web_search_result","url":"https://example.com","title":"Ex","encrypted_content":"enc_abc","page_age":"2 days ago"}]}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`)
+		out, _, err := plan.ConvertResponse(upBody)
+		if err != nil {
+			t.Fatalf("ConvertResponse: %v", err)
+		}
+		if !strings.Contains(string(out), `"encrypted_content":"enc_abc"`) || !strings.Contains(string(out), `"page_age":"2 days ago"`) {
+			t.Fatalf("Anthropic same-origin web_search_tool_result dropped raw fields:\n%s", string(out))
+		}
+	})
+}
+
+// Review3 A3 #19: Responses web_search config (external_web_access:false,
+// allowed_domains, user_location) must map where supported and reject/lose
+// where unsupported (with Deny respected).
+func TestReview3_A3_19_WebSearchConfigMappedOrRejectedCrossFormat(t *testing.T) {
+	t.Run("responses_to_anthropic_maps_allowed_domains_and_user_location", func(t *testing.T) {
+		reqBody := []byte(`{
+			"model":"claude-sonnet-4",
+			"input":"news",
+			"tools":[{"type":"web_search","filters":{"allowed_domains":["example.com"]},"user_location":{"type":"approximate","country":"US","city":"SF"}}]
+		}`)
+		plan, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, reqBody, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if !strings.Contains(string(plan.Body), `"allowed_domains":["example.com"]`) {
+			t.Fatalf("expected allowed_domains mapped to Anthropic web_search:\n%s", string(plan.Body))
+		}
+		if !strings.Contains(string(plan.Body), `"user_location"`) {
+			t.Fatalf("expected user_location mapped to Anthropic web_search:\n%s", string(plan.Body))
+		}
+	})
+
+	t.Run("cached_web_search_dropped_with_loss_and_blockable_by_deny", func(t *testing.T) {
+		reqBody := []byte(`{
+			"model":"claude-sonnet-4",
+			"input":"news",
+			"tools":[{"type":"web_search","external_web_access":false}]
+		}`)
+		for _, target := range []ir.Format{ir.FormatAnthropic, ir.FormatGemini} {
+			plan, err := bridge.Convert(ir.FormatResponses, target, reqBody, bridge.Options{})
+			if err != nil {
+				t.Fatalf("Convert->%s: %v", target, err)
+			}
+			if strings.Contains(string(plan.Body), "web_search") || strings.Contains(string(plan.Body), "googleSearch") {
+				t.Fatalf("cached web_search should be dropped towards %s, got:\n%s", target, string(plan.Body))
+			}
+			hasLoss := false
+			for _, l := range plan.Losses {
+				if l.Kind == ir.LossCachedWebSearch {
+					hasLoss = true
+				}
+			}
+			if !hasLoss {
+				t.Fatalf("expected LossCachedWebSearch towards %s, got losses=%v", target, plan.Losses)
+			}
+			if _, err := bridge.Convert(ir.FormatResponses, target, reqBody, bridge.Options{
+				Deny: ir.LossSet{ir.LossCachedWebSearch: true},
+			}); err == nil {
+				t.Fatalf("expected Deny[LossCachedWebSearch] to reject towards %s", target)
+			}
+		}
+	})
+
+	t.Run("gemini_rejects_web_search_domain_restrictions", func(t *testing.T) {
+		reqBody := []byte(`{
+			"model":"gemini-2.5-flash",
+			"input":"news",
+			"tools":[{"type":"web_search","filters":{"allowed_domains":["example.com"]}}]
+		}`)
+		if _, err := bridge.Convert(ir.FormatResponses, ir.FormatGemini, reqBody, bridge.Options{}); err == nil {
+			t.Fatalf("expected Gemini to reject web_search with allowed_domains restriction")
+		}
+	})
+}

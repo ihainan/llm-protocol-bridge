@@ -20,14 +20,15 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported by the Responses format"))
 	}
 	dia := opts.Dialect
-	names := map[string]ir.ToolRef{}
+	nameMap := ir.BuildToolNameMap(req.Tools)
+	names := nameMap.FromWire
 
-	// Map tool call IDs to function names so functionResponse.name is always populated.
+	// Map tool call IDs to wire function names so functionResponse.name is always populated consistently.
 	callNames := map[string]string{}
 	for _, msg := range req.Messages {
 		for _, pt := range msg.Parts {
 			if pt.Type == ir.PartToolCall && pt.Call != nil && pt.Call.ID != "" && pt.Call.Name != "" {
-				callNames[pt.Call.ID] = pt.Call.Name
+				callNames[pt.Call.ID] = nameMap.WireName(pt.Call.Namespace, pt.Call.Name)
 			}
 		}
 	}
@@ -35,7 +36,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	// System instruction.
 	var sysContent *wireContent
 	if len(req.Instructions) > 0 {
-		parts, err := irPartsToWireParts(req.Instructions, ir.Root.Key("systemInstruction"), env, dia, names, callNames, false)
+		parts, err := irPartsToWireParts(req.Instructions, ir.Root.Key("systemInstruction"), env, dia, nameMap, callNames, false)
 		if err != nil {
 			return nil, err
 		}
@@ -46,7 +47,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	var contents []wireContent
 	for i, msg := range req.Messages {
 		fp := ir.Root.Key("contents").At(i)
-		wc, err := irMessageToWireContent(msg, fp, env, dia, names, callNames)
+		wc, err := irMessageToWireContent(msg, fp, env, dia, nameMap, callNames)
 		if err != nil {
 			return nil, err
 		}
@@ -59,7 +60,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		var decls []wireFunctionDecl
 		for i, t := range req.Tools {
 			fp := ir.Root.Key("tools").At(i)
-			d, err := buildFunctionDecl(t, fp, env, names)
+			d, err := buildFunctionDecl(t, fp, env, nameMap)
 			if err != nil {
 				return nil, err
 			}
@@ -68,14 +69,30 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		if len(decls) > 0 {
 			toolDefs = append(toolDefs, wireToolDef{FunctionDeclarations: decls})
 		}
-		for _, bt := range req.Builtins {
+		for i, bt := range req.Builtins {
+			fp := ir.Root.Key("tools").At(len(req.Tools) + i)
 			switch bt.Kind {
 			case ir.BuiltinWebSearch:
+				if bt.IsCachedWebSearch() {
+					if err := env.Lose(ir.LossCachedWebSearch, fp, "cached web_search (external_web_access: false) dropped for Gemini"); err != nil {
+						return nil, err
+					}
+					continue
+				}
+				wsCfg := bt.ParseWebSearchConfig()
+				if len(wsCfg.AllowedDomains) > 0 || len(wsCfg.BlockedDomains) > 0 {
+					return nil, env.Err(ir.Unsupported(fp, "web_search.allowed_domains", "Gemini googleSearch does not support domain restrictions"))
+				}
+				if len(wsCfg.UserLocation) > 0 {
+					return nil, env.Err(ir.Unsupported(fp, "web_search.user_location", "Gemini googleSearch does not support user_location"))
+				}
 				toolDefs = append(toolDefs, wireToolDef{GoogleSearch: &struct{}{}})
 			case ir.BuiltinCodeExecution:
 				toolDefs = append(toolDefs, wireToolDef{CodeExecution: &struct{}{}})
 			case ir.BuiltinURLContext:
 				toolDefs = append(toolDefs, wireToolDef{URLContext: &struct{}{}})
+			default:
+				return nil, env.Err(ir.Unsupported(fp, string(bt.Kind), "builtin tool not supported by Gemini"))
 			}
 		}
 	}
@@ -83,7 +100,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	// Tool config.
 	var toolCfg *wireToolConfig
 	if req.ToolChoice.Mode != "" {
-		tc, err := buildToolConfig(req.ToolChoice, env)
+		tc, err := buildToolConfig(req.ToolChoice, nameMap, env)
 		if err != nil {
 			return nil, err
 		}
@@ -149,7 +166,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}, nil
 }
 
-func irMessageToWireContent(msg ir.Message, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef, callNames map[string]string) (wireContent, error) {
+func irMessageToWireContent(msg ir.Message, p ir.Path, env *ir.Env, dia Dialect, nameMap *ir.ToolNameMap, callNames map[string]string) (wireContent, error) {
 	var role string
 	switch msg.Role {
 	case ir.RoleUser, ir.RoleSystem, ir.RoleDeveloper:
@@ -157,18 +174,18 @@ func irMessageToWireContent(msg ir.Message, p ir.Path, env *ir.Env, dia Dialect,
 	case ir.RoleAssistant:
 		role = "model"
 	}
-	parts, err := irPartsToWireParts(msg.Parts, p.Key("parts"), env, dia, names, callNames, true)
+	parts, err := irPartsToWireParts(msg.Parts, p.Key("parts"), env, dia, nameMap, callNames, true)
 	if err != nil {
 		return wireContent{}, err
 	}
 	return wireContent{Role: role, Parts: parts}, nil
 }
 
-func irPartsToWireParts(parts []ir.Part, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef, callNames map[string]string, inMessage bool) ([]wirePart, error) {
+func irPartsToWireParts(parts []ir.Part, p ir.Path, env *ir.Env, dia Dialect, nameMap *ir.ToolNameMap, callNames map[string]string, inMessage bool) ([]wirePart, error) {
 	var out []wirePart
 	for i, part := range parts {
 		fp := p.At(i)
-		wp, err := irPartToWirePart(part, fp, env, dia, names, callNames, inMessage)
+		wp, err := irPartToWirePart(part, fp, env, dia, nameMap, callNames, inMessage)
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +194,7 @@ func irPartsToWireParts(parts []ir.Part, p ir.Path, env *ir.Env, dia Dialect, na
 	return out, nil
 }
 
-func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef, callNames map[string]string, inMessage bool) ([]wirePart, error) {
+func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, nameMap *ir.ToolNameMap, callNames map[string]string, inMessage bool) ([]wirePart, error) {
 	if part.Cache != nil {
 		if err := env.Lose(ir.LossCacheMarker, p.Key("cache_control"), "prompt cache markers not supported by Gemini"); err != nil {
 			return nil, err
@@ -284,7 +301,7 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 			args = json.RawMessage(`{}`)
 		}
 		fc := &wireFunctionCall{
-			Name: call.Name,
+			Name: nameMap.WireName(call.Namespace, call.Name),
 			Args: args,
 		}
 		if dia.FunctionCallIDs && call.ID != "" {
@@ -305,9 +322,12 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 			return nil, nil
 		}
 		result := part.Result
-		fnName := result.Name
-		if fnName == "" && result.CallID != "" && callNames != nil {
+		fnName := ""
+		if result.CallID != "" && callNames != nil {
 			fnName = callNames[result.CallID]
+		}
+		if fnName == "" && result.Name != "" {
+			fnName = nameMap.WireName("", result.Name)
 		}
 		// Wrap content as {output: <text>} or {error: <text>}, preserving JSON objects directly when not an error.
 		var respRaw json.RawMessage
@@ -330,7 +350,7 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 			if cp.Type == ir.PartText {
 				continue
 			}
-			sub, err := irPartToWirePart(cp, p.Key("content").At(i), env, dia, names, callNames, false)
+			sub, err := irPartToWirePart(cp, p.Key("content").At(i), env, dia, nameMap, callNames, false)
 			if err != nil {
 				return nil, err
 			}
@@ -396,7 +416,7 @@ func toolResultText(parts []ir.Part) string {
 	return sb.String()
 }
 
-func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env, names map[string]ir.ToolRef) (wireFunctionDecl, error) {
+func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env, nameMap *ir.ToolNameMap) (wireFunctionDecl, error) {
 	if t.Name == "" {
 		return wireFunctionDecl{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
@@ -410,7 +430,8 @@ func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env, names map[string]ir.To
 			return wireFunctionDecl{}, err
 		}
 	}
-	wireName, desc := ir.AssignToolWireName(names, t)
+	wireName := nameMap.WireName(t.Namespace, t.Name)
+	desc := nameMap.Description(t.Namespace, t.Name, t.Description)
 	params := t.Schema
 	if t.Kind == ir.ToolCustom {
 		params = ir.CustomToolWrapperSchema
@@ -433,7 +454,7 @@ func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env, names map[string]ir.To
 	return d, nil
 }
 
-func buildToolConfig(tc ir.ToolChoice, env *ir.Env) (*wireToolConfig, error) {
+func buildToolConfig(tc ir.ToolChoice, nameMap *ir.ToolNameMap, env *ir.Env) (*wireToolConfig, error) {
 	cfg := &wireToolConfig{FunctionCallingConfig: &wireFunctionCallingConfig{}}
 	switch tc.Mode {
 	case ir.ToolChoiceAuto, "":
@@ -450,12 +471,12 @@ func buildToolConfig(tc ir.ToolChoice, env *ir.Env) (*wireToolConfig, error) {
 		}
 		for _, ref := range tc.Allowed {
 			cfg.FunctionCallingConfig.AllowedFunctionNames = append(
-				cfg.FunctionCallingConfig.AllowedFunctionNames, ref.Name)
+				cfg.FunctionCallingConfig.AllowedFunctionNames, nameMap.WireName(ref.Namespace, ref.Name))
 		}
 	case ir.ToolChoiceTool:
 		cfg.FunctionCallingConfig.Mode = "ANY"
 		if tc.Name != "" {
-			cfg.FunctionCallingConfig.AllowedFunctionNames = []string{tc.Name}
+			cfg.FunctionCallingConfig.AllowedFunctionNames = []string{nameMap.WireName(tc.Namespace, tc.Name)}
 		}
 	default:
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), string(tc.Mode), "tool choice mode"))

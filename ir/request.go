@@ -353,6 +353,63 @@ func (bt BuiltinTool) IsCachedWebSearch() bool {
 	return false
 }
 
+// WebSearchConfig holds normalised web_search options parsed from Raw/Config.
+type WebSearchConfig struct {
+	ExternalWebAccess *bool
+	AllowedDomains    []string
+	BlockedDomains    []string
+	UserLocation      json.RawMessage
+	MaxUses           *int
+}
+
+// ParseWebSearchConfig extracts known web_search configuration fields from Raw/Config.
+func (bt BuiltinTool) ParseWebSearchConfig() WebSearchConfig {
+	var cfg WebSearchConfig
+	for _, src := range []json.RawMessage{bt.Config, bt.Raw} {
+		if len(src) == 0 {
+			continue
+		}
+		var obj struct {
+			ExternalWebAccess *bool           `json:"external_web_access"`
+			AllowedDomains    []string        `json:"allowed_domains"`
+			BlockedDomains    []string        `json:"blocked_domains"`
+			UserLocation      json.RawMessage `json:"user_location"`
+			MaxUses           *int            `json:"max_uses"`
+			Filters           *struct {
+				AllowedDomains []string `json:"allowed_domains"`
+				BlockedDomains []string `json:"blocked_domains"`
+			} `json:"filters"`
+		}
+		if json.Unmarshal(src, &obj) != nil {
+			continue
+		}
+		if cfg.ExternalWebAccess == nil && obj.ExternalWebAccess != nil {
+			cfg.ExternalWebAccess = obj.ExternalWebAccess
+		}
+		if len(cfg.AllowedDomains) == 0 {
+			if len(obj.AllowedDomains) > 0 {
+				cfg.AllowedDomains = obj.AllowedDomains
+			} else if obj.Filters != nil && len(obj.Filters.AllowedDomains) > 0 {
+				cfg.AllowedDomains = obj.Filters.AllowedDomains
+			}
+		}
+		if len(cfg.BlockedDomains) == 0 {
+			if len(obj.BlockedDomains) > 0 {
+				cfg.BlockedDomains = obj.BlockedDomains
+			} else if obj.Filters != nil && len(obj.Filters.BlockedDomains) > 0 {
+				cfg.BlockedDomains = obj.Filters.BlockedDomains
+			}
+		}
+		if len(cfg.UserLocation) == 0 && len(obj.UserLocation) > 0 && string(obj.UserLocation) != "null" {
+			cfg.UserLocation = append(json.RawMessage(nil), obj.UserLocation...)
+		}
+		if cfg.MaxUses == nil && obj.MaxUses != nil {
+			cfg.MaxUses = obj.MaxUses
+		}
+	}
+	return cfg
+}
+
 // BuiltinActivity is a hosted tool call or its result in a conversation or reply.
 type BuiltinActivity struct {
 	Kind  BuiltinKind     `json:"kind"`

@@ -687,9 +687,20 @@ func parseTools(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Tool, []ir.Bu
 			tools = append(tools, subTools...)
 			builtins = append(builtins, subBuiltins...)
 		case "web_search", "web_search_preview":
+			var cfgBytes json.RawMessage
+			cfgMap := map[string]json.RawMessage{}
+			for k, v := range fields {
+				if k != "type" {
+					cfgMap[k] = v
+				}
+			}
+			if len(cfgMap) > 0 {
+				cfgBytes, _ = jsonx.Marshal(cfgMap)
+			}
 			builtins = append(builtins, ir.BuiltinTool{
 				Kind:   ir.BuiltinWebSearch,
 				Origin: ir.FormatResponses,
+				Config: cfgBytes,
 				Raw:    append(json.RawMessage(nil), elem...),
 			})
 		case "computer_use":

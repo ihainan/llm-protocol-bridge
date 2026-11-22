@@ -254,6 +254,15 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 						},
 					})
 				}
+			case "web_search_call":
+				out = append(out, ir.Event{
+					Type: ir.EvBuiltin,
+					Builtin: &ir.BuiltinActivity{
+						Kind:   ir.BuiltinWebSearch,
+						ID:     se.Item.ID,
+						Origin: ir.FormatResponses,
+					},
+				})
 			}
 		}
 
@@ -480,13 +489,25 @@ func outputItemToIR(item wireOutputItem, p ir.Path, names map[string]ir.ToolRef,
 		if id == "" {
 			id = item.ID
 		}
+		name := item.Name
+		ns := item.Namespace
+		kind := ir.ToolCustom
+		if names != nil {
+			if ref, ok := names[name]; ok {
+				name = ref.Name
+				ns = ref.Namespace
+				if ref.Kind != "" {
+					kind = ref.Kind
+				}
+			}
+		}
 		part := ir.Part{
 			Type: ir.PartToolCall,
 			Call: &ir.ToolCall{
 				ID:        id,
-				Name:      item.Name,
-				Namespace: item.Namespace,
-				Kind:      ir.ToolCustom,
+				Name:      name,
+				Namespace: ns,
+				Kind:      kind,
 				Input:     item.Input,
 			},
 		}

@@ -312,18 +312,29 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 					resType = "web_fetch_tool_result"
 				}
 				var content any = []any{}
-				if len(ev.Builtin.Hits) > 0 {
+				if ev.Builtin.Origin == ir.FormatAnthropic && len(ev.Builtin.Raw) > 0 {
+					content = json.RawMessage(ev.Builtin.Raw)
+				} else if len(ev.Builtin.Hits) > 0 {
 					hits := make([]map[string]any, 0, len(ev.Builtin.Hits))
 					for _, h := range ev.Builtin.Hits {
-						hits = append(hits, map[string]any{
+						item := map[string]any{
 							"type":  "web_search_result",
 							"url":   h.URL,
 							"title": h.Title,
-						})
+						}
+						if h.PageAge != "" {
+							item["page_age"] = h.PageAge
+						}
+						hits = append(hits, item)
 					}
 					content = hits
 				} else if ev.Builtin.Content != "" {
 					content = ev.Builtin.Content
+				} else if ev.Builtin.Error != "" {
+					if err := e.opts.Env.Lose(ir.LossBuiltinActivity, ir.Root.Key("content"), "cross-format builtin error result cannot be represented natively in Anthropic"); err != nil {
+						return dst, err
+					}
+					content = ev.Builtin.Error
 				}
 				cb = map[string]any{
 					"type":        resType,
@@ -700,12 +711,23 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 				resType = "web_fetch_tool_result"
 			}
 			var content json.RawMessage
-			if len(part.Builtin.Hits) > 0 {
+			if part.Builtin.Origin == ir.FormatAnthropic && len(part.Builtin.Raw) > 0 {
+				content = append(json.RawMessage(nil), part.Builtin.Raw...)
+			} else if len(part.Builtin.Hits) > 0 {
 				hits := make([]map[string]any, 0, len(part.Builtin.Hits))
 				for _, h := range part.Builtin.Hits {
-					hits = append(hits, map[string]any{"type": "web_search_result", "url": h.URL, "title": h.Title})
+					item := map[string]any{"type": "web_search_result", "url": h.URL, "title": h.Title}
+					if h.PageAge != "" {
+						item["page_age"] = h.PageAge
+					}
+					hits = append(hits, item)
 				}
 				content, _ = jsonx.Marshal(hits)
+			} else if part.Builtin.Error != "" && part.Builtin.Content == "" {
+				if err := env.Lose(ir.LossBuiltinActivity, p, "cross-format builtin error result cannot be represented natively in Anthropic"); err != nil {
+					return nil, err
+				}
+				content, _ = jsonx.Marshal(part.Builtin.Error)
 			} else {
 				content, _ = jsonx.Marshal(part.Builtin.Content)
 			}

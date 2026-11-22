@@ -19,6 +19,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported by the Responses format"))
 	}
 	dia := opts.Dialect
+	nameMap := ir.BuildToolNameMap(req.Tools)
 	names := map[string]ir.ToolRef{}
 
 	// max_tokens: required by Anthropic.
@@ -50,7 +51,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	var thinkingRaw json.RawMessage
 	var thinkingEnabled bool
 	var adaptiveEffort ir.Effort
-	messages, err := buildMessages(req.Messages, names, env, dia)
+	messages, err := buildMessages(req.Messages, nameMap, env, dia)
 	if err != nil {
 		return nil, err
 	}
@@ -74,10 +75,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			continue
 		}
 		fp := ir.Root.Key("tools").At(i)
-		wt, err := buildTool(t, fp, dia, env, names)
+		wt, err := buildTool(t, fp, dia, env, nameMap)
 		if err != nil {
 			return nil, err
 		}
+		names[wt.Name] = ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: t.Kind}
 		tb, err := jsonx.Marshal(wt)
 		if err != nil {
 			return nil, err
@@ -90,8 +92,26 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		case ir.BuiltinWebSearch:
 			if bt.Origin == ir.FormatAnthropic && len(bt.Raw) > 0 {
 				rawTools = append(rawTools, bt.Raw)
+			} else if bt.IsCachedWebSearch() {
+				if err := env.Lose(ir.LossCachedWebSearch, fp, "cached web_search (external_web_access: false) dropped for Anthropic"); err != nil {
+					return nil, err
+				}
 			} else {
-				tb, _ := jsonx.Marshal(map[string]any{"type": "web_search_20250305", "name": "web_search"})
+				wsCfg := bt.ParseWebSearchConfig()
+				wsObj := map[string]any{"type": "web_search_20250305", "name": "web_search"}
+				if len(wsCfg.AllowedDomains) > 0 {
+					wsObj["allowed_domains"] = wsCfg.AllowedDomains
+				}
+				if len(wsCfg.BlockedDomains) > 0 {
+					wsObj["blocked_domains"] = wsCfg.BlockedDomains
+				}
+				if len(wsCfg.UserLocation) > 0 {
+					wsObj["user_location"] = wsCfg.UserLocation
+				}
+				if wsCfg.MaxUses != nil {
+					wsObj["max_uses"] = *wsCfg.MaxUses
+				}
+				tb, _ := jsonx.Marshal(wsObj)
 				rawTools = append(rawTools, tb)
 			}
 		case ir.BuiltinWebFetch:
@@ -128,7 +148,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	// ParallelToolCalls is set to false (Anthropic expresses it via
 	// disable_parallel_tool_use on the tool_choice object).
 	if req.ToolChoice.Mode != "" || (req.ParallelToolCalls != nil && !*req.ParallelToolCalls) {
-		tcRaw, err = buildToolChoice(req.ToolChoice, req.ParallelToolCalls, env)
+		tcRaw, err = buildToolChoice(req.ToolChoice, req.ParallelToolCalls, nameMap, env)
 		if err != nil {
 			return nil, err
 		}
@@ -327,7 +347,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 // buildMessages converts ir.Messages to wireMessages, merging consecutive
 // messages with the same role (required by the Anthropic Messages API).
-func buildMessages(msgs []ir.Message, names map[string]ir.ToolRef, env *ir.Env, dia Dialect) ([]wireMessage, error) {
+func buildMessages(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env, dia Dialect) ([]wireMessage, error) {
 	type msgBlocks struct {
 		role   string
 		blocks []wireContentBlock
@@ -348,13 +368,13 @@ func buildMessages(msgs []ir.Message, names map[string]ir.ToolRef, env *ir.Env, 
 		fp := ir.Root.Key("messages").At(i)
 		switch m.Role {
 		case ir.RoleUser:
-			blocks, err := partsToBlocks(m.Parts, fp.Key("content"), env)
+			blocks, err := partsToBlocksWithNames(m.Parts, fp.Key("content"), env, nameMap)
 			if err != nil {
 				return nil, err
 			}
 			appendBlocks("user", blocks)
 		case ir.RoleAssistant:
-			blocks, err := partsToBlocks(m.Parts, fp.Key("content"), env)
+			blocks, err := partsToBlocksWithNames(m.Parts, fp.Key("content"), env, nameMap)
 			if err != nil {
 				return nil, err
 			}
@@ -373,7 +393,7 @@ func buildMessages(msgs []ir.Message, names map[string]ir.ToolRef, env *ir.Env, 
 					appendBlocks("user", []wireContentBlock{{Type: "text", Text: "<system_message>" + sb.String() + "</system_message>"}})
 				}
 			default: // "keep"
-				blocks, err := partsToBlocks(m.Parts, fp.Key("content"), env)
+				blocks, err := partsToBlocksWithNames(m.Parts, fp.Key("content"), env, nameMap)
 				if err != nil {
 					return nil, err
 				}
@@ -395,10 +415,10 @@ func buildMessages(msgs []ir.Message, names map[string]ir.ToolRef, env *ir.Env, 
 	return out, nil
 }
 
-func partsToBlocks(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, error) {
+func partsToBlocksWithNames(parts []ir.Part, p ir.Path, env *ir.Env, nameMap *ir.ToolNameMap) ([]wireContentBlock, error) {
 	var blocks []wireContentBlock
 	for i, part := range parts {
-		bs, err := partToBlocks(part, p.At(i), env)
+		bs, err := partToBlocksWithNames(part, p.At(i), env, nameMap)
 		if err != nil {
 			return nil, err
 		}
@@ -408,6 +428,10 @@ func partsToBlocks(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock,
 }
 
 func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, error) {
+	return partToBlocksWithNames(part, p, env, nil)
+}
+
+func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.ToolNameMap) ([]wireContentBlock, error) {
 	switch part.Type {
 	case ir.PartText:
 		b := wireContentBlock{Type: "text", Text: part.Text}
@@ -504,7 +528,7 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 		return []wireContentBlock{{
 			Type:  "tool_use",
 			ID:    ir.AnthropicSafeID(call.ID),
-			Name:  call.Name,
+			Name:  nameMap.WireName(call.Namespace, call.Name),
 			Input: args,
 		}}, nil
 
@@ -591,7 +615,7 @@ func buildContentBlocks(parts []ir.Part, env *ir.Env) (json.RawMessage, error) {
 	return b, err
 }
 
-func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env, names map[string]ir.ToolRef) (wireTool, error) {
+func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env, nameMap *ir.ToolNameMap) (wireTool, error) {
 	if t.Name == "" {
 		return wireTool{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
@@ -600,7 +624,8 @@ func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env, names map[string]
 			return wireTool{}, err
 		}
 	}
-	wireName, desc := ir.AssignToolWireName(names, t)
+	wireName := nameMap.WireName(t.Namespace, t.Name)
+	desc := nameMap.Description(t.Namespace, t.Name, t.Description)
 	params := t.Schema
 	if t.Kind == ir.ToolCustom {
 		params = ir.CustomToolWrapperSchema
@@ -629,7 +654,7 @@ func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env, names map[string]
 
 var schema_emptyObj = json.RawMessage(`{"type":"object","properties":{}}`)
 
-func buildToolChoice(tc ir.ToolChoice, parallelToolCalls *bool, env *ir.Env) (json.RawMessage, error) {
+func buildToolChoice(tc ir.ToolChoice, parallelToolCalls *bool, nameMap *ir.ToolNameMap, env *ir.Env) (json.RawMessage, error) {
 	disableParallel := parallelToolCalls != nil && !*parallelToolCalls
 	switch tc.Mode {
 	case ir.ToolChoiceAuto, "":
@@ -637,7 +662,7 @@ func buildToolChoice(tc ir.ToolChoice, parallelToolCalls *bool, env *ir.Env) (js
 	case ir.ToolChoiceRequired:
 		return jsonx.Marshal(wireToolChoiceAny{Type: "any", DisableParallelToolUse: disableParallel})
 	case ir.ToolChoiceTool:
-		return jsonx.Marshal(wireToolChoiceTool{Type: "tool", Name: tc.Name, DisableParallelToolUse: disableParallel})
+		return jsonx.Marshal(wireToolChoiceTool{Type: "tool", Name: nameMap.WireName(tc.Namespace, tc.Name), DisableParallelToolUse: disableParallel})
 	case ir.ToolChoiceAllowed:
 		if tc.AllowedMode == ir.ToolChoiceRequired {
 			return jsonx.Marshal(wireToolChoiceAny{Type: "any", DisableParallelToolUse: disableParallel})
