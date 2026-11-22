@@ -748,6 +748,27 @@ func (bc *bufferedToolCall) validate() (json.RawMessage, string, string) {
 	return json.RawMessage(b), "", ""
 }
 
+func validateToolCall(call *ir.ToolCall) string {
+	if call == nil {
+		return ""
+	}
+	if strings.TrimSpace(call.Name) == "" {
+		return "tool call missing name"
+	}
+	if call.Kind == ir.ToolCustom {
+		return ""
+	}
+	raw := strings.TrimSpace(string(call.Arguments))
+	if raw == "" {
+		return ""
+	}
+	b := []byte(raw)
+	if jsonx.Kind(b) != '{' || !json.Valid(b) {
+		return "tool call arguments must be a valid JSON object"
+	}
+	return ""
+}
+
 // repairHistory applies caller-enabled ir.Repair transformations to a copy of req.Messages.
 func repairHistory(req *ir.Request, repair ir.RepairSet) {
 	if req == nil || len(repair) == 0 || len(req.Messages) == 0 {

@@ -322,11 +322,22 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvToolEnd:
 		if ev.Err != nil {
-			// Explicit abort of an unvalidated live tool call (truncation/stop): discard without completing.
-			if e.openItemType == "function_call" || e.openItemType == "custom_tool_call" {
-				e.openItemType = ""
-				e.argAccum.Reset()
+			if ev.ID != "" && ev.ID != e.callID {
+				if pt := e.pendingByID[ev.ID]; pt != nil {
+					delete(e.pendingByID, ev.ID)
+					for i, item := range e.pendingTools {
+						if item == pt {
+							e.pendingTools = append(e.pendingTools[:i], e.pendingTools[i+1:]...)
+							break
+						}
+					}
+					break
+				}
 			}
+			// Explicit abort of an unvalidated live tool call: finalize it with
+			// status:"incomplete" (never completed) so output_index stays 1:1
+			// aligned with response.output while preventing execution.
+			dst = e.abortOpenToolItem(dst)
 			break
 		}
 		if ev.ID != "" && ev.ID != e.callID {
@@ -386,8 +397,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.stopped = true
 		if (e.openItemType == "function_call" || e.openItemType == "custom_tool_call") && (e.stop.Truncated() || e.stop.Filtered()) {
 			// Incomplete/filtered live tool call must not be marked completed.
-			e.openItemType = ""
-			e.argAccum.Reset()
+			dst = e.abortOpenToolItem(dst)
 			e.pendingTools = nil
 			e.pendingByID = map[string]*pendingRespTool{}
 		} else {
@@ -609,6 +619,49 @@ func (e *StreamEncoder) flushAllPendingTools(dst []byte) []byte {
 	for len(e.pendingTools) > 0 {
 		e.pendingTools[0].done = true
 		dst = e.drainPendingTools(dst)
+	}
+	return dst
+}
+
+func (e *StreamEncoder) abortOpenToolItem(dst []byte) []byte {
+	switch e.openItemType {
+	case "function_call":
+		doneItem := map[string]any{
+			"type":      "function_call",
+			"id":        e.itemID,
+			"call_id":   e.wireCallID,
+			"name":      e.callName,
+			"arguments": e.argAccum.String(),
+			"status":    "incomplete",
+		}
+		e.outputs = append(e.outputs, doneItem)
+		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
+			"sequence_number": e.nextSeq(),
+			"output_index":    e.outputIndex,
+			"item":            doneItem,
+		})
+		e.openItemType = ""
+		e.argAccum.Reset()
+	case "custom_tool_call":
+		doneItem := map[string]any{
+			"type":    "custom_tool_call",
+			"id":      e.itemID,
+			"call_id": e.wireCallID,
+			"name":    e.callName,
+			"input":   e.argAccum.String(),
+			"status":  "incomplete",
+		}
+		if e.callNS != "" {
+			doneItem["namespace"] = e.callNS
+		}
+		e.outputs = append(e.outputs, doneItem)
+		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
+			"sequence_number": e.nextSeq(),
+			"output_index":    e.outputIndex,
+			"item":            doneItem,
+		})
+		e.openItemType = ""
+		e.argAccum.Reset()
 	}
 	return dst
 }

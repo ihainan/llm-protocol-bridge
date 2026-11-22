@@ -240,6 +240,32 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvToolEnd:
+		if ev.Err != nil {
+			if ev.ID != "" && ev.ID != e.activeCallID {
+				if pt := e.pendingByID[ev.ID]; pt != nil {
+					delete(e.pendingByID, ev.ID)
+					for i, item := range e.pendingTools {
+						if item == pt {
+							e.pendingTools = append(e.pendingTools[:i], e.pendingTools[i+1:]...)
+							break
+						}
+					}
+					break
+				}
+			}
+			// An already-opened tool_use block cannot be retracted in Anthropic SSE:
+			// abort the stream with an error event instead of emitting content_block_stop.
+			if e.openBlock >= 0 && e.openBlockType == "tool_use" {
+				e.openBlock = -1
+				e.openBlockType = ""
+				e.activeCallID = ""
+				e.pendingTools = nil
+				e.pendingByID = map[string]*pendingTool{}
+				e.errored = true
+				dst = BuildStreamError(dst, ev.Err)
+			}
+			break
+		}
 		if ev.ID != "" && ev.ID != e.activeCallID {
 			if pt := e.pendingByID[ev.ID]; pt != nil {
 				pt.finalArgs = ev.Arguments

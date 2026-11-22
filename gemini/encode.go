@@ -157,7 +157,9 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		c := e.cand(ev.Index)
 		key, pc := c.lookupWithKey(ev.ID)
 		if pc != nil {
-			dst = e.emitCall(dst, ev.Index, pc, ev.Arguments)
+			if ev.Err == nil {
+				dst = e.emitCall(dst, ev.Index, pc, ev.Arguments)
+			}
 			delete(c.calls, key)
 			if c.lastCallKey == key {
 				c.lastCallKey = ""

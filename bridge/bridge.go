@@ -221,7 +221,10 @@ func (p *Plan) ConvertResponse(body []byte) ([]byte, *ir.Response, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	irResp = applyResponseFilters(irResp, p)
+	irResp, err = applyResponseFilters(irResp, p)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	clientEnv := clientEnv(p.opts, p.Client)
 	encOpts := encodeOptions(p, clientEnv)
@@ -284,9 +287,9 @@ func (p *Plan) StreamResponse(dst, body []byte) ([]byte, error) {
 	return dst, err
 }
 
-func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
+func applyResponseFilters(resp *ir.Response, p *Plan) (*ir.Response, error) {
 	if resp == nil {
-		return nil
+		return nil, nil
 	}
 	ro := effectiveReasoningOut(p)
 	var stops []string
@@ -297,29 +300,107 @@ func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
 			}
 		}
 	}
-	if ro == ir.ReasoningOutNative && len(stops) == 0 {
-		return resp
+	maxCalls := 0
+	if p != nil && p.opts.Limits.MaxToolCalls > 0 {
+		maxCalls = p.opts.Limits.MaxToolCalls
 	}
+
 	cp := *resp
 	cp.Outputs = make([]ir.Output, len(resp.Outputs))
 	for i, o := range resp.Outputs {
 		oc := o
 		var parts []ir.Part
-		var textSpan strings.Builder
+		var textRun []ir.Part
 		stopped := false
-		flushSpan := func() {
-			if textSpan.Len() > 0 {
-				parts = append(parts, ir.TextPart(textSpan.String()))
-				textSpan.Reset()
+
+		// flushTextRun checks StopEmulate across all contiguous PartText entries
+		// (including those carrying citations or signatures). On a stop hit it
+		// truncates at bestPos, drops all previously collected tool calls per
+		// design.md §9.6, and marks stopped=true.
+		flushTextRun := func() {
+			if len(textRun) == 0 {
+				return
 			}
+			if len(stops) == 0 {
+				parts = append(parts, textRun...)
+				textRun = nil
+				return
+			}
+			var combined strings.Builder
+			for _, tp := range textRun {
+				combined.WriteString(tp.Text)
+			}
+			full := combined.String()
+			bestPos, bestEnd, bestSeq := -1, -1, ""
+			for _, seq := range stops {
+				if idx := strings.Index(full, seq); idx >= 0 {
+					end := idx + len(seq)
+					if bestEnd < 0 || end < bestEnd || (end == bestEnd && idx < bestPos) {
+						bestPos, bestEnd, bestSeq = idx, end, seq
+					}
+				}
+			}
+			if bestPos < 0 {
+				parts = append(parts, textRun...)
+				textRun = nil
+				return
+			}
+			// Drop any tool calls already collected in this candidate when stop hits.
+			kept := parts[:0]
+			for _, ep := range parts {
+				if ep.Type != ir.PartToolCall {
+					kept = append(kept, ep)
+				}
+			}
+			parts = kept
+
+			rem := bestPos
+			for _, tp := range textRun {
+				if rem <= 0 {
+					break
+				}
+				if len(tp.Text) <= rem {
+					parts = append(parts, tp)
+					rem -= len(tp.Text)
+				} else {
+					trimmed := tp
+					trimmed.Text = tp.Text[:rem]
+					if len(tp.Citations) > 0 {
+						var cits []ir.Citation
+						for _, c := range tp.Citations {
+							if c.StartIndex < rem {
+								if c.EndIndex > rem {
+									c.EndIndex = rem
+								}
+								cits = append(cits, c)
+							}
+						}
+						trimmed.Citations = cits
+					}
+					parts = append(parts, trimmed)
+					rem = 0
+					break
+				}
+			}
+			textRun = nil
+			oc.Stop = ir.Stop{Reason: ir.StopSequence, Sequence: bestSeq}
+			stopped = true
 		}
+
 		for _, pt := range o.Parts {
+			if stopped {
+				break
+			}
+			if pt.Type == ir.PartText {
+				textRun = append(textRun, pt)
+				continue
+			}
+			flushTextRun()
 			if stopped {
 				break
 			}
 			if pt.Type == ir.PartReasoning {
 				if ro == ir.ReasoningOutHidden {
-					flushSpan()
 					continue
 				}
 				if ro == ir.ReasoningOutSummary && pt.Reasoning != nil {
@@ -331,59 +412,42 @@ func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
 					pt.Reasoning = &rc
 				}
 			}
-			if pt.Type == ir.PartText && len(stops) > 0 && len(pt.Citations) == 0 && pt.Signature == nil {
-				textSpan.WriteString(pt.Text)
-				combined := textSpan.String()
-				bestPos, bestEnd, bestSeq := -1, -1, ""
-				for _, seq := range stops {
-					if idx := strings.Index(combined, seq); idx >= 0 {
-						end := idx + len(seq)
-						if bestEnd < 0 || end < bestEnd || (end == bestEnd && idx < bestPos) {
-							bestPos, bestEnd, bestSeq = idx, end, seq
-						}
-					}
-				}
-				if bestPos >= 0 {
-					textSpan.Reset()
-					if bestPos > 0 {
-						parts = append(parts, ir.TextPart(combined[:bestPos]))
-					}
-					oc.Stop = ir.Stop{Reason: ir.StopSequence, Sequence: bestSeq}
-					stopped = true
-					break
-				}
-				continue
-			}
-			flushSpan()
-			if pt.Type == ir.PartText && len(stops) > 0 {
-				bestPos, bestEnd, bestSeq := -1, -1, ""
-				for _, seq := range stops {
-					if idx := strings.Index(pt.Text, seq); idx >= 0 {
-						end := idx + len(seq)
-						if bestEnd < 0 || end < bestEnd || (end == bestEnd && idx < bestPos) {
-							bestPos, bestEnd, bestSeq = idx, end, seq
-						}
-					}
-				}
-				if bestPos >= 0 {
-					if bestPos > 0 {
-						pt.Text = pt.Text[:bestPos]
-						parts = append(parts, pt)
-					}
-					oc.Stop = ir.Stop{Reason: ir.StopSequence, Sequence: bestSeq}
-					stopped = true
-					break
-				}
-			}
 			parts = append(parts, pt)
 		}
 		if !stopped {
-			flushSpan()
+			flushTextRun()
 		}
+
+		// Apply the same tool-call truncation/filter drop and JSON object validation
+		// rules as the streaming pipeline (design.md §7.3).
+		if oc.Stop.Truncated() || oc.Stop.Filtered() {
+			kept := parts[:0]
+			for _, ep := range parts {
+				if ep.Type != ir.PartToolCall {
+					kept = append(kept, ep)
+				}
+			}
+			parts = kept
+		} else {
+			toolCount := 0
+			for _, ep := range parts {
+				if ep.Type != ir.PartToolCall || ep.Call == nil {
+					continue
+				}
+				toolCount++
+				if maxCalls > 0 && toolCount > maxCalls {
+					return nil, ir.Protocol("tool call limit exceeded")
+				}
+				if msg := validateToolCall(ep.Call); msg != "" {
+					return nil, ir.Protocol("invalid tool call: " + msg)
+				}
+			}
+		}
+
 		oc.Parts = parts
 		cp.Outputs[i] = oc
 	}
-	return &cp
+	return &cp, nil
 }
 
 // ConvertError converts an upstream error to a client error response.

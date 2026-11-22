@@ -193,6 +193,13 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvToolEnd:
+		if ev.Err != nil {
+			// An already-emitted live Chat tool_calls delta cannot be retracted;
+			// abort with a stream error instead of finalizing args or emitting [DONE].
+			e.errored = true
+			dst = BuildStreamError(dst, ev.Err)
+			break
+		}
 		idx, key := e.resolveCallSlot(ev.Index, ev.ID)
 		if e.callKind[ev.Index] != nil && e.callKind[ev.Index][key] == ir.ToolCustom {
 			var tail string
