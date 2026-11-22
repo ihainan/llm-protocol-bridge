@@ -165,8 +165,15 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvSignature:
 		if ev.Signature != nil && e.openItemType == "reasoning" {
-			sig := *ev.Signature
-			e.reasonSig = &sig
+			if e.reasonSig == nil {
+				sig := *ev.Signature
+				e.reasonSig = &sig
+			} else {
+				e.reasonSig.Value += ev.Signature.Value
+				if e.reasonSig.Origin.Format == "" {
+					e.reasonSig.Origin = ev.Signature.Origin
+				}
+			}
 		}
 
 	case ir.EvSealed:
@@ -279,8 +286,16 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			e.stop = *ev.Stop
 		}
 		e.stopped = true
-		dst = e.closeItem(dst)
-		dst = e.flushAllPendingTools(dst)
+		if (e.openItemType == "function_call" || e.openItemType == "custom_tool_call") && (e.stop.Truncated() || e.stop.Filtered()) {
+			// Incomplete/filtered live tool call must not be marked completed.
+			e.openItemType = ""
+			e.argAccum.Reset()
+			e.pendingTools = nil
+			e.pendingByID = map[string]*pendingRespTool{}
+		} else {
+			dst = e.closeItem(dst)
+			dst = e.flushAllPendingTools(dst)
+		}
 		// Defer terminal response.completed / response.incomplete to Close()
 		// so trailing EvUsage events (Chat, Anthropic, EventsOf) are included.
 

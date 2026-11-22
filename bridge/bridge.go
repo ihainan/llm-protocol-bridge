@@ -276,6 +276,9 @@ func (p *Plan) StreamResponse(dst, body []byte) ([]byte, error) {
 			}
 		}
 	}
+	if len(s.filter.intercepted) > 0 {
+		return nil, env.Err(ir.Unsupported(ir.Root, "intercept", "StreamResponse cannot complete intercepted tool calls; use Plan.NewStream with Intercepted and NextRound"))
+	}
 	dst, err = s.enc.Close(dst)
 	return dst, err
 }
@@ -596,7 +599,7 @@ func (s *Stream) NextRound(p *Plan) {
 		s.dec = gemini.NewStreamDecoder(gemini.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Gemini, Names: p.names})
 	}
 	if s.filter != nil {
-		s.filter.resetRound()
+		s.filter.resetRoundForPlan(p)
 	}
 	s.done = false
 }

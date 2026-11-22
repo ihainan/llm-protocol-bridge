@@ -16,6 +16,9 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		env = &ir.Env{}
 	}
 	env.Style = ir.StyleBracket
+	if req.PreviousResponseID != "" {
+		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported by the Responses format"))
+	}
 	dia := opts.Dialect
 	names := map[string]ir.ToolRef{}
 

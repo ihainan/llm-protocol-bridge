@@ -510,7 +510,7 @@ func parseWireToolCalls(raw json.RawMessage, p ir.Path, env *ir.Env) ([]wireTool
 }
 
 func decodeChatCallID(env *ir.Env, id string) (string, *ir.Signature) {
-	if idx := strings.Index(id, "::"); idx >= 0 {
+	if idx := strings.LastIndex(id, "::"); idx >= 0 {
 		if rec, ok := env.Sealer().Unseal(id[idx+2:]); ok && rec.Kind == ir.SealSignature {
 			return id[:idx], &ir.Signature{Value: rec.Value, Origin: rec.Origin}
 		}

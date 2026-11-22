@@ -153,6 +153,7 @@ func (d *StreamDecoder) decodeChoice(out []ir.Event, ci int, ch wireStreamChoice
 
 	// Content text delta.
 	if contentStr := rawToString(delta.Content); contentStr != "" {
+		out = d.flushUnstartedToolCalls(out, ci)
 		out = append(out, ir.Event{Type: ir.EvText, Index: ci, Text: contentStr})
 	}
 
@@ -162,11 +163,13 @@ func (d *StreamDecoder) decodeChoice(out []ir.Event, ci int, ch wireStreamChoice
 		reasoning = delta.Reasoning
 	}
 	if reasoning != "" {
+		out = d.flushUnstartedToolCalls(out, ci)
 		out = append(out, ir.Event{Type: ir.EvReasoning, Index: ci, Text: reasoning})
 	}
 
 	// Refusal.
 	if delta.Refusal != "" {
+		out = d.flushUnstartedToolCalls(out, ci)
 		out = append(out, ir.Event{Type: ir.EvText, Index: ci, Text: delta.Refusal})
 	}
 
@@ -185,14 +188,25 @@ func (d *StreamDecoder) decodeChoice(out []ir.Event, ci int, ch wireStreamChoice
 	return out
 }
 
-func (d *StreamDecoder) emitOpenCallStart(out []ir.Event, ci, idx int, call *openCall) []ir.Event {
-	if call.started {
+func (d *StreamDecoder) flushUnstartedToolCalls(out []ir.Event, ci int) []ir.Event {
+	cand := d.candidates[ci]
+	if cand == nil || len(cand.toolCalls) == 0 {
 		return out
 	}
-	call.started = true
-	if call.id == "" {
-		call.id = d.env.NewID("call_", 16)
+	idxs := make([]int, 0, len(cand.toolCalls))
+	for idx, call := range cand.toolCalls {
+		if !call.started {
+			idxs = append(idxs, idx)
+		}
 	}
+	sort.Ints(idxs)
+	for _, idx := range idxs {
+		out = d.emitOpenCallStart(out, ci, idx, cand.toolCalls[idx])
+	}
+	return out
+}
+
+func (d *StreamDecoder) resolveCallName(call *openCall) {
 	name := call.nameBuilt.String()
 	ns := ""
 	kind := ir.ToolFunction
@@ -206,14 +220,25 @@ func (d *StreamDecoder) emitOpenCallStart(out []ir.Event, ci, idx int, call *ope
 	call.name = name
 	call.namespace = ns
 	call.kind = kind
+}
+
+func (d *StreamDecoder) emitOpenCallStart(out []ir.Event, ci, idx int, call *openCall) []ir.Event {
+	if call.started {
+		return out
+	}
+	call.started = true
+	if call.id == "" {
+		call.id = d.env.NewID("call_", 16)
+	}
+	d.resolveCallName(call)
 	return append(out, ir.Event{
 		Type:      ir.EvToolStart,
 		Index:     ci,
 		Part:      idx,
 		ID:        call.id,
-		Name:      name,
-		Namespace: ns,
-		Kind:      kind,
+		Name:      call.name,
+		Namespace: call.namespace,
+		Kind:      call.kind,
 	})
 }
 
@@ -272,6 +297,9 @@ func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []
 			call := cand.toolCalls[idx]
 			if !call.started {
 				out = d.emitOpenCallStart(out, ci, idx, call)
+			} else {
+				// Re-resolve in case additional name fragments arrived alongside arguments.
+				d.resolveCallName(call)
 			}
 			argsStr := strings.TrimSpace(call.argsBuilt.String())
 			var argsRaw json.RawMessage
@@ -293,6 +321,9 @@ func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []
 				Index:     ci,
 				Part:      idx,
 				ID:        call.id,
+				Name:      call.name,
+				Namespace: call.namespace,
+				Kind:      call.kind,
 				Arguments: argsRaw,
 			})
 		}

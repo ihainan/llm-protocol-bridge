@@ -90,8 +90,10 @@ func parseContents(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, e
 		return nil, env.Err(ir.Invalid(p, "must be an array"))
 	}
 	msgs := make([]ir.Message, 0, len(elems))
-	// Correlate ID-less functionCall / functionResponse pairs deterministically by name.
+	// Correlate ID-less functionCall / functionResponse pairs deterministically by name,
+	// scoped to the latest model turn.
 	pendingByName := map[string][]string{}
+	var lastRole ir.Role
 	for i, elem := range elems {
 		fp := p.At(i)
 		msg, err := parseContent(elem, fp, env)
@@ -99,6 +101,9 @@ func parseContents(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, e
 			return nil, err
 		}
 		if msg.Role == ir.RoleAssistant {
+			if lastRole != ir.RoleAssistant {
+				pendingByName = map[string][]string{}
+			}
 			callIdx := 0
 			for j := range msg.Parts {
 				if msg.Parts[j].Type == ir.PartToolCall && msg.Parts[j].Call != nil {
@@ -113,6 +118,17 @@ func parseContents(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, e
 				}
 			}
 		} else if msg.Role == ir.RoleUser {
+			// Pass 1: dequeue calls answered by explicit CallID so subsequent ID-less
+			// functionResponses cannot re-bind to already-answered calls.
+			for j := range msg.Parts {
+				if msg.Parts[j].Type == ir.PartToolResult && msg.Parts[j].Result != nil {
+					r := msg.Parts[j].Result
+					if r.CallID != "" {
+						removePendingID(pendingByName, r.Name, r.CallID)
+					}
+				}
+			}
+			// Pass 2: assign earliest remaining unanswered call of the same name.
 			for j := range msg.Parts {
 				if msg.Parts[j].Type == ir.PartToolResult && msg.Parts[j].Result != nil {
 					r := msg.Parts[j].Result
@@ -125,9 +141,32 @@ func parseContents(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, e
 				}
 			}
 		}
+		lastRole = msg.Role
 		msgs = append(msgs, msg)
 	}
 	return msgs, nil
+}
+
+func removePendingID(pendingByName map[string][]string, name, id string) {
+	if name != "" {
+		if q := pendingByName[name]; len(q) > 0 {
+			for idx, cand := range q {
+				if cand == id {
+					pendingByName[name] = append(q[:idx], q[idx+1:]...)
+					return
+				}
+			}
+		}
+		return
+	}
+	for k, q := range pendingByName {
+		for idx, cand := range q {
+			if cand == id {
+				pendingByName[k] = append(q[:idx], q[idx+1:]...)
+				return
+			}
+		}
+	}
 }
 
 func parseContent(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, error) {

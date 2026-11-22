@@ -29,12 +29,14 @@ type StreamEncoder struct {
 	// openBlock is the index of the currently open content block (-1 = none).
 	openBlock int
 	// openBlockType is the type string of the open block.
-	openBlockType string
-	activeCallID  string
-	pendingTools  []*pendingTool
-	pendingByID   map[string]*pendingTool
-	stop          *ir.Stop
-	usage         *ir.Usage
+	openBlockType     string
+	thinkingSigVal    strings.Builder
+	thinkingSigOrigin ir.Origin
+	activeCallID      string
+	pendingTools      []*pendingTool
+	pendingByID       map[string]*pendingTool
+	stop              *ir.Stop
+	usage             *ir.Usage
 }
 
 // NewStreamEncoder returns an Anthropic stream encoder.
@@ -135,19 +137,10 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvSignature:
 		if ev.Signature != nil && e.openBlock >= 0 && e.openBlockType == "thinking" {
-			sigVal := ev.Signature.Value
-			if needsAnthropicSeal(ev.Signature.Origin, e.opts.Env) {
-				sigVal = e.opts.Env.Sealer().Seal(ir.SealRecord{
-					Origin: ev.Signature.Origin,
-					Kind:   ir.SealSignature,
-					Value:  ev.Signature.Value,
-				})
+			e.thinkingSigVal.WriteString(ev.Signature.Value)
+			if e.thinkingSigOrigin.Format == "" {
+				e.thinkingSigOrigin = ev.Signature.Origin
 			}
-			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": e.openBlock,
-				"delta": map[string]any{"type": "signature_delta", "signature": sigVal},
-			})
 		}
 
 	case ir.EvSealed:
@@ -416,6 +409,23 @@ func (e *StreamEncoder) closeBlock(dst []byte) []byte {
 		return dst
 	}
 	idx := e.openBlock
+	if e.openBlockType == "thinking" && e.thinkingSigVal.Len() > 0 {
+		sigVal := e.thinkingSigVal.String()
+		if needsAnthropicSeal(e.thinkingSigOrigin, e.opts.Env) {
+			sigVal = e.opts.Env.Sealer().Seal(ir.SealRecord{
+				Origin: e.thinkingSigOrigin,
+				Kind:   ir.SealSignature,
+				Value:  sigVal,
+			})
+		}
+		dst = e.appendSSE(dst, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": idx,
+			"delta": map[string]any{"type": "signature_delta", "signature": sigVal},
+		})
+	}
+	e.thinkingSigVal.Reset()
+	e.thinkingSigOrigin = ir.Origin{}
 	e.openBlock = -1
 	e.openBlockType = ""
 	return e.appendSSE(dst, "content_block_stop", map[string]any{

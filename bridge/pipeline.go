@@ -144,6 +144,34 @@ func (f *streamFilter) resetRound() {
 	f.intercepted = nil
 }
 
+func (f *streamFilter) resetRoundForPlan(p *Plan) {
+	f.resetRound()
+	if p == nil {
+		return
+	}
+	f.reasoning = effectiveReasoningOut(p)
+	f.stopMode = p.opts.StopMode
+	f.stops = nil
+	f.maxStopLen = 0
+	if p.opts.StopMode == ir.StopEmulate && p.Request != nil {
+		for _, s := range p.Request.Stop {
+			if s != "" {
+				f.stops = append(f.stops, s)
+				if len(s) > f.maxStopLen {
+					f.maxStopLen = len(s)
+				}
+			}
+		}
+	}
+	ic := map[string]bool{}
+	for _, name := range p.opts.Intercept {
+		if name != "" {
+			ic[name] = true
+		}
+	}
+	f.intercept = ic
+}
+
 func (f *streamFilter) anyStopTriggered() bool {
 	for _, v := range f.stopTriggered {
 		if v {
@@ -155,6 +183,24 @@ func (f *streamFilter) anyStopTriggered() bool {
 
 func (f *streamFilter) isIntercepted(name string) bool {
 	return len(f.intercept) > 0 && f.intercept[name]
+}
+
+func (f *streamFilter) isInterceptedOrPrefix(name string) bool {
+	if len(f.intercept) == 0 {
+		return false
+	}
+	if f.intercept[name] {
+		return true
+	}
+	if name == "" {
+		return true
+	}
+	for target := range f.intercept {
+		if strings.HasPrefix(target, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // process filters one decoded IR event and returns the events to forward to
@@ -245,7 +291,7 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		f.callOrder = append(f.callOrder, key)
 		f.lastCallKey[ev.Index] = key
 
-		if !bc.intercepted {
+		if !bc.intercepted && !f.isInterceptedOrPrefix(ev.Name) {
 			switch f.release {
 			case ir.ToolReleaseStream:
 				bc.live = true
@@ -281,6 +327,19 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		bc := f.lookupCall(ev.Index, ev.ID)
 		if bc == nil {
 			return nil
+		}
+		if ev.Name != "" && ev.Name != bc.name {
+			bc.name = ev.Name
+			if ev.Namespace != "" {
+				bc.ns = ev.Namespace
+			}
+			if ev.Kind != "" {
+				bc.kind = ev.Kind
+			}
+			bc.intercepted = f.isIntercepted(bc.name)
+			if bc.intercepted && bc.live {
+				return f.fail(ev.Index, "intercepted tool name changed mid-stream")
+			}
 		}
 		if len(ev.Arguments) > 0 {
 			f.bufferedBytes += len(ev.Arguments)
@@ -431,13 +490,86 @@ func (f *streamFilter) processStopText(ev ir.Event) []ir.Event {
 	}
 	if bestPos >= 0 {
 		var out []ir.Event
+		// Validate any pending calls before emitting stop so unvalidated LiveFirst/buffered
+		// calls can never be completed by an emulated stop sequence.
+		candCalls := f.candidateCalls(ev.Index)
+		if len(candCalls) > 0 {
+			type validated struct {
+				bc        *bufferedToolCall
+				finalArgs json.RawMessage
+				customIn  string
+			}
+			var vals []validated
+			for _, bc := range candCalls {
+				args, cin, errMsg := bc.validate()
+				if errMsg != "" {
+					return f.fail(ev.Index, errMsg)
+				}
+				if bc.live && bc.closed && f.release == ir.ToolReleaseStream {
+					continue
+				}
+				vals = append(vals, validated{bc: bc, finalArgs: args, customIn: cin})
+			}
+			for _, v := range vals {
+				bc := v.bc
+				if bc.intercepted {
+					tc := ir.ToolCall{
+						ID:        bc.id,
+						Name:      bc.name,
+						Namespace: bc.ns,
+						Kind:      bc.kind,
+						Signature: bc.sig,
+					}
+					if bc.kind == ir.ToolCustom {
+						tc.Input = v.customIn
+					} else {
+						tc.Arguments = v.finalArgs
+					}
+					f.intercepted = append(f.intercepted, tc)
+					continue
+				}
+				f.deliveredCall[ev.Index] = true
+				if bc.live {
+					out = append(out, ir.Event{
+						Type:      ir.EvToolEnd,
+						Index:     bc.candIdx,
+						ID:        bc.id,
+						Arguments: v.finalArgs,
+					})
+					continue
+				}
+				out = append(out, ir.Event{
+					Type:      ir.EvToolStart,
+					Index:     bc.candIdx,
+					ID:        bc.id,
+					Name:      bc.name,
+					Namespace: bc.ns,
+					Kind:      bc.kind,
+					Signature: bc.sig,
+				})
+				if bc.kind == ir.ToolCustom {
+					if v.customIn != "" {
+						out = append(out, ir.Event{Type: ir.EvToolArgs, Index: bc.candIdx, ID: bc.id, Text: v.customIn})
+					}
+				} else if len(v.finalArgs) > 0 {
+					out = append(out, ir.Event{Type: ir.EvToolArgs, Index: bc.candIdx, ID: bc.id, Text: string(v.finalArgs)})
+				}
+				out = append(out, ir.Event{Type: ir.EvToolEnd, Index: bc.candIdx, ID: bc.id, Arguments: v.finalArgs})
+			}
+			f.clearCandidateCalls(ev.Index)
+		}
+		if len(f.postCallEvs[ev.Index]) > 0 {
+			out = append(out, f.postCallEvs[ev.Index]...)
+			delete(f.postCallEvs, ev.Index)
+		}
 		if bestPos > 0 {
 			out = append(out, ir.Event{Type: ir.EvText, Index: ev.Index, Text: buf[:bestPos]})
 		}
 		f.stopBuf[ev.Index] = ""
-		f.clearCandidateCalls(ev.Index)
-		delete(f.postCallEvs, ev.Index)
 		f.stopTriggered[ev.Index] = true
+		if len(f.intercepted) > 0 {
+			return out
+		}
 		st := ir.Stop{Reason: ir.StopSequence, Sequence: bestSeq}
 		out = append(out, ir.Event{Type: ir.EvStop, Index: ev.Index, Stop: &st})
 		return out
