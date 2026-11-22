@@ -798,6 +798,13 @@ func (bc *bufferedToolCall) validate() (json.RawMessage, string, string) {
 		raw, _ := jsonx.Marshal(s)
 		return raw, s, ""
 	}
+	if bc.live && bc.args.Len() > 0 && len(bc.finalArgs) > 0 {
+		full, _, ok := jsonx.ReconcileFunctionArgs(bc.args.String(), string(bc.finalArgs))
+		if !ok {
+			return nil, "", "streamed tool arguments do not match final arguments"
+		}
+		return json.RawMessage(full), "", ""
+	}
 	raw := strings.TrimSpace(string(bc.finalArgs))
 	if raw == "" {
 		raw = strings.TrimSpace(bc.args.String())

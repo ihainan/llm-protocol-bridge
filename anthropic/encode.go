@@ -51,6 +51,7 @@ type StreamEncoder struct {
 	activeKind         ir.ToolKind
 	activeCustomOpened bool
 	activeCustomSent   strings.Builder
+	activeFuncSent     strings.Builder
 	activeToolFinished bool
 	pendingTools       []*pendingTool
 	pendingByKey       map[toolCallKey]*pendingTool
@@ -271,6 +272,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 				partial = customInputDelta(ev.Text, !e.activeCustomOpened)
 				e.activeCustomOpened = true
 				e.activeCustomSent.WriteString(ev.Text)
+			} else {
+				e.activeFuncSent.WriteString(ev.Text)
 			}
 			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
@@ -313,6 +316,12 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if e.activeKind == ir.ToolCustom {
 			var ok bool
 			dst, ok = e.finishCustomInput(dst, ev.Arguments)
+			if !ok {
+				break
+			}
+		} else {
+			var ok bool
+			dst, ok = e.finishFunctionArgs(dst, ev.Arguments)
 			if !ok {
 				break
 			}
@@ -571,6 +580,7 @@ func (e *StreamEncoder) openToolBlock(dst []byte, cand int, id, name string, sig
 	e.activeKind = kind
 	e.activeCustomOpened = false
 	e.activeCustomSent.Reset()
+	e.activeFuncSent.Reset()
 	e.activeToolFinished = false
 	wireID := ir.AnthropicSafeID(ir.EncodeCallSignatureID(e.opts.Env, id, sig))
 	return e.appendSSE(dst, "content_block_start", map[string]any{
@@ -606,6 +616,7 @@ func (e *StreamEncoder) abortOpenTool(dst []byte, err *ir.APIError) []byte {
 	e.activeKind = ""
 	e.activeCustomOpened = false
 	e.activeCustomSent.Reset()
+	e.activeFuncSent.Reset()
 	e.activeToolFinished = false
 	e.pendingTools = nil
 	e.pendingByKey = map[toolCallKey]*pendingTool{}
@@ -644,18 +655,22 @@ func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 					return dst
 				}
 			}
-		} else if s := pt.args.String(); s != "" {
-			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": e.openBlock,
-				"delta": map[string]any{"type": "input_json_delta", "partial_json": s},
-			})
-		} else if len(pt.finalArgs) > 0 {
-			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": e.openBlock,
-				"delta": map[string]any{"type": "input_json_delta", "partial_json": string(pt.finalArgs)},
-			})
+		} else {
+			if s := pt.args.String(); s != "" {
+				dst = e.appendSSE(dst, "content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": e.openBlock,
+					"delta": map[string]any{"type": "input_json_delta", "partial_json": s},
+				})
+				e.activeFuncSent.WriteString(s)
+			}
+			if pt.done {
+				var ok bool
+				dst, ok = e.finishFunctionArgs(dst, pt.finalArgs)
+				if !ok {
+					return dst
+				}
+			}
 		}
 		if pt.done {
 			e.activeToolFinished = true
@@ -681,51 +696,59 @@ func customInputDelta(text string, first bool) string {
 	return sb.String()
 }
 
+// finishFunctionArgs reconciles streamed function arguments against EvToolEnd.Arguments,
+// emitting missing prefix suffixes (or full final arguments when no delta was sent) and
+// aborting with a stream error if streamed text disagrees with the final JSON object.
+func (e *StreamEncoder) finishFunctionArgs(dst []byte, final json.RawMessage) ([]byte, bool) {
+	sent := e.activeFuncSent.String()
+	full, suffix, ok := jsonx.ReconcileFunctionArgs(sent, string(final))
+	if !ok {
+		return e.abortOpenTool(dst, &ir.APIError{
+			Status:  502,
+			Type:    ir.ErrServer,
+			Message: "streamed tool arguments do not match final arguments",
+		}), false
+	}
+	if sent == "" {
+		// content_block_start already seeds "input": {}, so omit a redundant "{}" delta.
+		if full == "" || full == "{}" {
+			return dst, true
+		}
+		suffix = full
+	}
+	if suffix == "" {
+		return dst, true
+	}
+	e.activeFuncSent.WriteString(suffix)
+	return e.appendSSE(dst, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": e.openBlock,
+		"delta": map[string]any{"type": "input_json_delta", "partial_json": suffix},
+	}), true
+}
+
 // finishCustomInput completes the open custom tool block's input. When part of
 // the wrapper was already streamed it verifies the streamed text is a prefix of
 // the final input (emitting any missing suffix before closing `"}`) and aborts
 // with a stream error if the streamed text is not a prefix. When nothing was
 // streamed it writes the whole {"input": ...} object from final.
 func (e *StreamEncoder) finishCustomInput(dst []byte, final json.RawMessage) ([]byte, bool) {
+	full, suffix, ok := jsonx.ReconcileCustomInput(e.activeCustomSent.String(), e.activeCustomOpened, final)
+	if !ok {
+		return e.abortOpenTool(dst, &ir.APIError{
+			Status:  502,
+			Type:    ir.ErrServer,
+			Message: "streamed custom tool input does not match final input",
+		}), false
+	}
 	var tail string
 	if e.activeCustomOpened {
-		if len(final) > 0 {
-			var in string
-			if jsonx.Kind(final) != '"' || json.Unmarshal(final, &in) != nil {
-				return e.abortOpenTool(dst, &ir.APIError{
-					Status:  502,
-					Type:    ir.ErrServer,
-					Message: "invalid final custom tool input",
-				}), false
-			}
-			sent := e.activeCustomSent.String()
-			if !strings.HasPrefix(in, sent) {
-				return e.abortOpenTool(dst, &ir.APIError{
-					Status:  502,
-					Type:    ir.ErrServer,
-					Message: "streamed custom tool input does not match final input",
-				}), false
-			}
-			suffix := in[len(sent):]
-			tail = customInputDelta(suffix, false) + `"}`
-			e.activeCustomSent.WriteString(suffix)
-		} else {
-			tail = `"}`
-		}
+		tail = customInputDelta(suffix, false) + `"}`
+		e.activeCustomSent.WriteString(suffix)
 	} else {
-		var in string
-		if len(final) > 0 {
-			if jsonx.Kind(final) != '"' || json.Unmarshal(final, &in) != nil {
-				return e.abortOpenTool(dst, &ir.APIError{
-					Status:  502,
-					Type:    ir.ErrServer,
-					Message: "invalid final custom tool input",
-				}), false
-			}
-		}
-		b, _ := jsonx.Marshal(map[string]string{"input": in})
+		b, _ := jsonx.Marshal(map[string]string{"input": full})
 		tail = string(b)
-		e.activeCustomSent.WriteString(in)
+		e.activeCustomSent.WriteString(full)
 	}
 	e.activeCustomOpened = true
 	return e.appendSSE(dst, "content_block_delta", map[string]any{
@@ -796,6 +819,7 @@ func (e *StreamEncoder) closeBlock(dst []byte) []byte {
 	e.activeKind = ""
 	e.activeCustomOpened = false
 	e.activeCustomSent.Reset()
+	e.activeFuncSent.Reset()
 	e.activeToolFinished = false
 	return e.appendSSE(dst, "content_block_stop", map[string]any{
 		"type":  "content_block_stop",

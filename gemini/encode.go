@@ -206,7 +206,19 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvStop:
 		c := e.cand(ev.Index)
-		dst = e.flushPendingCalls(dst, ev.Index, c)
+		if len(c.calls) > 0 {
+			if ev.Stop != nil && (ev.Stop.Truncated() || ev.Stop.Filtered()) {
+				c.calls = map[string]*pendingGeminiCall{}
+				c.lastCallKey = ""
+			} else {
+				dst = e.emitError(dst, &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "tool call not completed before stop",
+				})
+				break
+			}
+		}
 		reason := "STOP"
 		if ev.Stop != nil {
 			reason = irStopToGemini(ev.Stop)
@@ -232,24 +244,32 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvError:
 		if ev.Err != nil {
-			e.errored = true
-			e.cands = map[int]*geminiCand{}
-			if e.opts.AltSSE {
-				dst = BuildStreamErrorSSE(dst, ev.Err)
-			} else if e.arrayOpened && !e.arrayClosed {
-				dst = append(dst, ',')
-				dst = BuildStreamError(dst, ev.Err)
-				dst = append(dst, ']')
-				e.arrayClosed = true
-			} else {
-				dst = BuildStreamError(dst, ev.Err)
-			}
+			dst = e.emitError(dst, ev.Err)
 		}
 	}
 	return dst, nil
 }
 
-// Close flushes any remaining pending tool calls and closes the JSON array when AltSSE is false.
+func (e *StreamEncoder) emitError(dst []byte, err *ir.APIError) []byte {
+	e.errored = true
+	e.cands = map[int]*geminiCand{}
+	if err == nil {
+		err = &ir.APIError{Status: 502, Type: ir.ErrServer, Message: "stream error"}
+	}
+	if e.opts.AltSSE {
+		return BuildStreamErrorSSE(dst, err)
+	}
+	if e.arrayOpened && !e.arrayClosed {
+		dst = append(dst, ',')
+		dst = BuildStreamError(dst, err)
+		dst = append(dst, ']')
+		e.arrayClosed = true
+		return dst
+	}
+	return BuildStreamError(dst, err)
+}
+
+// Close validates no unclosed tool calls remain and closes the JSON array when AltSSE is false.
 func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 	if e.errored {
 		return dst, nil
@@ -261,7 +281,14 @@ func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 		}
 		sort.Ints(idxs)
 		for _, idx := range idxs {
-			dst = e.flushPendingCalls(dst, idx, e.cands[idx])
+			if len(e.cands[idx].calls) > 0 {
+				dst = e.emitError(dst, &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "tool call not completed before stream close",
+				})
+				return dst, nil
+			}
 		}
 	}
 	if !e.opts.AltSSE && e.arrayOpened && !e.arrayClosed {
@@ -289,6 +316,7 @@ func (c *geminiCand) lookupWithKey(id string) (string, *pendingGeminiCall) {
 		if pc := c.calls[id]; pc != nil {
 			return id, pc
 		}
+		return "", nil
 	}
 	if c.lastCallKey != "" {
 		if pc := c.calls[c.lastCallKey]; pc != nil {
@@ -298,44 +326,32 @@ func (c *geminiCand) lookupWithKey(id string) (string, *pendingGeminiCall) {
 	return "", nil
 }
 
-func (e *StreamEncoder) flushPendingCalls(dst []byte, idx int, c *geminiCand) []byte {
-	if len(c.calls) == 0 {
-		return dst
-	}
-	keys := make([]string, 0, len(c.calls))
-	for k := range c.calls {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		return c.calls[keys[i]].order < c.calls[keys[j]].order
-	})
-	for _, k := range keys {
-		dst = e.emitCall(dst, idx, c.calls[k], nil)
-		delete(c.calls, k)
-	}
-	c.lastCallKey = ""
-	return dst
-}
-
 func (e *StreamEncoder) emitCall(dst []byte, idx int, pc *pendingGeminiCall, finalArgs json.RawMessage) []byte {
 	var argsRaw json.RawMessage
 	if pc.kind == ir.ToolCustom {
-		var in string
-		if len(finalArgs) > 0 && jsonx.Kind(finalArgs) == '"' {
-			_ = json.Unmarshal(finalArgs, &in)
-		} else {
-			in = pc.args.String()
+		full, _, ok := jsonx.ReconcileCustomInput(pc.args.String(), false, finalArgs)
+		if !ok {
+			return e.emitError(dst, &ir.APIError{
+				Status:  502,
+				Type:    ir.ErrServer,
+				Message: "invalid custom tool call input",
+			})
 		}
-		argsRaw, _ = jsonx.Marshal(map[string]string{"input": in})
+		argsRaw, _ = jsonx.Marshal(map[string]string{"input": full})
 	} else {
-		argsStr := strings.TrimSpace(string(finalArgs))
-		if argsStr == "" {
-			argsStr = strings.TrimSpace(pc.args.String())
+		candidate := strings.TrimSpace(string(finalArgs))
+		if candidate == "" {
+			candidate = strings.TrimSpace(pc.args.String())
 		}
-		if argsStr == "" || !json.Valid([]byte(argsStr)) {
-			argsStr = "{}"
+		full, _, ok := jsonx.ReconcileFunctionArgs("", candidate)
+		if !ok {
+			return e.emitError(dst, &ir.APIError{
+				Status:  502,
+				Type:    ir.ErrServer,
+				Message: "invalid function tool call arguments",
+			})
 		}
-		argsRaw = json.RawMessage(argsStr)
+		argsRaw = json.RawMessage(full)
 	}
 	wp := wirePart{
 		FunctionCall: &wireFunctionCall{

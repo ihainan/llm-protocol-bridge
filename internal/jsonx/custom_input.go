@@ -2,8 +2,87 @@ package jsonx
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 )
+
+// ReconcileCustomInput checks streamed raw custom tool input (sent, when
+// hasSent is true) against the final EvToolEnd.Arguments JSON string. It
+// returns the full final input and the unsent suffix (which equals full when
+// !hasSent). Returns ok=false if final is not a JSON string or sent is not a
+// prefix of final.
+func ReconcileCustomInput(sent string, hasSent bool, final json.RawMessage) (full, suffix string, ok bool) {
+	if len(final) == 0 {
+		if !hasSent {
+			return sent, sent, true
+		}
+		return sent, "", true
+	}
+	if Kind(final) != '"' {
+		return "", "", false
+	}
+	var in string
+	if json.Unmarshal(final, &in) != nil {
+		return "", "", false
+	}
+	if !hasSent {
+		return in, in, true
+	}
+	if !strings.HasPrefix(in, sent) {
+		return "", "", false
+	}
+	return in, in[len(sent):], true
+}
+
+// ReconcileFunctionArgs reconciles streamed function-call JSON argument text
+// (sent) against final EvToolEnd.Arguments. It returns the full validated JSON
+// object string (defaulting to "{}" when both are empty) and any unsent suffix
+// to append to the wire stream. Returns ok=false if the resulting arguments are
+// not a valid JSON object or if sent disagrees with final (neither a prefix nor
+// semantically equal valid JSON).
+func ReconcileFunctionArgs(sent, final string) (full, suffix string, ok bool) {
+	finalTrim := strings.TrimSpace(final)
+	if sent == "" {
+		if finalTrim == "" {
+			return "{}", "{}", true
+		}
+		b := []byte(finalTrim)
+		if Kind(b) != '{' || !json.Valid(b) {
+			return "", "", false
+		}
+		return finalTrim, finalTrim, true
+	}
+	if finalTrim == "" {
+		b := []byte(strings.TrimSpace(sent))
+		if Kind(b) != '{' || !json.Valid(b) {
+			return "", "", false
+		}
+		return sent, "", true
+	}
+	bFinal := []byte(finalTrim)
+	if Kind(bFinal) != '{' || !json.Valid(bFinal) {
+		return "", "", false
+	}
+	if strings.HasPrefix(finalTrim, sent) {
+		return finalTrim, finalTrim[len(sent):], true
+	}
+	sentTrim := strings.TrimSpace(sent)
+	if strings.HasPrefix(finalTrim, sentTrim) {
+		return finalTrim, finalTrim[len(sentTrim):], true
+	}
+	if json.Valid([]byte(sentTrim)) && equalJSON([]byte(sentTrim), bFinal) {
+		return finalTrim, "", true
+	}
+	return "", "", false
+}
+
+func equalJSON(a, b []byte) bool {
+	var va, vb any
+	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+		return false
+	}
+	return reflect.DeepEqual(va, vb)
+}
 
 // UnwrapCustomInput extracts the raw string value from a {"input": "..."}
 // JSON wrapper object used to emulate custom (freeform) tools over formats

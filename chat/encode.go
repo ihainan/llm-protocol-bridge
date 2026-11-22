@@ -21,6 +21,8 @@ type StreamEncoder struct {
 	callIdxBy    map[int]int
 	callSlots    map[int]map[string]int
 	callHasArgs  map[int]map[string]bool
+	callSentArgs map[int]map[string]*strings.Builder
+	callEnded    map[int]map[string]bool
 	callKind     map[int]map[string]ir.ToolKind
 	customOpened map[int]map[string]bool
 	lastCallID   map[int]string
@@ -35,6 +37,8 @@ func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
 		callIdxBy:    map[int]int{},
 		callSlots:    map[int]map[string]int{},
 		callHasArgs:  map[int]map[string]bool{},
+		callSentArgs: map[int]map[string]*strings.Builder{},
+		callEnded:    map[int]map[string]bool{},
 		callKind:     map[int]map[string]ir.ToolKind{},
 		customOpened: map[int]map[string]bool{},
 		lastCallID:   map[int]string{},
@@ -45,6 +49,9 @@ func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
 // Encode serialises one ir.Event to Chat SSE bytes and appends to dst.
 // Not all events produce output; the return is nil-extended when there is nothing to send.
 func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
+	if e.errored {
+		return dst, nil
+	}
 	switch ev.Type {
 	case ir.EvStart:
 		if ev.Usage != nil {
@@ -119,6 +126,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if e.callSlots[ev.Index] == nil {
 			e.callSlots[ev.Index] = map[string]int{}
 			e.callHasArgs[ev.Index] = map[string]bool{}
+			e.callSentArgs[ev.Index] = map[string]*strings.Builder{}
+			e.callEnded[ev.Index] = map[string]bool{}
 			e.callKind[ev.Index] = map[string]ir.ToolKind{}
 			e.customOpened[ev.Index] = map[string]bool{}
 		}
@@ -127,6 +136,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			e.callSlots[ev.Index][ev.ID] = idx
 		}
 		e.callKind[ev.Index][key] = ev.Kind
+		e.callSentArgs[ev.Index][key] = &strings.Builder{}
+		e.callEnded[ev.Index][key] = false
 		e.lastCallID[ev.Index] = ev.ID
 		e.lastCallSlot[ev.Index] = idx
 		wireName := flattenToolName(ev.Namespace, ev.Name)
@@ -153,6 +164,12 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if e.callHasArgs[ev.Index] == nil {
 			e.callHasArgs[ev.Index] = map[string]bool{}
 		}
+		if e.callSentArgs[ev.Index] == nil {
+			e.callSentArgs[ev.Index] = map[string]*strings.Builder{}
+		}
+		if e.callSentArgs[ev.Index][key] == nil {
+			e.callSentArgs[ev.Index][key] = &strings.Builder{}
+		}
 		argDelta := ev.Text
 		if e.callKind[ev.Index] != nil && e.callKind[ev.Index][key] == ir.ToolCustom {
 			if e.customOpened[ev.Index] == nil {
@@ -166,9 +183,11 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			if b, err := jsonx.Marshal(ev.Text); err == nil && len(b) >= 2 {
 				sb.Write(b[1 : len(b)-1])
 			}
+			e.callSentArgs[ev.Index][key].WriteString(ev.Text)
 			argDelta = sb.String()
 			e.callHasArgs[ev.Index][key] = true
 		} else if ev.Text != "" {
+			e.callSentArgs[ev.Index][key].WriteString(ev.Text)
 			e.callHasArgs[ev.Index][key] = true
 		}
 		chunk := e.baseChunk(ev.Index)
@@ -201,16 +220,37 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			break
 		}
 		idx, key := e.resolveCallSlot(ev.Index, ev.ID)
+		if e.callEnded[ev.Index] != nil {
+			e.callEnded[ev.Index][key] = true
+		}
+		var sent string
+		if e.callSentArgs[ev.Index] != nil && e.callSentArgs[ev.Index][key] != nil {
+			sent = e.callSentArgs[ev.Index][key].String()
+		}
 		if e.callKind[ev.Index] != nil && e.callKind[ev.Index][key] == ir.ToolCustom {
+			opened := e.customOpened[ev.Index] != nil && e.customOpened[ev.Index][key]
+			full, suffix, ok := jsonx.ReconcileCustomInput(sent, opened, ev.Arguments)
+			if !ok {
+				e.errored = true
+				dst = BuildStreamError(dst, &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "streamed custom tool input does not match final input",
+				})
+				break
+			}
 			var tail string
-			if e.customOpened[ev.Index] != nil && e.customOpened[ev.Index][key] {
-				tail = `"}`
-			} else {
-				var s string
-				if len(ev.Arguments) > 0 {
-					_ = json.Unmarshal(ev.Arguments, &s)
+			if opened {
+				var sb strings.Builder
+				if suffix != "" {
+					if b, err := jsonx.Marshal(suffix); err == nil && len(b) >= 2 {
+						sb.Write(b[1 : len(b)-1])
+					}
 				}
-				b, _ := jsonx.Marshal(map[string]string{"input": s})
+				sb.WriteString(`"}`)
+				tail = sb.String()
+			} else {
+				b, _ := jsonx.Marshal(map[string]string{"input": full})
 				tail = string(b)
 			}
 			if e.callHasArgs[ev.Index] == nil {
@@ -232,11 +272,21 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			dst = e.appendChunk(dst, chunk)
 			break
 		}
-		if e.callHasArgs[ev.Index] == nil || !e.callHasArgs[ev.Index][key] {
-			argsStr := strings.TrimSpace(string(ev.Arguments))
-			if argsStr == "" {
-				argsStr = "{}"
-			}
+		full, suffix, ok := jsonx.ReconcileFunctionArgs(sent, string(ev.Arguments))
+		if !ok {
+			e.errored = true
+			dst = BuildStreamError(dst, &ir.APIError{
+				Status:  502,
+				Type:    ir.ErrServer,
+				Message: "streamed tool arguments do not match final arguments",
+			})
+			break
+		}
+		emitDelta := suffix
+		if sent == "" {
+			emitDelta = full
+		}
+		if emitDelta != "" {
 			if e.callHasArgs[ev.Index] == nil {
 				e.callHasArgs[ev.Index] = map[string]bool{}
 			}
@@ -245,7 +295,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			tc := map[string]any{
 				"index": idx,
 				"function": map[string]any{
-					"arguments": argsStr,
+					"arguments": emitDelta,
 				},
 			}
 			chunk["choices"] = []map[string]any{{
@@ -257,6 +307,20 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvStop:
+		truncatedOrFiltered := ev.Stop != nil && (ev.Stop.Truncated() || ev.Stop.Filtered())
+		if !truncatedOrFiltered {
+			for _, ended := range e.callEnded[ev.Index] {
+				if !ended {
+					e.errored = true
+					dst = BuildStreamError(dst, &ir.APIError{
+						Status:  502,
+						Type:    ir.ErrServer,
+						Message: "tool call not completed before stop",
+					})
+					return dst, nil
+				}
+			}
+		}
 		finish := finishFromStop(ev.Stop)
 		chunk := e.baseChunk(ev.Index)
 		chunk["choices"] = []map[string]any{{
@@ -265,10 +329,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			"finish_reason": finish,
 		}}
 		dst = e.appendChunk(dst, chunk)
-		// Reset per-choice tool index for the next candidate.
+		// Reset per-choice tool state for the finished candidate.
 		delete(e.callIdxBy, ev.Index)
 		delete(e.callSlots, ev.Index)
 		delete(e.callHasArgs, ev.Index)
+		delete(e.callSentArgs, ev.Index)
+		delete(e.callEnded, ev.Index)
+		delete(e.callKind, ev.Index)
+		delete(e.customOpened, ev.Index)
 		delete(e.lastCallID, ev.Index)
 		delete(e.lastCallSlot, ev.Index)
 
@@ -295,6 +363,19 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 	if e.errored {
 		return dst, nil
+	}
+	for _, m := range e.callEnded {
+		for _, ended := range m {
+			if !ended {
+				e.errored = true
+				dst = BuildStreamError(dst, &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "tool call not completed before stream close",
+				})
+				return dst, nil
+			}
+		}
 	}
 	dst = append(dst, "data: [DONE]\n\n"...)
 	return dst, nil
