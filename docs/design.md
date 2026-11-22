@@ -179,8 +179,9 @@ type Plan struct {
 
 func (p *Plan) NewStream() *Stream                                         // stream -> stream
 func (p *Plan) NewCollector() *Stream                                      // stream -> client JSON
-func (p *Plan) ConvertResponse(body []byte) ([]byte, *ir.Response, error)  // JSON -> JSON
-func (p *Plan) StreamResponse(dst, body []byte) ([]byte, error)            // JSON -> client stream
+func (p *Plan) ConvertResponse(body []byte) ([]byte, *ir.Response, error)          // JSON -> JSON
+func (p *Plan) StreamResponse(dst, body []byte) ([]byte, error)                    // JSON -> client stream
+func (p *Plan) StreamResponseWithResult(dst, body []byte) ([]byte, *ir.Response, error) // JSON -> client stream + ir.Response (with Losses)
 func (p *Plan) ConvertError(status int, body []byte) (int, []byte)
 
 type Stream struct{ /* decoder + filters + encoder (or collector) */ }
@@ -199,8 +200,8 @@ func ErrorResponse(client Format, err error) (status int, body []byte)
 
 `Plan.Losses` holds request-phase losses (parsing and building); response-phase
 losses (decoding and encoding) are readable without setting `OnLoss` via
-`ir.Response.Losses` (returned by `Plan.ConvertResponse` and `Stream.Result`)
-and `Stream.Losses()` (streaming mode).
+`ir.Response.Losses` (returned by `Plan.ConvertResponse`, `Plan.StreamResponseWithResult`,
+and `Stream.Result`) and `Stream.Losses()` (streaming mode).
 
 `Done()` turns true when the client response is complete before the upstream is (a
 matched stop sequence, a terminal upstream error): the caller should stop reading and

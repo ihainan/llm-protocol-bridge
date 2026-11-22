@@ -381,6 +381,35 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		if bc == nil {
 			return nil
 		}
+		if ev.Err != nil {
+			// Upstream explicitly signalled a cancelled/incomplete tool call:
+			// abort any open live call and remove the call so it is never finalized.
+			key := callMapKey(bc.candIdx, bc.id)
+			var out []ir.Event
+			if bc.live && !bc.liveEnded {
+				bc.liveEnded = true
+				out = append(out, ir.Event{
+					Type:  ir.EvToolEnd,
+					Index: bc.candIdx,
+					ID:    bc.id,
+					Err:   ev.Err,
+				})
+			}
+			delete(f.calls, key)
+			if f.lastCallKey[bc.candIdx] == key {
+				f.lastCallKey[bc.candIdx] = ""
+			}
+			if tl := f.timeline[bc.candIdx]; len(tl) > 0 {
+				kept := tl[:0]
+				for _, entry := range tl {
+					if entry.callKey != key {
+						kept = append(kept, entry)
+					}
+				}
+				f.timeline[bc.candIdx] = kept
+			}
+			return out
+		}
 		if ev.Name != "" && ev.Name != bc.name {
 			bc.name = ev.Name
 			if ev.Namespace != "" {

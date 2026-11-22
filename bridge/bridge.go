@@ -4,6 +4,7 @@ package bridge
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ihainan/llm-protocol-bridge/anthropic"
 	"github.com/ihainan/llm-protocol-bridge/chat"
@@ -270,28 +271,69 @@ func (p *Plan) ConvertResponse(body []byte) ([]byte, *ir.Response, error) {
 
 // StreamResponse converts a non-streaming upstream response body to a streaming client response.
 func (p *Plan) StreamResponse(dst, body []byte) ([]byte, error) {
+	out, _, err := p.StreamResponseWithResult(dst, body)
+	return out, err
+}
+
+// StreamResponseWithResult converts a non-streaming upstream response body to a
+// streaming client response and returns the parsed ir.Response with all
+// response-phase Losses (decoding + streaming encoding) populated.
+func (p *Plan) StreamResponseWithResult(dst, body []byte) ([]byte, *ir.Response, error) {
 	_, irResp, err := p.ConvertResponse(body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	// Re-encode as a stream using EventsOf (irResp already has response filters applied).
+	// Re-encode as a stream using EventsOf. irResp has already been filtered by
+	// applyResponseFilters (stop emulation, reasoning presentation, tool validation),
+	// so disable duplicate stop/reasoning filtering on the stream filter while
+	// preserving Intercept detection.
 	evs := ir.EventsOf(irResp)
 	env := clientEnv(p.opts, p.Client)
 	encOpts := encodeOptions(p, env)
 	s := newStreamWithEncoder(p, env, encOpts)
+	s.filter.stops = nil
+	s.filter.maxStopLen = 0
+	s.filter.reasoning = ir.ReasoningOutNative
 	for _, ev := range evs {
 		for _, fe := range s.filter.process(ev) {
 			dst, err = s.enc.Encode(dst, fe)
 			if err != nil {
-				return dst, err
+				return dst, nil, err
 			}
 		}
 	}
 	if len(s.filter.intercepted) > 0 {
-		return nil, env.Err(ir.Unsupported(ir.Root, "intercept", "StreamResponse cannot complete intercepted tool calls; use Plan.NewStream with Intercepted and NextRound"))
+		return nil, nil, env.Err(ir.Unsupported(ir.Root, "intercept", "StreamResponse cannot complete intercepted tool calls; use Plan.NewStream with Intercepted and NextRound"))
 	}
 	dst, err = s.enc.Close(dst)
-	return dst, err
+	if err != nil {
+		return dst, nil, err
+	}
+	if encLosses := env.Losses(); len(encLosses) > 0 {
+		// Merge streaming encoder losses without duplicating identical decode/encode losses.
+		irResp.Losses = mergeLosses(irResp.Losses, encLosses)
+	}
+	return dst, irResp, nil
+}
+
+func mergeLosses(a, b []ir.Loss) []ir.Loss {
+	if len(a) == 0 {
+		return append([]ir.Loss(nil), b...)
+	}
+	out := append([]ir.Loss(nil), a...)
+	for _, lb := range b {
+		dup := false
+		for _, la := range out {
+			if la.Kind == lb.Kind && la.Path.String() == lb.Path.String() && la.Detail == lb.Detail {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, lb)
+		}
+	}
+	return out
 }
 
 func applyResponseFilters(resp *ir.Response, p *Plan) (*ir.Response, error) {
@@ -307,13 +349,21 @@ func applyResponseFilters(resp *ir.Response, p *Plan) (*ir.Response, error) {
 			}
 		}
 	}
-	maxCalls := 0
-	if p != nil && p.opts.Limits.MaxToolCalls > 0 {
-		maxCalls = p.opts.Limits.MaxToolCalls
+	maxCalls := defaultMaxToolCalls
+	maxBytes := defaultMaxBufferedBytes
+	if p != nil {
+		if p.opts.Limits.MaxToolCalls > 0 {
+			maxCalls = p.opts.Limits.MaxToolCalls
+		}
+		if p.opts.Limits.MaxBufferedBytes > 0 {
+			maxBytes = p.opts.Limits.MaxBufferedBytes
+		}
 	}
 
 	cp := *resp
 	cp.Outputs = make([]ir.Output, len(resp.Outputs))
+	totalToolCount := 0
+	totalToolBytes := 0
 	for i, o := range resp.Outputs {
 		oc := o
 		var parts []ir.Part
@@ -373,11 +423,18 @@ func applyResponseFilters(resp *ir.Response, p *Plan) (*ir.Response, error) {
 					trimmed := tp
 					trimmed.Text = tp.Text[:rem]
 					if len(tp.Citations) > 0 {
+						cutRunes := utf8.RuneCountInString(trimmed.Text)
 						var cits []ir.Citation
 						for _, c := range tp.Citations {
-							if c.StartIndex < rem {
-								if c.EndIndex > rem {
-									c.EndIndex = rem
+							if isSourceDocumentCitation(c.Type) {
+								// Anthropic source-document indices reference the source document,
+								// not the model's output text; preserve them verbatim.
+								cits = append(cits, c)
+								continue
+							}
+							if c.StartIndex < cutRunes {
+								if c.EndIndex > cutRunes {
+									c.EndIndex = cutRunes
 								}
 								cits = append(cits, c)
 							}
@@ -436,14 +493,21 @@ func applyResponseFilters(resp *ir.Response, p *Plan) (*ir.Response, error) {
 			}
 			parts = kept
 		} else {
-			toolCount := 0
 			for _, ep := range parts {
 				if ep.Type != ir.PartToolCall || ep.Call == nil {
 					continue
 				}
-				toolCount++
-				if maxCalls > 0 && toolCount > maxCalls {
+				totalToolCount++
+				if maxCalls > 0 && totalToolCount > maxCalls {
 					return nil, ir.Protocol("tool call limit exceeded")
+				}
+				argLen := len(ep.Call.Arguments)
+				if ep.Call.Kind == ir.ToolCustom && len(ep.Call.Input) > argLen {
+					argLen = len(ep.Call.Input)
+				}
+				totalToolBytes += argLen
+				if maxBytes > 0 && totalToolBytes > maxBytes {
+					return nil, ir.Protocol("buffered tool call byte limit exceeded")
 				}
 				if msg := validateToolCall(ep.Call); msg != "" {
 					return nil, ir.Protocol("invalid tool call: " + msg)
@@ -455,6 +519,14 @@ func applyResponseFilters(resp *ir.Response, p *Plan) (*ir.Response, error) {
 		cp.Outputs[i] = oc
 	}
 	return &cp, nil
+}
+
+func isSourceDocumentCitation(typ string) bool {
+	switch typ {
+	case "char_location", "page_location", "content_block_location", "web_search_result_location", "search_result_location":
+		return true
+	}
+	return false
 }
 
 // ConvertError converts an upstream error to a client error response.

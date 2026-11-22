@@ -86,6 +86,9 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 				if len(wsCfg.UserLocation) > 0 {
 					return nil, env.Err(ir.Unsupported(fp, "web_search.user_location", "Gemini googleSearch does not support user_location"))
 				}
+				if wsCfg.MaxUses != nil {
+					return nil, env.Err(ir.Unsupported(fp, "web_search.max_uses", "Gemini googleSearch does not support max_uses limit"))
+				}
 				toolDefs = append(toolDefs, wireToolDef{GoogleSearch: &struct{}{}})
 			case ir.BuiltinCodeExecution:
 				toolDefs = append(toolDefs, wireToolDef{CodeExecution: &struct{}{}})

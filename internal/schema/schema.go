@@ -163,7 +163,6 @@ var nonConstraintMetaKeys = map[string]bool{
 	"title":       true,
 	"examples":    true,
 	"default":     true,
-	"oneOf":       true,
 	"const":       true,
 }
 
@@ -172,7 +171,39 @@ func toOpenAPI(v any, defs map[string]any, depth int, dropped map[string]bool) a
 	case map[string]any:
 		if ref, ok := x["$ref"].(string); ok && depth < 16 {
 			if d, ok := defs[ref]; ok {
-				return toOpenAPI(d, defs, depth+1, dropped)
+				resolved := toOpenAPI(d, defs, depth+1, dropped)
+				if len(x) > 1 {
+					// Record or preserve sibling keywords alongside $ref.
+					rm, isMap := resolved.(map[string]any)
+					sibKeys := make([]string, 0, len(x)-1)
+					for k := range x {
+						if k != "$ref" {
+							sibKeys = append(sibKeys, k)
+						}
+					}
+					sort.Strings(sibKeys)
+					for _, k := range sibKeys {
+						if !openAPIKeys[k] {
+							if k == "oneOf" {
+								if dropped != nil {
+									dropped["oneOf"] = true
+								}
+								if isMap {
+									rm["anyOf"] = toOpenAPI(x[k], defs, depth+1, dropped)
+								}
+							} else if k == "const" {
+								if isMap {
+									rm["enum"] = []any{x[k]}
+								}
+							} else if dropped != nil && !nonConstraintMetaKeys[k] {
+								dropped[k] = true
+							}
+						} else if isMap {
+							rm[k] = toOpenAPI(x[k], defs, depth+1, dropped)
+						}
+					}
+				}
+				return resolved
 			}
 		}
 		m := make(map[string]any, len(x))
@@ -185,6 +216,9 @@ func toOpenAPI(v any, defs map[string]any, depth int, dropped map[string]bool) a
 			val := x[k]
 			if !openAPIKeys[k] {
 				if k == "oneOf" {
+					if dropped != nil {
+						dropped["oneOf"] = true
+					}
 					m["anyOf"] = toOpenAPI(val, defs, depth+1, dropped)
 				} else if k == "const" {
 					m["enum"] = []any{val}

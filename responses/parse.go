@@ -532,6 +532,7 @@ func parseFunctionCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir
 	rawCallID, _ := jsonx.String(fields["call_id"])
 	callID, sig := ir.DecodeCallSignatureID(env, rawCallID)
 	name, _ := jsonx.String(fields["name"])
+	ns, _ := jsonx.String(fields["namespace"])
 	argsStr, _ := jsonx.String(fields["arguments"])
 	args := json.RawMessage(argsStr)
 	if len(args) == 0 {
@@ -542,6 +543,7 @@ func parseFunctionCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir
 		Call: &ir.ToolCall{
 			ID:        callID,
 			Name:      name,
+			Namespace: ns,
 			Kind:      ir.ToolFunction,
 			Arguments: args,
 			Signature: sig,

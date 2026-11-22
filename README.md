@@ -102,9 +102,9 @@ column shows the behaviour when the caller passes `bridge.Options{}`.
 Losses marked *denied* by default return an error unless the caller explicitly
 adds the key to `Options.Allow`. Losses marked *allowed* are recorded silently
 and can be read without setting `Options.OnLoss`: request-phase losses appear
-in `Plan.Losses`, non-streaming / collector response-phase losses appear in
-`ir.Response.Losses` (returned by `Plan.ConvertResponse` and `Stream.Result`),
-and streaming response-phase losses appear in `Stream.Losses()`. Add any key to
+in `Plan.Losses`, non-streaming / collector / `StreamResponseWithResult`
+response-phase losses appear in `ir.Response.Losses`, and streaming
+response-phase losses appear in `Stream.Losses()`. Add any key to
 `Options.Deny` to turn it into an error instead.
 
 ## Install

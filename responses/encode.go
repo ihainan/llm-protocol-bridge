@@ -355,6 +355,11 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			break
 		}
 		if ev.Builtin.Kind == ir.BuiltinWebSearch {
+			if ev.Builtin.IsResult || len(ev.Builtin.Hits) > 0 || ev.Builtin.Content != "" || ev.Builtin.Error != "" || (ev.Builtin.Origin != ir.FormatResponses && len(ev.Builtin.Raw) > 0) {
+				if err := e.opts.Env.Lose(ir.LossBuiltinActivity, ir.Root.Key("output"), "web_search result details cannot be represented in Responses web_search_call"); err != nil {
+					return dst, err
+				}
+			}
 			dst = e.ensureStarted(dst)
 			dst = e.closeItem(dst)
 			e.outputIndex++
@@ -571,17 +576,21 @@ func (e *StreamEncoder) openToolItem(dst []byte, id, name, ns string, kind ir.To
 	}
 	e.openItemType = "function_call"
 	e.itemID = "fc_" + e.opts.Env.NewID("", 16)
+	item := map[string]any{
+		"type":      "function_call",
+		"id":        e.itemID,
+		"call_id":   e.wireCallID,
+		"name":      name,
+		"arguments": "",
+		"status":    "in_progress",
+	}
+	if ns != "" {
+		item["namespace"] = ns
+	}
 	return e.appendEvent(dst, "response.output_item.added", map[string]any{
 		"sequence_number": e.nextSeq(),
 		"output_index":    e.outputIndex,
-		"item": map[string]any{
-			"type":      "function_call",
-			"id":        e.itemID,
-			"call_id":   e.wireCallID,
-			"name":      name,
-			"arguments": "",
-			"status":    "in_progress",
-		},
+		"item":            item,
 	})
 }
 
@@ -633,6 +642,9 @@ func (e *StreamEncoder) abortOpenToolItem(dst []byte) []byte {
 			"name":      e.callName,
 			"arguments": e.argAccum.String(),
 			"status":    "incomplete",
+		}
+		if e.callNS != "" {
+			doneItem["namespace"] = e.callNS
 		}
 		e.outputs = append(e.outputs, doneItem)
 		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
@@ -689,6 +701,9 @@ func (e *StreamEncoder) finishToolItem(dst []byte, finalArgs json.RawMessage) []
 			"name":      e.callName,
 			"arguments": args,
 			"status":    "completed",
+		}
+		if e.callNS != "" {
+			doneItem["namespace"] = e.callNS
 		}
 		e.outputs = append(e.outputs, doneItem)
 		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
@@ -1075,6 +1090,7 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 				ID:        "fc_" + env.NewID("", 16),
 				CallID:    wireCallID,
 				Name:      c.Name,
+				Namespace: c.Namespace,
 				Arguments: args,
 				Status:    "completed",
 			}}, nil
@@ -1082,6 +1098,11 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 
 	case ir.PartBuiltinCall, ir.PartBuiltinResult:
 		if p.Builtin != nil && p.Builtin.Kind == ir.BuiltinWebSearch {
+			if p.Builtin.IsResult || len(p.Builtin.Hits) > 0 || p.Builtin.Content != "" || p.Builtin.Error != "" || (p.Builtin.Origin != ir.FormatResponses && len(p.Builtin.Raw) > 0) {
+				if err := env.Lose(ir.LossBuiltinActivity, fp, "web_search result details cannot be represented in Responses web_search_call"); err != nil {
+					return nil, err
+				}
+			}
 			id := p.Builtin.ID
 			if id == "" {
 				id = "ws_" + env.NewID("", 16)

@@ -160,6 +160,9 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			d.itemType[idx] = se.Item.Type
 			switch se.Item.Type {
 			case "function_call":
+				if isIncompleteToolStatus(se.Item.Status) {
+					break
+				}
 				id := se.Item.CallID
 				if id == "" {
 					id = se.Item.ID
@@ -170,8 +173,11 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				d.callArgs[idx] = &strings.Builder{}
 				d.toolStarted[idx] = true
 				d.hasToolCalls = true
-				out = d.emitToolStart(out, idx, id, se.Item.Name, "", ir.ToolFunction)
+				out = d.emitToolStart(out, idx, id, se.Item.Name, se.Item.Namespace, ir.ToolFunction)
 			case "custom_tool_call":
+				if isIncompleteToolStatus(se.Item.Status) {
+					break
+				}
 				id := se.Item.CallID
 				if id == "" {
 					id = se.Item.ID
@@ -204,10 +210,22 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 					}
 					d.callID[idx] = id
 				}
+				if isIncompleteToolStatus(se.Item.Status) {
+					if d.toolStarted[idx] {
+						out = append(out, ir.Event{
+							Type: ir.EvToolEnd,
+							Part: idx,
+							ID:   id,
+							Err:  &ir.APIError{Message: "upstream function_call ended with status " + se.Item.Status},
+						})
+					}
+					delete(d.callArgs, idx)
+					break
+				}
 				if !d.toolStarted[idx] {
 					d.toolStarted[idx] = true
 					d.hasToolCalls = true
-					out = d.emitToolStart(out, idx, id, se.Item.Name, "", ir.ToolFunction)
+					out = d.emitToolStart(out, idx, id, se.Item.Name, se.Item.Namespace, ir.ToolFunction)
 				}
 				argsStr := strings.TrimSpace(se.Item.Arguments)
 				if argsStr == "" && d.callArgs[idx] != nil {
@@ -226,6 +244,18 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 						id = se.Item.ID
 					}
 					d.callID[idx] = id
+				}
+				if isIncompleteToolStatus(se.Item.Status) {
+					if d.toolStarted[idx] {
+						out = append(out, ir.Event{
+							Type: ir.EvToolEnd,
+							Part: idx,
+							ID:   id,
+							Err:  &ir.APIError{Message: "upstream custom_tool_call ended with status " + se.Item.Status},
+						})
+					}
+					delete(d.callArgs, idx)
+					break
 				}
 				if !d.toolStarted[idx] {
 					d.toolStarted[idx] = true
@@ -454,12 +484,15 @@ func outputItemToIR(item wireOutputItem, p ir.Path, names map[string]ir.ToolRef,
 		return parts, statusToStop(item.Status), nil
 
 	case "function_call":
+		if isIncompleteToolStatus(item.Status) {
+			return nil, ir.Stop{}, nil
+		}
 		args := json.RawMessage(item.Arguments)
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}
 		name := item.Name
-		ns := ""
+		ns := item.Namespace
 		kind := ir.ToolFunction
 		if ref, ok := names[name]; ok {
 			name = ref.Name
@@ -485,6 +518,9 @@ func outputItemToIR(item wireOutputItem, p ir.Path, names map[string]ir.ToolRef,
 		return []ir.Part{part}, ir.Stop{}, nil
 
 	case "custom_tool_call":
+		if isIncompleteToolStatus(item.Status) {
+			return nil, ir.Stop{}, nil
+		}
 		id := item.CallID
 		if id == "" {
 			id = item.ID
@@ -561,6 +597,14 @@ func outputPartToIR(cp wireOutputPart, p ir.Path, env *ir.Env) (ir.Part, error) 
 		return ir.Part{Type: ir.PartRefusal, Text: cp.Refusal}, nil
 	}
 	return ir.TextPart(""), nil
+}
+
+func isIncompleteToolStatus(status string) bool {
+	switch status {
+	case "incomplete", "failed", "cancelled", "canceled":
+		return true
+	}
+	return false
 }
 
 func statusToStop(status string) ir.Stop {

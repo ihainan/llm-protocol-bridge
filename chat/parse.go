@@ -528,7 +528,7 @@ func wireToolCallToPart(tc wireToolCall, p ir.Path, env *ir.Env) (ir.Part, error
 		return ir.Part{}, env.Err(ir.Invalid(p, "tool_call missing function name"))
 	}
 	var args json.RawMessage
-	if s := strings.TrimSpace(tc.Function.Arguments); s != "" && s != "null" {
+	if s := strings.TrimSpace(tc.Function.Arguments); s != "" {
 		args = json.RawMessage(s)
 	}
 	cleanID, sig := decodeChatCallID(env, tc.ID)

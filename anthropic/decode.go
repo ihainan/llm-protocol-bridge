@@ -16,12 +16,14 @@ type StreamDecoder struct {
 	started  bool
 	terminal bool
 	// openBlocks maps block index -> type of the open block.
-	openBlocks      map[int]string
-	blockCallID     map[int]string
-	serverToolBlock map[int]*ir.BuiltinActivity
-	serverToolArgs  map[int]*strings.Builder
-	serverToolBytes int
-	maxBuf          int
+	openBlocks          map[int]string
+	blockCallID         map[int]string
+	serverToolBlock     map[int]*ir.BuiltinActivity
+	serverToolArgs      map[int]*strings.Builder
+	serverToolInitBytes map[int]int
+	serverToolBytes     int
+	maxBuf              int
+	pendingStop         *ir.Stop
 }
 
 const defaultAnthropicMaxBufferedBytes = 8 << 20
@@ -38,13 +40,14 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 		maxBuf = defaultAnthropicMaxBufferedBytes
 	}
 	return &StreamDecoder{
-		env:             env,
-		names:           opts.Names,
-		openBlocks:      map[int]string{},
-		blockCallID:     map[int]string{},
-		serverToolBlock: map[int]*ir.BuiltinActivity{},
-		serverToolArgs:  map[int]*strings.Builder{},
-		maxBuf:          maxBuf,
+		env:                 env,
+		names:               opts.Names,
+		openBlocks:          map[int]string{},
+		blockCallID:         map[int]string{},
+		serverToolBlock:     map[int]*ir.BuiltinActivity{},
+		serverToolArgs:      map[int]*strings.Builder{},
+		serverToolInitBytes: map[int]int{},
+		maxBuf:              maxBuf,
 	}
 }
 
@@ -133,6 +136,21 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				})
 			}
 		case "server_tool_use":
+			initLen := len(se.ContentBlock.Input)
+			if d.serverToolBytes+initLen > d.maxBuf {
+				d.serverToolBlock = map[int]*ir.BuiltinActivity{}
+				d.serverToolArgs = map[int]*strings.Builder{}
+				d.serverToolInitBytes = map[int]int{}
+				d.serverToolBytes = 0
+				d.terminal = true
+				out = append(out, ir.Event{
+					Type: ir.EvError,
+					Err:  &ir.APIError{Status: 502, Type: ir.ErrServer, Message: "buffered server_tool_use arguments exceeded max_buffered_bytes"},
+				})
+				return out, nil
+			}
+			d.serverToolBytes += initLen
+			d.serverToolInitBytes[se.Index] = initLen
 			kind := ir.BuiltinKind(se.ContentBlock.Name)
 			if kind == "" {
 				kind = ir.BuiltinWebSearch
@@ -206,17 +224,19 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			delete(d.blockCallID, se.Index)
 		case "server_tool_use":
 			if b := d.serverToolBlock[se.Index]; b != nil {
+				d.serverToolBytes -= d.serverToolInitBytes[se.Index]
 				if sb := d.serverToolArgs[se.Index]; sb != nil && sb.Len() > 0 {
 					d.serverToolBytes -= sb.Len()
-					if d.serverToolBytes < 0 {
-						d.serverToolBytes = 0
-					}
 					b.Input = json.RawMessage(sb.String())
+				}
+				if d.serverToolBytes < 0 {
+					d.serverToolBytes = 0
 				}
 				out = append(out, ir.Event{Type: ir.EvBuiltin, Index: 0, Builtin: b})
 			}
 			delete(d.serverToolBlock, se.Index)
 			delete(d.serverToolArgs, se.Index)
+			delete(d.serverToolInitBytes, se.Index)
 		case "redacted_thinking":
 			// EvSealed was already emitted at content_block_start where data arrives.
 		}
@@ -225,7 +245,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 	case "message_delta":
 		if se.Delta != nil && se.Delta.StopReason != "" {
 			stop := stopFromAnthropic(se.Delta.StopReason, se.Delta.StopSequence)
-			out = append(out, ir.Event{Type: ir.EvStop, Index: 0, Stop: &stop})
+			d.pendingStop = &stop
 		}
 		if se.Usage != nil {
 			u := decodeUsage(se.Usage)
@@ -233,6 +253,14 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		}
 
 	case "message_stop":
+		if d.pendingStop != nil {
+			stop := *d.pendingStop
+			d.pendingStop = nil
+			out = append(out, ir.Event{Type: ir.EvStop, Index: 0, Stop: &stop})
+		} else {
+			stop := ir.Stop{Reason: ir.StopEndTurn}
+			out = append(out, ir.Event{Type: ir.EvStop, Index: 0, Stop: &stop})
+		}
 		d.terminal = true
 
 	case "error":
