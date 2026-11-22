@@ -61,6 +61,10 @@ type Options struct {
 	// rendered as Responses summary_text when the client requested reasoning.summary.
 	// Nil defaults to true; ir.Ptr(false) always renders raw reasoning as reasoning_text.
 	RawReasoningAsSummary *bool
+	// TrimLeadingNewlines, when true, strips leading \r and \n characters before
+	// opening a Responses assistant message item (and omits newline-only messages
+	// before tool calls). Default false preserves model output verbatim.
+	TrimLeadingNewlines bool
 
 	IDs            ir.IDSource
 	Clock          func() time.Time
@@ -665,6 +669,7 @@ func encodeOptions(p *Plan, env *ir.Env) encodeOpts {
 			MaxBufferedBytes:      p.opts.Limits.MaxBufferedBytes,
 			GenerateResponseID:    p.opts.GenerateResponseID,
 			RawReasoningAsSummary: p.opts.RawReasoningAsSummary,
+			TrimLeadingNewlines:   p.opts.TrimLeadingNewlines,
 		},
 		anthropic: anthropic.EncodeOptions{
 			Env: env, Request: p.Request, Model: p.ClientModel,

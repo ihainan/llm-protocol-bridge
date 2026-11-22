@@ -36,6 +36,10 @@ type EncodeOptions struct {
 	// emitted as summary_text when the client requested reasoning.summary.
 	// Nil defaults to true; false always emits reasoning_text for raw reasoning.
 	RawReasoningAsSummary *bool
+	// TrimLeadingNewlines, when true, strips leading \r and \n characters before
+	// opening a Responses message item (and omits newline-only messages).
+	// Default false preserves model output verbatim.
+	TrimLeadingNewlines bool
 }
 
 // Built is the result of BuildRequest.

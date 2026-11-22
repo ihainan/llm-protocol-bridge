@@ -158,12 +158,36 @@ func TestStrictA6_ResponsesResponseAlignments(t *testing.T) {
 		}
 	})
 
-	t.Run("leading_newlines_stripped_and_newline_only_before_tool_omitted", func(t *testing.T) {
+	t.Run("leading_newlines_option_off_preserves_and_on_strips", func(t *testing.T) {
 		// Reference: service/responses_strict_test.go:505 (TestResponsesLeadingNewlines)
 		reqBody := []byte(`{"model":"m","input":"hi","tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}}]}`)
-		plan, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, reqBody, bridge.Options{})
+
+		// Default (TrimLeadingNewlines=false): preserves leading newlines verbatim in stream & non-stream.
+		planDefault, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, reqBody, bridge.Options{})
 		if err != nil {
-			t.Fatalf("Convert: %v", err)
+			t.Fatalf("Convert default: %v", err)
+		}
+		sseDefault := `data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"content":"\n\nHi"},"finish_reason":"stop"}]}` + "\n\n" +
+			"data: [DONE]\n\n"
+		outDefault := string(feedSSE(t, planDefault.NewStream(), sseDefault))
+		if !strings.Contains(outDefault, `"text":"\n\nHi"`) {
+			t.Fatalf("default TrimLeadingNewlines=false must preserve leading newlines in stream:\n%s", outDefault)
+		}
+		nsBody := []byte(`{"id":"3","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"\n\nHi"},"finish_reason":"stop"}]}`)
+		nsDefault, _, err := planDefault.ConvertResponse(nsBody)
+		if err != nil {
+			t.Fatalf("ConvertResponse default: %v", err)
+		}
+		if !strings.Contains(string(nsDefault), `"text":"\n\nHi"`) {
+			t.Fatalf("default TrimLeadingNewlines=false must preserve leading newlines in non-stream: %s", nsDefault)
+		}
+
+		// Enabled (TrimLeadingNewlines=true): strips leading newlines and omits newline-only message before tools.
+		planTrim, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, reqBody, bridge.Options{
+			TrimLeadingNewlines: true,
+		})
+		if err != nil {
+			t.Fatalf("Convert trim: %v", err)
 		}
 
 		// 1. Stream leading newlines across chunks stripped; interior \n preserved.
@@ -172,7 +196,7 @@ func TestStrictA6_ResponsesResponseAlignments(t *testing.T) {
 			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"content":"\nHi\n"}}]}` + "\n\n" +
 			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"content":"there"},"finish_reason":"stop"}]}` + "\n\n" +
 			"data: [DONE]\n\n"
-		out1 := string(feedSSE(t, plan.NewStream(), sse1))
+		out1 := string(feedSSE(t, planTrim.NewStream(), sse1))
 		if !strings.Contains(out1, `"text":"Hi\nthere"`) {
 			t.Fatalf("expected stripped text \"Hi\\nthere\", got:\n%s", out1)
 		}
@@ -181,16 +205,15 @@ func TestStrictA6_ResponsesResponseAlignments(t *testing.T) {
 		sse2 := `data: {"id":"2","model":"m","choices":[{"index":0,"delta":{"content":"\n"}}]}` + "\n\n" +
 			`data: {"id":"2","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"exec_command","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
 			"data: [DONE]\n\n"
-		out2 := string(feedSSE(t, plan.NewStream(), sse2))
+		out2 := string(feedSSE(t, planTrim.NewStream(), sse2))
 		if strings.Contains(out2, `"type":"message"`) {
-			t.Fatalf("newline-only text before tool call must not open message item:\n%s", out2)
+			t.Fatalf("newline-only text before tool call must not open message item when TrimLeadingNewlines=true:\n%s", out2)
 		}
 
 		// 3. Non-stream leading newlines stripped.
-		nsBody := []byte(`{"id":"3","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"\n\nHi"},"finish_reason":"stop"}]}`)
-		nsOut, _, err := plan.ConvertResponse(nsBody)
+		nsOut, _, err := planTrim.ConvertResponse(nsBody)
 		if err != nil {
-			t.Fatalf("ConvertResponse: %v", err)
+			t.Fatalf("ConvertResponse trim: %v", err)
 		}
 		if !strings.Contains(string(nsOut), `"text":"Hi"`) {
 			t.Fatalf("expected non-stream stripped text \"Hi\", got: %s", nsOut)

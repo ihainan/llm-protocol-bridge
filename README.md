@@ -42,12 +42,12 @@ Support by target upstream format (all 4 client formats parse into the shared IR
 
 | Capability | → Chat | → Responses | → Anthropic | → Gemini |
 |---|---|---|---|---|
-| Text, multi-turn, system/developer | Full (`system`/`developer` via dialect) | Full (`instructions` + mid-turn roles) | Full (`system` + consecutive role merge) | Full (`systemInstruction` + `contents`) |
-| Streaming & Collector | Full SSE + `[DONE]` | Full `response.*` SSE (`sequence_number`) | Full `message_*`/`content_block_*` SSE | Full JSON array stream & `alt=sse` |
-| Function tools & parallel calls | Full (interleaved + sorted close) | Full (sequential item stream) | Full (`AnthropicSafeID` + sequential blocks) | Full (ID resolution + deterministic IDs) |
+| Text, multi-turn, system/developer | Full (`system`/`developer` via dialect; `MidSystem: "fold"` wraps mid-turn notes in `<system_message>`) | Full (`instructions` + mid-turn roles) | Full (`system` + consecutive role merge + mid-turn `system`) | Full (`systemInstruction` + `contents`) |
+| Streaming & Collector | Full SSE + `[DONE]` | Full `response.*` SSE (`sequence_number`, `reasoning_text`/`summary_text`, optional `TrimLeadingNewlines`) | Full `message_*`/`content_block_*` SSE | Full JSON array stream & `alt=sse` |
+| Function tools & parallel calls | Full (interleaved + sorted close + name/ID dedup) | Full (sequential item stream; truncated live calls omit `output_item.done`) | Full (`AnthropicSafeID` + sequential blocks) | Full (ID resolution + deterministic IDs) |
 | Custom & namespaced tools | Full (wrapped `{input}` + `<ns>__<name>`) | Full (`custom`, `namespace`) | Function mapping | Function mapping |
-| `tool_choice` (`auto`/`none`/`required`/`tool`/`allowed`) | Full (`allowed` filters tools) | Full (`allowed_tools` with `mode` + `tools`) | Full (`type: "none"`, `allowed` filters tools) | Full (`AUTO`/`NONE`/`ANY` + `allowedFunctionNames`) |
-| Tool result images & `is_error` | Lifted follow-up user turn + `[tool error]` | Text output + `is_error` | Native blocks + `is_error` | `{output}` / `{error}` object |
+| `tool_choice` (`auto`/`none`/`required`/`tool`/`allowed`) | Full (`allowed` filters tools; omits `auto`/`none` when no tools) | Full (`allowed_tools` with `mode` + `tools`) | Full (`type: "none"`, `allowed` filters tools) | Full (`AUTO`/`NONE`/`ANY` + `allowedFunctionNames`) |
+| Tool result images, documents & `is_error` | Lifted follow-up user turn + `[tool error]`; text docs preserved, binary/PDF gated by `FileParts` | Text output + `is_error` | Native blocks + `search_result` in `tool_result` + `is_error` | `{output}` / `{error}` object |
 | Tool `strict` schema | Preserved | Preserved | `tool.strict` loss (unless dialect enables) | `tool.strict` loss |
 | Reasoning (effort / budget / off / adaptive) | Full via `ModelProfile.Resolve` | Full via `ModelProfile.Resolve` | Full (`budget_tokens` + `max_tokens` & sampling constraints) | Full (`*int thinkingBudget` incl. `0`, `thinkingLevel`) |
 | Signatures & sealed reasoning (`Origin.Matches` + `SealCodec`) | `reasoning.signature` / `reasoning.sealed` loss | Native `encrypted_content` + seal | Native `thinking`/`redacted_thinking` + seal | Native `thoughtSignature` |
@@ -105,7 +105,28 @@ and can be read without setting `Options.OnLoss`: request-phase losses appear
 in `Plan.Losses`, non-streaming / collector / `StreamResponseWithResult`
 response-phase losses appear in `ir.Response.Losses`, and streaming
 response-phase losses appear in `Stream.Losses()`. Add any key to
-`Options.Deny` to turn it into an error instead.
+`Options.Deny` to turn it into an error instead, or supply `Options.CheckLoss`
+for fine-grained path- and detail-based rejection (for example rejecting
+`mcp_servers`, `truncation: "auto"`, unsupported `include` entries, or unknown
+`context_management` edits while keeping other unknown parameters allowed).
+
+## Policy & Dialect Options
+
+`bridge.Options` exposes explicit switches for stricter upstream or client
+policies while keeping zero-value defaults backward-compatible:
+
+| Option | Default | Behaviour when enabled |
+|---|---|---|
+| `CheckLoss func(ir.Loss) error` | `nil` | Called for every recorded loss before `DefaultAllowed`/`Allow`/`Deny`; returning a non-nil error rejects the conversion with that error. |
+| `OmitUserID bool` | `false` | Suppresses forwarding `Request.User` (such as Anthropic `metadata.user_id`) to Chat Completions `user`. |
+| `OmitHistoryReasoning bool` | `false` | Omits historical assistant thinking/reasoning text when building Chat Completions requests. |
+| `GenerateResponseID bool` | `false` | Forces freshly generated format-prefixed response IDs (`msg_` for Anthropic, `resp_` for Responses) instead of passing through upstream IDs. |
+| `RawReasoningAsSummary *bool` | `nil` (`true`) | Controls whether raw upstream reasoning text is emitted as Responses `summary_text` when the client requested `reasoning.summary` (`auto`/`concise`/`detailed`); `ir.Ptr(false)` always emits `reasoning_text`. |
+| `TrimLeadingNewlines bool` | `false` | Strips leading `\r`/`\n` characters before opening a Responses assistant message item (and omits newline-only messages before tool calls) for upstreams that emit leading blank lines; default `false` preserves model output verbatim. |
+| `Chat.MidSystem` (`"fold"`) | `""` (in place) | Wraps mid-conversation `system`/`developer` messages in `<system_message>...</system_message>` and folds them into adjacent `user` turns (after any `tool` messages and before lifted tool-result images and user text). |
+| `Chat.FileParts bool` | `false` | Allows cross-format binary/PDF/`file_id` parts to be forwarded as Chat `type: "file"` parts; when `false`, unsupported cross-format binary files return `CodeUnsupported` (plain-text documents are rendered as text). |
+| `Limits.MaxBufferedBytes` | `8 MiB` | Caps buffered tool arguments and deferred multi-candidate stream events in the filter pipeline and stream encoders. |
+| `Limits.MaxStopSequences` / `MaxStopSequenceBytes` | `0` (unlimited) | Caps stop sequence count and total byte length accepted by `bridge.Build` (e.g. `64` and `16384` under `StopEmulate`). |
 
 ## Install
 

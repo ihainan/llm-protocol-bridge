@@ -147,9 +147,9 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvText:
 		text := ev.Text
-		if e.openItemType != "message" || e.openItemCand != ev.Index {
-			// Strip leading newlines before opening a message item (matching OpenAI Responses
-			// behavior and preventing empty newline-only messages before tool calls).
+		if e.opts.TrimLeadingNewlines && (e.openItemType != "message" || e.openItemCand != ev.Index) {
+			// When opted in, strip leading newlines before opening a message item
+			// (preventing empty newline-only messages before tool calls).
 			text = strings.TrimLeft(text, "\r\n")
 			if text == "" {
 				break
@@ -1334,9 +1334,12 @@ func respStop(resp *ir.Response) ir.Stop {
 func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env, opts EncodeOptions) ([]wireOutputItem, error) {
 	switch p.Type {
 	case ir.PartText:
-		text := strings.TrimLeft(p.Text, "\r\n")
-		if text == "" && len(p.Citations) == 0 {
-			return nil, nil
+		text := p.Text
+		if opts.TrimLeadingNewlines {
+			text = strings.TrimLeft(text, "\r\n")
+			if text == "" && len(p.Citations) == 0 {
+				return nil, nil
+			}
 		}
 		id := "msg_" + env.NewID("", 16)
 		op := wireOutputPart{Type: "output_text", Text: text}

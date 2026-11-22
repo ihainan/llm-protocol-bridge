@@ -179,13 +179,8 @@ func (d *StreamDecoder) decodeChoice(out []ir.Event, ci int, ch wireStreamChoice
 		// No explicit event needed; the start event covers the id/model.
 	}
 
-	// Content text delta.
-	if contentStr := rawToString(delta.Content); contentStr != "" {
-		out = d.flushUnstartedToolCalls(out, ci)
-		out = append(out, ir.Event{Type: ir.EvText, Index: ci, Text: contentStr})
-	}
-
-	// Reasoning delta.
+	// Reasoning delta (emitted before content text when both appear in one chunk,
+	// matching non-streaming ParseResponse order).
 	reasoning := delta.ReasoningContent
 	if reasoning == "" {
 		reasoning = delta.Reasoning
@@ -193,6 +188,12 @@ func (d *StreamDecoder) decodeChoice(out []ir.Event, ci int, ch wireStreamChoice
 	if reasoning != "" {
 		out = d.flushUnstartedToolCalls(out, ci)
 		out = append(out, ir.Event{Type: ir.EvReasoning, Index: ci, Text: reasoning})
+	}
+
+	// Content text delta.
+	if contentStr := rawToString(delta.Content); contentStr != "" {
+		out = d.flushUnstartedToolCalls(out, ci)
+		out = append(out, ir.Event{Type: ir.EvText, Index: ci, Text: contentStr})
 	}
 
 	// Refusal.
