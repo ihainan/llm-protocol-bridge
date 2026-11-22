@@ -4,27 +4,6 @@ import "encoding/json"
 
 // Wire types for the Anthropic Messages request and response.
 
-// wireRequest is the JSON shape of an Anthropic Messages request.
-type wireRequest struct {
-	Model    string          `json:"model"`
-	Messages []wireMessage   `json:"messages"`
-	System   json.RawMessage `json:"system,omitempty"` // string | []wireContentBlock
-
-	MaxTokens   int      `json:"max_tokens"`
-	Temperature *float64 `json:"temperature,omitempty"`
-	TopP        *float64 `json:"top_p,omitempty"`
-	TopK        *int     `json:"top_k,omitempty"`
-	Stop        []string `json:"stop_sequences,omitempty"`
-	Stream      *bool    `json:"stream,omitempty"`
-
-	Tools      []wireTool      `json:"tools,omitempty"`
-	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
-
-	Thinking *wireThinkingConfig `json:"thinking,omitempty"`
-
-	Metadata *wireMetadata `json:"metadata,omitempty"`
-}
-
 type wireMetadata struct {
 	UserID string `json:"user_id,omitempty"`
 }

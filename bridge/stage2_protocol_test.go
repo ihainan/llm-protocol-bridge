@@ -236,7 +236,23 @@ func TestStage2_ErrorsAndTerminalStates(t *testing.T) {
 		// 1. finish_reason arrived, then EOF without [DONE] => normal completion.
 		d1 := chat.NewStreamDecoder(chat.DecodeOptions{})
 		var evs []ir.Event
-		evs, _ = d1.Decode(evs, sse.Event{Data: []byte(`{"id":"1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`)})
+		var err error
+		evs, err = d1.Decode(evs, sse.Event{Data: []byte(`{"id":"1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`)})
+		if err != nil {
+			t.Fatalf("d1.Decode error: %v", err)
+		}
+		var sawText, sawStop bool
+		for _, ev := range evs {
+			if ev.Type == ir.EvText && ev.Text == "hi" {
+				sawText = true
+			}
+			if ev.Type == ir.EvStop && ev.Stop.Reason == ir.StopEndTurn {
+				sawStop = true
+			}
+		}
+		if !sawText || !sawStop {
+			t.Errorf("d1.Decode expected EvText(\"hi\") and EvStop(end_turn), got %+v", evs)
+		}
 		if ev := d1.End(ir.EndEOF); ev != nil {
 			t.Errorf("finish_reason + EOF without [DONE] should be nil, got %+v", ev)
 		}
@@ -244,8 +260,26 @@ func TestStage2_ErrorsAndTerminalStates(t *testing.T) {
 		// 2. [DONE] arrived WITHOUT any finish_reason => truncated error on EOF.
 		d2 := chat.NewStreamDecoder(chat.DecodeOptions{})
 		evs = nil
-		evs, _ = d2.Decode(evs, sse.Event{Data: []byte(`{"id":"1","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`)})
-		evs, _ = d2.Decode(evs, sse.Event{Data: []byte(`[DONE]`)})
+		evs, err = d2.Decode(evs, sse.Event{Data: []byte(`{"id":"1","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`)})
+		if err != nil {
+			t.Fatalf("d2.Decode chunk error: %v", err)
+		}
+		evs, err = d2.Decode(evs, sse.Event{Data: []byte(`[DONE]`)})
+		if err != nil {
+			t.Fatalf("d2.Decode [DONE] error: %v", err)
+		}
+		sawText, sawStop = false, false
+		for _, ev := range evs {
+			if ev.Type == ir.EvText && ev.Text == "partial" {
+				sawText = true
+			}
+			if ev.Type == ir.EvStop {
+				sawStop = true
+			}
+		}
+		if !sawText || sawStop {
+			t.Errorf("d2.Decode expected EvText(\"partial\") and no EvStop, got %+v", evs)
+		}
 		if ev := d2.End(ir.EndEOF); ev == nil || ev.Type != ir.EvError {
 			t.Errorf("[DONE] without finish_reason should return EvError on EndEOF, got %+v", ev)
 		}

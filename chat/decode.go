@@ -330,15 +330,6 @@ func (d *StreamDecoder) End(how ir.EndKind) *ir.Event {
 	return ir.EndErrorEvent(how)
 }
 
-// stringOrEmpty extracts a string from a JSON value that may be string or null.
-func stringOrEmpty(raw json.RawMessage) string {
-	if len(raw) == 0 || jsonx.IsNull(raw) {
-		return ""
-	}
-	s, _ := jsonx.String(raw)
-	return s
-}
-
 // rawToString decodes a JSON string or null json.RawMessage to a Go string.
 // A non-string value yields "".
 func rawToString(raw json.RawMessage) string {

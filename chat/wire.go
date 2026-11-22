@@ -5,48 +5,6 @@ import "encoding/json"
 // Wire types for the Chat Completions request and response bodies.
 // These are internal to the package; callers use ir types.
 
-// wireRequest is the JSON shape of a Chat Completions request.
-type wireRequest struct {
-	Model    string        `json:"model"`
-	Messages []wireMessage `json:"messages"`
-
-	// Tools
-	Tools      []wireTool      `json:"tools,omitempty"`
-	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
-	ParallelTC *bool           `json:"parallel_tool_calls,omitempty"`
-
-	// Generation
-	MaxTokens           *int                `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64            `json:"temperature,omitempty"`
-	TopP                *float64            `json:"top_p,omitempty"`
-	N                   *int                `json:"n,omitempty"`
-	Stream              *bool               `json:"stream,omitempty"`
-	Stop                json.RawMessage     `json:"stop,omitempty"`
-	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`
-	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`
-	Logprobs            *bool               `json:"logprobs,omitempty"`
-	TopLogprobs         *int                `json:"top_logprobs,omitempty"`
-	Seed                *int64              `json:"seed,omitempty"`
-	ResponseFormat      *wireResponseFormat `json:"response_format,omitempty"`
-	StreamOptions       *wireStreamOptions  `json:"stream_options,omitempty"`
-
-	// Reasoning (dialect-dependent, some are mutually exclusive)
-	ReasoningEffort *string       `json:"reasoning_effort,omitempty"`
-	EnableThinking  *bool         `json:"enable_thinking,omitempty"`
-	BudgetTokens    *int          `json:"budget_tokens,omitempty"`
-	Thinking        *wireThinking `json:"thinking,omitempty"`
-
-	// Identity / metadata
-	User        string          `json:"user,omitempty"`
-	Metadata    json.RawMessage `json:"metadata,omitempty"`
-	ServiceTier string          `json:"service_tier,omitempty"`
-	Store       *bool           `json:"store,omitempty"`
-
-	// Extra fields kept verbatim (passthrough / extra_body equivalent).
-	extra map[string]json.RawMessage `json:"-"`
-}
-
 // wireMessage is one conversation turn in a Chat Completions request or response.
 type wireMessage struct {
 	Role       string          `json:"role"`

@@ -4,32 +4,6 @@ import "encoding/json"
 
 // Wire types for the OpenAI Responses API.
 
-// wireRequest is the JSON body for POST /v1/responses.
-type wireRequest struct {
-	Model              string          `json:"model"`
-	Input              json.RawMessage `json:"input,omitempty"` // string or []wireInputItem
-	Instructions       string          `json:"instructions,omitempty"`
-	Tools              []wireTool      `json:"tools,omitempty"`
-	ToolChoice         json.RawMessage `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool           `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens    *int            `json:"max_output_tokens,omitempty"`
-	Temperature        *float64        `json:"temperature,omitempty"`
-	TopP               *float64        `json:"top_p,omitempty"`
-	Stop               json.RawMessage `json:"stop,omitempty"` // string or []string
-	Seed               *int64          `json:"seed,omitempty"`
-	PresencePenalty    *float64        `json:"presence_penalty,omitempty"`
-	FrequencyPenalty   *float64        `json:"frequency_penalty,omitempty"`
-	Reasoning          *wireReasoning  `json:"reasoning,omitempty"`
-	Text               *wireTextFormat `json:"text,omitempty"`
-	Include            []string        `json:"include,omitempty"`
-	Store              *bool           `json:"store,omitempty"`
-	ServiceTier        string          `json:"service_tier,omitempty"`
-	User               string          `json:"user,omitempty"`
-	Metadata           json.RawMessage `json:"metadata,omitempty"`
-	Stream             *bool           `json:"stream,omitempty"`
-	PreviousResponseID string          `json:"previous_response_id,omitempty"`
-}
-
 // wireInputItem is one item in the input array.
 type wireInputItem struct {
 	Type string `json:"type"`
@@ -68,26 +42,6 @@ type wireContentPart struct {
 	FileData string `json:"file_data,omitempty"` // base64
 	// refusal
 	Refusal string `json:"refusal,omitempty"`
-}
-
-// wireReasoning is the reasoning config in a request.
-type wireReasoning struct {
-	Effort  string `json:"effort,omitempty"`
-	Summary string `json:"summary,omitempty"`
-}
-
-// wireTextFormat is the text.format config.
-type wireTextFormat struct {
-	Format *wireResponseFormat `json:"format,omitempty"`
-}
-
-// wireResponseFormat describes structured output format.
-type wireResponseFormat struct {
-	Type        string          `json:"type"` // text | json_object | json_schema
-	Name        string          `json:"name,omitempty"`
-	Schema      json.RawMessage `json:"schema,omitempty"`
-	Strict      *bool           `json:"strict,omitempty"`
-	Description string          `json:"description,omitempty"`
 }
 
 // wireTool is one tool definition.

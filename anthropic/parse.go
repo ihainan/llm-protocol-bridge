@@ -683,14 +683,3 @@ func parseStopSeqs(raw json.RawMessage, p ir.Path, env *ir.Env) ([]string, error
 	}
 	return stops, nil
 }
-
-// toolResultText returns the concatenated text content of a ToolResult.
-func toolResultText(r *ir.ToolResult) string {
-	var sb strings.Builder
-	for _, p := range r.Content {
-		if p.Type == ir.PartText {
-			sb.WriteString(p.Text)
-		}
-	}
-	return sb.String()
-}
