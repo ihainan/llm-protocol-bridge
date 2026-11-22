@@ -26,6 +26,7 @@ type bufferedToolCall struct {
 	args        strings.Builder
 	finalArgs   json.RawMessage
 	live        bool
+	liveEnded   bool
 	intercepted bool
 	closed      bool
 	order       int
@@ -319,10 +320,11 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		if f.totalCalls > f.maxCalls {
 			return f.fail(ev.Index, "tool call limit exceeded")
 		}
-		key := ev.ID
-		if key == "" {
-			key = "__bc_" + strconv.Itoa(f.callSeq)
+		rawID := ev.ID
+		if rawID == "" {
+			rawID = "__bc_" + strconv.Itoa(f.callSeq)
 		}
+		key := callMapKey(ev.Index, rawID)
 		kind := ev.Kind
 		if kind == "" {
 			kind = ir.ToolFunction
@@ -403,6 +405,7 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		if bc.live && f.release == ir.ToolReleaseStream {
 			// Defer JSON error reporting until EvStop so max_tokens truncation is not turned into 502.
 			if finalArgs, _, errMsg := bc.validate(); errMsg == "" {
+				bc.liveEnded = true
 				ev.Arguments = finalArgs
 				return []ir.Event{ev}
 			}
@@ -423,7 +426,19 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		candCalls := f.candidateCalls(ev.Index)
 		dropBuffered := stop.Truncated() || (f.client == ir.FormatResponses && stop.Filtered())
 		if dropBuffered {
-			// Drop every buffered call without error, emitting queued non-call events in order.
+			// Abort any open live call BEFORE emitting queued non-call events so encoders
+			// never close an unvalidated live tool item as completed when switching items.
+			for _, bc := range candCalls {
+				if bc.live && !bc.liveEnded {
+					bc.liveEnded = true
+					out = append(out, ir.Event{
+						Type:  ir.EvToolEnd,
+						Index: bc.candIdx,
+						ID:    bc.id,
+						Err:   &ir.APIError{Message: "truncated tool call discarded"},
+					})
+				}
+			}
 			for _, entry := range f.timeline[ev.Index] {
 				if entry.callKey == "" {
 					out = append(out, entry.ev)
@@ -462,6 +477,9 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		return out
 	}
 
+	if f.hasPendingCalls(ev.Index) {
+		return f.queueEvents(ev.Index, ev)
+	}
 	return []ir.Event{ev}
 }
 
@@ -572,23 +590,32 @@ func (f *streamFilter) processStopText(ev ir.Event) []ir.Event {
 	}
 	if bestPos >= 0 {
 		var out []ir.Event
-		// Validate any pending calls and release timeline in order before emitting stop.
+		// Per design.md §9.6, hitting an emulated stop discards pending/buffered calls
+		// and aborts any open live call, while preserving legitimate queued text prefixes.
 		candCalls := f.candidateCalls(ev.Index)
-		if len(candCalls) > 0 || len(f.timeline[ev.Index]) > 0 {
-			emitted, failEvs := f.flushValidatedTimeline(ev.Index, candCalls)
-			if failEvs != nil {
-				return failEvs
+		for _, bc := range candCalls {
+			if bc.live && !bc.liveEnded {
+				bc.liveEnded = true
+				out = append(out, ir.Event{
+					Type:  ir.EvToolEnd,
+					Index: bc.candIdx,
+					ID:    bc.id,
+					Err:   &ir.APIError{Message: "tool call discarded on stop sequence"},
+				})
 			}
-			out = append(out, emitted...)
 		}
+		for _, entry := range f.timeline[ev.Index] {
+			if entry.callKey == "" {
+				out = append(out, entry.ev)
+			}
+		}
+		delete(f.timeline, ev.Index)
+		f.clearCandidateCalls(ev.Index)
 		if bestPos > 0 {
 			out = append(out, ir.Event{Type: ir.EvText, Index: ev.Index, Text: buf[:bestPos]})
 		}
 		f.stopBuf[ev.Index] = ""
 		f.stopTriggered[ev.Index] = true
-		if len(f.intercepted) > 0 {
-			return out
-		}
 		st := ir.Stop{Reason: ir.StopSequence, Sequence: bestSeq}
 		out = append(out, ir.Event{Type: ir.EvStop, Index: ev.Index, Stop: &st})
 		return out
@@ -640,9 +667,13 @@ func (f *streamFilter) hasPendingCalls(candIdx int) bool {
 	return false
 }
 
+func callMapKey(candIdx int, id string) string {
+	return strconv.Itoa(candIdx) + "\x00" + id
+}
+
 func (f *streamFilter) lookupCall(candIdx int, id string) *bufferedToolCall {
 	if id != "" {
-		if bc := f.calls[id]; bc != nil {
+		if bc := f.calls[callMapKey(candIdx, id)]; bc != nil {
 			return bc
 		}
 	}

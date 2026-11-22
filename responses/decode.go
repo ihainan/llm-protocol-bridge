@@ -392,7 +392,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 		}
 		return nil, &ir.APIError{Type: ir.ErrServer, Message: "response failed", Raw: append([]byte(nil), body...)}
 	}
-	if (wr.Object != "" && wr.Object != "response") || (wr.Object == "" && wr.Status == "" && len(wr.Output) == 0) {
+	if (wr.Object != "" && wr.Object != "response") || (wr.Status == "" && len(wr.Output) == 0) {
 		return nil, ir.Protocol("responses: response missing required fields")
 	}
 

@@ -30,6 +30,7 @@ type StreamEncoder struct {
 	openBlock int
 	// openBlockType is the type string of the open block.
 	openBlockType     string
+	thinkingTextAccum strings.Builder
 	thinkingSigVal    strings.Builder
 	thinkingSigOrigin ir.Origin
 	activeCallID      string
@@ -160,6 +161,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 				"content_block": map[string]any{"type": "thinking", "thinking": ""},
 			})
 		}
+		e.thinkingTextAccum.WriteString(ev.Text)
 		dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 			"type":  "content_block_delta",
 			"index": e.openBlock,
@@ -513,9 +515,10 @@ func (e *StreamEncoder) closeBlock(dst []byte) []byte {
 		sigVal := e.thinkingSigVal.String()
 		if needsAnthropicSeal(e.thinkingSigOrigin, e.opts.Env) {
 			sigVal = e.opts.Env.Sealer().Seal(ir.SealRecord{
-				Origin: e.thinkingSigOrigin,
-				Kind:   ir.SealSignature,
-				Value:  sigVal,
+				Origin:  e.thinkingSigOrigin,
+				Kind:    ir.SealSignature,
+				Value:   sigVal,
+				TextSum: ir.TextSum(e.thinkingTextAccum.String()),
 			})
 		}
 		dst = e.appendSSE(dst, "content_block_delta", map[string]any{
@@ -524,6 +527,7 @@ func (e *StreamEncoder) closeBlock(dst []byte) []byte {
 			"delta": map[string]any{"type": "signature_delta", "signature": sigVal},
 		})
 	}
+	e.thinkingTextAccum.Reset()
 	e.thinkingSigVal.Reset()
 	e.thinkingSigOrigin = ir.Origin{}
 	e.openBlock = -1
@@ -683,6 +687,23 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 			return nil, err
 		}
 		return nil, nil
+	}
+	if part.Type == ir.PartText && len(part.Citations) > 0 {
+		cits := make([]json.RawMessage, 0, len(part.Citations))
+		for _, c := range part.Citations {
+			if len(c.Raw) > 0 {
+				cits = append(cits, c.Raw)
+			} else {
+				b, _ := jsonx.Marshal(map[string]any{
+					"type":       "web_search_result_location",
+					"url":        c.URL,
+					"title":      c.Title,
+					"cited_text": c.CitedText,
+				})
+				cits = append(cits, b)
+			}
+		}
+		return []wireContentBlock{{Type: "text", Text: part.Text, Citations: cits, CacheControl: irCacheToWire(part.Cache)}}, nil
 	}
 	return partToBlocks(part, p, env)
 }

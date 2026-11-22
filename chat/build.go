@@ -287,12 +287,21 @@ func (b *built) buildTool(t ir.Tool, p ir.Path) (wireTool, error) {
 		}
 	}
 	params := t.Schema
+	desc := t.Description
 	if kind == ir.ToolCustom {
 		params = customToolSchema
+		if t.Grammar != nil && t.Grammar.Definition != "" {
+			note := "Input grammar (" + t.Grammar.Syntax + "): " + t.Grammar.Definition
+			if desc == "" {
+				desc = note
+			} else {
+				desc += "\n" + note
+			}
+		}
 	}
 	fn := wireFunctionDef{
 		Name:        wireName,
-		Description: t.Description,
+		Description: desc,
 		Parameters:  params,
 	}
 	if t.Strict != nil && (b.dia.StrictTools || *t.Strict) {
@@ -377,12 +386,16 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 			if part.Media.URL != "" && part.Media.FileID == "" && part.Media.Data == "" {
 				return nil, b.env.Err(ir.Unsupported(fp, "file.url", "Chat Completions file input does not support URLs"))
 			}
+			fileData := part.Media.Data
+			if fileData != "" && part.Media.MediaType != "" && !strings.HasPrefix(fileData, "data:") {
+				fileData = "data:" + part.Media.MediaType + ";base64," + fileData
+			}
 			contentParts = append(contentParts, wireContentPart{
 				Type: "file",
 				File: &wireFilePart{
 					FileID:   part.Media.FileID,
 					Filename: part.Media.Filename,
-					FileData: part.Media.Data,
+					FileData: fileData,
 				},
 			})
 

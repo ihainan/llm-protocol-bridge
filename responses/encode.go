@@ -45,11 +45,12 @@ type StreamEncoder struct {
 	pendingTools []*pendingRespTool
 	pendingByID  map[string]*pendingRespTool
 
-	textAccum   strings.Builder
-	argAccum    strings.Builder
-	reasonAccum strings.Builder
-	reasonEnc   string
-	reasonSig   *ir.Signature
+	textAccum       strings.Builder
+	textAnnotations []map[string]any
+	argAccum        strings.Builder
+	reasonAccum     strings.Builder
+	reasonEnc       string
+	reasonSig       *ir.Signature
 
 	outputs []map[string]any
 	stop    ir.Stop
@@ -141,6 +142,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 				if ev.Citation.Type != "" {
 					ann["type"] = ev.Citation.Type
 				}
+				e.textAnnotations = append(e.textAnnotations, ann)
 				dst = e.appendEvent(dst, "response.output_text.annotation.added", map[string]any{
 					"sequence_number": e.nextSeq(),
 					"item_id":         e.itemID,
@@ -316,6 +318,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvToolEnd:
+		if ev.Err != nil {
+			// Explicit abort of an unvalidated live tool call (truncation/stop): discard without completing.
+			if e.openItemType == "function_call" || e.openItemType == "custom_tool_call" {
+				e.openItemType = ""
+				e.argAccum.Reset()
+			}
+			break
+		}
 		if ev.ID != "" && ev.ID != e.callID {
 			if pt := e.pendingByID[ev.ID]; pt != nil {
 				pt.finalArgs = ev.Arguments
@@ -679,25 +689,28 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 			"content_index":   0,
 			"text":            text,
 		})
+		partObj := map[string]any{
+			"type": "output_text",
+			"text": text,
+		}
+		if len(e.textAnnotations) > 0 {
+			partObj["annotations"] = e.textAnnotations
+		}
 		dst = e.appendEvent(dst, "response.content_part.done", map[string]any{
 			"sequence_number": e.nextSeq(),
 			"item_id":         e.itemID,
 			"output_index":    e.outputIndex,
 			"content_index":   0,
-			"part": map[string]any{
-				"type": "output_text",
-				"text": text,
-			},
+			"part":            partObj,
 		})
 		doneItem := map[string]any{
-			"type":   "message",
-			"id":     e.itemID,
-			"role":   "assistant",
-			"status": "completed",
-			"content": []map[string]any{
-				{"type": "output_text", "text": text},
-			},
+			"type":    "message",
+			"id":      e.itemID,
+			"role":    "assistant",
+			"status":  "completed",
+			"content": []map[string]any{partObj},
 		}
+		e.textAnnotations = nil
 		e.outputs = append(e.outputs, doneItem)
 		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
 			"sequence_number": e.nextSeq(),

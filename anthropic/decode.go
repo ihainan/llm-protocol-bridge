@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
 	"github.com/ihainan/llm-protocol-bridge/ir"
@@ -15,8 +16,10 @@ type StreamDecoder struct {
 	started  bool
 	terminal bool
 	// openBlocks maps block index -> type of the open block.
-	openBlocks  map[int]string
-	blockCallID map[int]string
+	openBlocks      map[int]string
+	blockCallID     map[int]string
+	serverToolBlock map[int]*ir.BuiltinActivity
+	serverToolArgs  map[int]*strings.Builder
 }
 
 // NewStreamDecoder returns an Anthropic stream decoder.
@@ -27,10 +30,12 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 	}
 	env.Style = ir.StyleDot
 	return &StreamDecoder{
-		env:         env,
-		names:       opts.Names,
-		openBlocks:  map[int]string{},
-		blockCallID: map[int]string{},
+		env:             env,
+		names:           opts.Names,
+		openBlocks:      map[int]string{},
+		blockCallID:     map[int]string{},
+		serverToolBlock: map[int]*ir.BuiltinActivity{},
+		serverToolArgs:  map[int]*strings.Builder{},
 	}
 }
 
@@ -123,16 +128,13 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			if kind == "" {
 				kind = ir.BuiltinWebSearch
 			}
-			out = append(out, ir.Event{
-				Type:  ir.EvBuiltin,
-				Index: 0,
-				Builtin: &ir.BuiltinActivity{
-					Kind:   kind,
-					ID:     se.ContentBlock.ID,
-					Input:  append(json.RawMessage(nil), se.ContentBlock.Input...),
-					Origin: ir.FormatAnthropic,
-				},
-			})
+			d.serverToolBlock[se.Index] = &ir.BuiltinActivity{
+				Kind:   kind,
+				ID:     se.ContentBlock.ID,
+				Input:  append(json.RawMessage(nil), se.ContentBlock.Input...),
+				Origin: ir.FormatAnthropic,
+			}
+			d.serverToolArgs[se.Index] = &strings.Builder{}
 		case "web_search_tool_result", "web_fetch_tool_result":
 			kind := ir.BuiltinWebSearch
 			if se.ContentBlock.Type == "web_fetch_tool_result" {
@@ -166,7 +168,13 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			}
 			out = append(out, ir.Event{Type: ir.EvSignature, Index: 0, Signature: sig})
 		case "input_json_delta":
-			out = append(out, ir.Event{Type: ir.EvToolArgs, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index], Text: se.Delta.PartialJSON})
+			if blockType == "tool_use" {
+				out = append(out, ir.Event{Type: ir.EvToolArgs, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index], Text: se.Delta.PartialJSON})
+			} else if blockType == "server_tool_use" {
+				if sb := d.serverToolArgs[se.Index]; sb != nil {
+					sb.WriteString(se.Delta.PartialJSON)
+				}
+			}
 		}
 
 	case "content_block_stop":
@@ -175,6 +183,15 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		case "tool_use":
 			out = append(out, ir.Event{Type: ir.EvToolEnd, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index]})
 			delete(d.blockCallID, se.Index)
+		case "server_tool_use":
+			if b := d.serverToolBlock[se.Index]; b != nil {
+				if sb := d.serverToolArgs[se.Index]; sb != nil && sb.Len() > 0 {
+					b.Input = json.RawMessage(sb.String())
+				}
+				out = append(out, ir.Event{Type: ir.EvBuiltin, Index: 0, Builtin: b})
+			}
+			delete(d.serverToolBlock, se.Index)
+			delete(d.serverToolArgs, se.Index)
 		case "redacted_thinking":
 			// EvSealed was already emitted at content_block_start where data arrives.
 		}
@@ -300,7 +317,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 		e := ParseError(0, body)
 		return nil, e
 	}
-	if (wr.Type != "" && wr.Type != "message") || (wr.Type == "" && wr.Role == "" && len(wr.Content) == 0 && wr.StopReason == "") {
+	if (wr.Type != "" && wr.Type != "message") || (wr.Role == "" && len(wr.Content) == 0 && wr.StopReason == "") {
 		return nil, ir.Protocol("anthropic: response missing required fields")
 	}
 

@@ -59,11 +59,11 @@ func TestReview2_P1_LiveFirstTruncatedCall(t *testing.T) {
 			"data: " + `{"id":"c1","object":"chat.completion.chunk","model":"gpt-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
 			"data: [DONE]\n\n"
 		out := string(feedSSE(t, s, raw))
-		if strings.Contains(out, "response.function_call_arguments.done") || strings.Contains(out, `"status":"completed"`) {
+		if strings.Contains(out, "response.function_call_arguments.done") || strings.Contains(out, `"type":"function_call","status":"completed"`) {
 			t.Errorf("emulated stop must not complete an unvalidated LiveFirst call:\n%s", out)
 		}
-		if !strings.Contains(out, "event: response.failed") {
-			t.Errorf("invalid LiveFirst call when stop matches should emit response.failed:\n%s", out)
+		if !strings.Contains(out, `"hello "`) {
+			t.Errorf("emulated stop should preserve text prefix before STOP:\n%s", out)
 		}
 	})
 }

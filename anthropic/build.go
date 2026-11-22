@@ -495,6 +495,9 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 		}
 		call := part.Call
 		args := call.Arguments
+		if call.Kind == ir.ToolCustom && len(args) == 0 && call.Input != "" {
+			args, _ = jsonx.Marshal(map[string]string{"input": call.Input})
+		}
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}
@@ -677,7 +680,15 @@ func buildThinking(rc *ir.ReasoningConfig, profile *ir.ModelProfile, env *ir.Env
 		return rb, true, 0, res.Effort, nil
 	}
 	b := 0
-	if res.Budget != nil {
+	if res.Dynamic {
+		// Dynamic/model-decided budget (e.g. Gemini thinkingBudget:-1): map to profile default/medium
+		// rather than clamping -1 to minBudget (1024).
+		eff := ir.EffortMedium
+		if profile != nil && profile.DefaultEffort != ir.EffortUnset {
+			eff = profile.DefaultEffort
+		}
+		b = profile.EffortBudget(eff)
+	} else if res.Budget != nil {
 		b = *res.Budget
 	} else if res.Effort != ir.EffortUnset {
 		b = profile.EffortBudget(res.Effort)

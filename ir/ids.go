@@ -155,7 +155,7 @@ func IsSealed(s string) bool { return strings.HasPrefix(s, sealPrefix) }
 
 // CustomToolWrapperSchema is the standard JSON Schema used to expose a freeform
 // custom tool to formats that only support JSON-schema function tools (design.md §9.2.1).
-var CustomToolWrapperSchema = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string","description":"The raw input for this tool, exactly in the format the tool description requires."}},"required":["input"]}`)
+var CustomToolWrapperSchema = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string","description":"The raw input for this tool, exactly in the format the tool description requires."}},"required":["input"],"additionalProperties":false}`)
 
 // AssignToolWireName flattens a tool's namespace/name, resolves collisions with
 // _2/_3 suffixes, records the reverse mapping in names, and returns the wire name

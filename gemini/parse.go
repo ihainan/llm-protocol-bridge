@@ -271,7 +271,7 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 		text, _ := jsonx.String(fields["text"])
 		var sig *ir.Signature
 		if s, ok := jsonx.String(fields["thoughtSignature"]); ok && s != "" {
-			sig = &ir.Signature{Value: s, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
+			sig = parseGeminiSignature(env, s)
 		}
 		if b, ok := jsonx.Bool(fields["thought"]); ok && b {
 			// A thought part: becomes reasoning, preserving thoughtSignature.
@@ -354,7 +354,7 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 		}
 		sig, _ := jsonx.String(fields["thoughtSignature"])
 		if sig != "" {
-			call.Signature = &ir.Signature{Value: sig, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
+			call.Signature = parseGeminiSignature(env, sig)
 		}
 		return ir.Part{Type: ir.PartToolCall, Call: call}, nil
 
@@ -365,6 +365,7 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 		}
 		result := &ir.ToolResult{}
 		var resp json.RawMessage
+		var extraPartsRaw json.RawMessage
 		for _, kv := range kvs2 {
 			switch kv.Key {
 			case "id":
@@ -373,6 +374,8 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 				result.Name, _ = jsonx.String(kv.Value)
 			case "response":
 				resp = kv.Value
+			case "parts":
+				extraPartsRaw = kv.Value
 			}
 		}
 		// Gemini wraps the result in {output: ...} or {error: ...} or a structured JSON object.
@@ -398,21 +401,32 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 				result.Content = []ir.Part{ir.TextPart(string(resp))}
 			}
 		}
+		if len(extraPartsRaw) > 0 && !jsonx.IsNull(extraPartsRaw) {
+			if extraParts, err := parseContentParts(extraPartsRaw, p.Key("functionResponse").Key("parts"), env); err == nil {
+				result.Content = append(result.Content, extraParts...)
+			}
+		}
 		return ir.Part{Type: ir.PartToolResult, Result: result}, nil
 
 	case fields["thoughtSignature"] != nil:
 		sigVal, _ := jsonx.String(fields["thoughtSignature"])
-		sig := &ir.Signature{Value: sigVal, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
-		if rec, ok := env.Sealer().Unseal(sigVal); ok && rec.Kind == ir.SealSignature {
-			sig = &ir.Signature{Value: rec.Value, Origin: rec.Origin}
-		}
 		return ir.Part{
 			Type:      ir.PartReasoning,
-			Reasoning: &ir.Reasoning{Signature: sig},
+			Reasoning: &ir.Reasoning{Signature: parseGeminiSignature(env, sigVal)},
 		}, nil
 	}
 
 	return ir.Part{}, env.Err(ir.Invalid(p, "unrecognised part type"))
+}
+
+func parseGeminiSignature(env *ir.Env, sigVal string) *ir.Signature {
+	if sigVal == "" {
+		return nil
+	}
+	if rec, ok := env.Sealer().Unseal(sigVal); ok && rec.Kind == ir.SealSignature {
+		return &ir.Signature{Value: rec.Value, Origin: rec.Origin}
+	}
+	return &ir.Signature{Value: sigVal, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
 }
 
 func parseTools(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Tool, []ir.BuiltinTool, error) {

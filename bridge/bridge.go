@@ -305,13 +305,21 @@ func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
 	for i, o := range resp.Outputs {
 		oc := o
 		var parts []ir.Part
+		var textSpan strings.Builder
 		stopped := false
+		flushSpan := func() {
+			if textSpan.Len() > 0 {
+				parts = append(parts, ir.TextPart(textSpan.String()))
+				textSpan.Reset()
+			}
+		}
 		for _, pt := range o.Parts {
 			if stopped {
 				break
 			}
 			if pt.Type == ir.PartReasoning {
 				if ro == ir.ReasoningOutHidden {
+					flushSpan()
 					continue
 				}
 				if ro == ir.ReasoningOutSummary && pt.Reasoning != nil {
@@ -323,6 +331,30 @@ func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
 					pt.Reasoning = &rc
 				}
 			}
+			if pt.Type == ir.PartText && len(stops) > 0 && len(pt.Citations) == 0 && pt.Signature == nil {
+				textSpan.WriteString(pt.Text)
+				combined := textSpan.String()
+				bestPos, bestEnd, bestSeq := -1, -1, ""
+				for _, seq := range stops {
+					if idx := strings.Index(combined, seq); idx >= 0 {
+						end := idx + len(seq)
+						if bestEnd < 0 || end < bestEnd || (end == bestEnd && idx < bestPos) {
+							bestPos, bestEnd, bestSeq = idx, end, seq
+						}
+					}
+				}
+				if bestPos >= 0 {
+					textSpan.Reset()
+					if bestPos > 0 {
+						parts = append(parts, ir.TextPart(combined[:bestPos]))
+					}
+					oc.Stop = ir.Stop{Reason: ir.StopSequence, Sequence: bestSeq}
+					stopped = true
+					break
+				}
+				continue
+			}
+			flushSpan()
 			if pt.Type == ir.PartText && len(stops) > 0 {
 				bestPos, bestEnd, bestSeq := -1, -1, ""
 				for _, seq := range stops {
@@ -344,6 +376,9 @@ func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
 				}
 			}
 			parts = append(parts, pt)
+		}
+		if !stopped {
+			flushSpan()
 		}
 		oc.Parts = parts
 		cp.Outputs[i] = oc
@@ -434,6 +469,9 @@ func newStream(p *Plan, collect bool) *Stream {
 	s := newStreamWithEncoder(p, encOpts)
 	if collect {
 		s.collector = ir.NewCollector()
+		// Collector assembles a whole JSON response; always buffer calls so truncated
+		// or invalid live calls never enter the collected output.
+		s.filter.release = ir.ToolReleaseBuffered
 	}
 	return s
 }
@@ -553,7 +591,7 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 
 // End signals how the upstream ended and flushes any final client bytes.
 func (s *Stream) End(dst []byte, how ir.EndKind) ([]byte, error) {
-	if !s.filter.allStopsTriggered(s.expectedCands) {
+	if !s.done && !s.filter.allStopsTriggered(s.expectedCands) {
 		ev := s.dec.End(how)
 		if ev == nil && !s.done && len(s.finishedCands) < s.expectedCands && len(s.filter.intercepted) == 0 {
 			ev = ir.EndErrorEvent(how)

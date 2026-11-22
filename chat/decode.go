@@ -31,6 +31,7 @@ type StreamDecoder struct {
 	terminal        bool
 	seenChoices     map[int]bool
 	finishedChoices map[int]bool
+	rawUsage        wireUsage
 }
 
 // openCall tracks one tool call in flight within a candidate.
@@ -142,8 +143,11 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 
 	// Usage on a later chunk (the final usage chunk has choices: []).
 	if !jsonx.IsNull(chunk.Usage) {
-		if u, ok := decodeUsageRaw(chunk.Usage, d.dia); ok {
-			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
+		var u wireUsage
+		if json.Unmarshal(chunk.Usage, &u) == nil {
+			mergeChatRawUsage(&d.rawUsage, &u)
+			merged := decodeUsage(&d.rawUsage, chunk.Usage, d.dia)
+			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &merged})
 		}
 	}
 
@@ -408,9 +412,11 @@ func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []
 			argsStr := strings.TrimSpace(call.argsBuilt.String())
 			var argsRaw json.RawMessage
 			if call.kind == ir.ToolCustom {
-				var m map[string]string
-				if json.Unmarshal([]byte(argsStr), &m) == nil {
-					argsRaw, _ = jsonx.Marshal(m["input"])
+				var obj struct {
+					Input *string `json:"input"`
+				}
+				if json.Unmarshal([]byte(argsStr), &obj) == nil && obj.Input != nil {
+					argsRaw, _ = jsonx.Marshal(*obj.Input)
 				} else if argsStr != "" {
 					argsRaw, _ = jsonx.Marshal(argsStr)
 				}
@@ -477,6 +483,29 @@ func rawToString(raw json.RawMessage) string {
 	}
 	s, _ := jsonx.String(raw)
 	return s
+}
+
+func mergeChatRawUsage(dst, src *wireUsage) {
+	if src.PromptTokens != nil {
+		v := *src.PromptTokens
+		dst.PromptTokens = &v
+	}
+	if src.CompletionTokens != nil {
+		v := *src.CompletionTokens
+		dst.CompletionTokens = &v
+	}
+	if src.TotalTokens != nil {
+		v := *src.TotalTokens
+		dst.TotalTokens = &v
+	}
+	if src.PromptTokensDetails != nil && src.PromptTokensDetails.CachedTokens != nil {
+		v := *src.PromptTokensDetails.CachedTokens
+		dst.PromptTokensDetails = &wirePromptTokensDetails{CachedTokens: &v}
+	}
+	if src.CompletionTokensDetails != nil && src.CompletionTokensDetails.ReasoningTokens != nil {
+		v := *src.CompletionTokensDetails.ReasoningTokens
+		dst.CompletionTokensDetails = &wireCompletionTokensDetails{ReasoningTokens: &v}
+	}
 }
 
 func decodeUsageRaw(raw json.RawMessage, dia Dialect) (ir.Usage, bool) {

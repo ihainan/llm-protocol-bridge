@@ -357,8 +357,10 @@ func assistantPartsToItems(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireInput
 			}
 		}
 		switch part.Type {
-		case ir.PartText, ir.PartRefusal:
+		case ir.PartText:
 			textParts = append(textParts, wireContentPart{Type: "output_text", Text: part.Text})
+		case ir.PartRefusal:
+			textParts = append(textParts, wireContentPart{Type: "refusal", Refusal: part.Text})
 
 		case ir.PartReasoning:
 			flushText()
@@ -636,6 +638,9 @@ func buildToolOutputValue(r *ir.ToolResult, fp ir.Path, env *ir.Env) (json.RawMe
 		case ir.PartFile:
 			if cp.Media == nil {
 				continue
+			}
+			if cp.Media.URL != "" && cp.Media.FileID == "" && cp.Media.Data == "" {
+				return nil, env.Err(ir.Unsupported(cfp, "file.url", "Responses input_file in tool output does not support URLs"))
 			}
 			cparts = append(cparts, wireContentPart{
 				Type:     "input_file",

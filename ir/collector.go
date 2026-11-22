@@ -116,6 +116,55 @@ func (o *collected) closeCallKey(key string, finalArgs json.RawMessage) {
 	}
 }
 
+func (o *collected) discardCallKey(key string) {
+	oc := o.openCalls[key]
+	if oc == nil {
+		return
+	}
+	dropIdx := oc.partIdx
+	delete(o.openCalls, key)
+	if dropIdx >= 0 && dropIdx < len(o.out.Parts) {
+		o.out.Parts = append(o.out.Parts[:dropIdx], o.out.Parts[dropIdx+1:]...)
+		if o.open > dropIdx+1 {
+			o.open--
+		} else if o.open == dropIdx+1 {
+			o.open = 0
+		}
+		for _, rem := range o.openCalls {
+			if rem.partIdx > dropIdx {
+				rem.partIdx--
+			}
+		}
+	}
+	if o.lastCallKey == key {
+		o.lastCallKey = ""
+		bestIdx := -1
+		for k, rem := range o.openCalls {
+			if rem.partIdx > bestIdx {
+				bestIdx = rem.partIdx
+				o.lastCallKey = k
+			}
+		}
+	}
+}
+
+func (o *collected) discardAllCalls() {
+	if len(o.openCalls) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(o.openCalls))
+	for k := range o.openCalls {
+		keys = append(keys, k)
+	}
+	// Discard highest partIdx first so lower indices remain valid.
+	sort.Slice(keys, func(i, j int) bool {
+		return o.openCalls[keys[i]].partIdx > o.openCalls[keys[j]].partIdx
+	})
+	for _, k := range keys {
+		o.discardCallKey(k)
+	}
+}
+
 func (o *collected) closeAllCalls() {
 	if len(o.openCalls) == 0 {
 		return
@@ -293,7 +342,11 @@ func (c *Collector) Add(ev Event) {
 		}
 	case EvToolEnd:
 		if key := o.lookupCallKey(ev.ID); key != "" {
-			o.closeCallKey(key, ev.Arguments)
+			if ev.Err != nil {
+				o.discardCallKey(key)
+			} else {
+				o.closeCallKey(key, ev.Arguments)
+			}
 		}
 	case EvBuiltin:
 		if ev.Builtin == nil {
@@ -312,7 +365,11 @@ func (c *Collector) Add(ev Event) {
 		}
 	case EvStop:
 		o.flushText()
-		o.closeAllCalls()
+		if ev.Stop != nil && (ev.Stop.Truncated() || ev.Stop.Filtered()) {
+			o.discardAllCalls()
+		} else {
+			o.closeAllCalls()
+		}
 		if ev.Stop != nil {
 			o.out.Stop = *ev.Stop
 		}

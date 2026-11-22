@@ -18,6 +18,7 @@ type StreamDecoder struct {
 	hasToolCalls map[int]bool
 	callSeqBy    map[int]int
 	inThought    map[int]bool
+	rawUsage     wireUsage
 }
 
 // NewStreamDecoder returns a Gemini stream decoder.
@@ -111,7 +112,8 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 	}
 
 	if resp.UsageMetadata != nil {
-		u := decodeGeminiUsage(resp.UsageMetadata)
+		mergeGeminiRawUsage(&d.rawUsage, resp.UsageMetadata)
+		u := decodeGeminiUsage(&d.rawUsage)
 		out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
 	}
 
@@ -219,6 +221,17 @@ func (d *StreamDecoder) decodePart(out []ir.Event, part wirePart, idx int) []ir.
 			},
 		})
 
+	case part.FileData != nil:
+		d.inThought[idx] = false
+		out = append(out, ir.Event{
+			Type:  ir.EvImage,
+			Index: idx,
+			Media: &ir.Media{
+				MediaType: part.FileData.MimeType,
+				URL:       part.FileData.FileURI,
+			},
+		})
+
 	case part.ThoughtSignature != "":
 		sig := &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: d.env.ProviderID}}
 		out = append(out, ir.Event{Type: ir.EvSignature, Index: idx, Signature: sig})
@@ -296,6 +309,44 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 			}
 			if p != nil {
 				out.Parts = append(out.Parts, *p)
+			}
+		}
+		if cand.GroundingMetadata != nil {
+			if len(cand.GroundingMetadata.WebSearchQueries) > 0 {
+				var hits []ir.Hit
+				for _, ch := range cand.GroundingMetadata.GroundingChunks {
+					if ch.Web != nil && ch.Web.URI != "" {
+						hits = append(hits, ir.Hit{URL: ch.Web.URI, Title: ch.Web.Title})
+					}
+				}
+				out.Parts = append(out.Parts, ir.Part{
+					Type: ir.PartBuiltinCall,
+					Builtin: &ir.BuiltinActivity{
+						Kind:   ir.BuiltinWebSearch,
+						Query:  cand.GroundingMetadata.WebSearchQueries[0],
+						Hits:   hits,
+						Origin: ir.FormatGemini,
+					},
+				})
+			}
+			var cits []ir.Citation
+			for _, ch := range cand.GroundingMetadata.GroundingChunks {
+				if ch.Web != nil && ch.Web.URI != "" {
+					cits = append(cits, ir.Citation{Type: "url_citation", URL: ch.Web.URI, Title: ch.Web.Title})
+				}
+			}
+			if len(cits) > 0 {
+				attached := false
+				for i := len(out.Parts) - 1; i >= 0; i-- {
+					if out.Parts[i].Type == ir.PartText {
+						out.Parts[i].Citations = append(out.Parts[i].Citations, cits...)
+						attached = true
+						break
+					}
+				}
+				if !attached {
+					out.Parts = append(out.Parts, ir.Part{Type: ir.PartText, Citations: cits})
+				}
 			}
 		}
 		out.Stop = ir.FinalStop(geminiStop(cand.FinishReason), out.Parts)
@@ -414,8 +465,43 @@ func wirePartToIR(part wirePart, p ir.Path, candIdx int, callIdx *int, names map
 			MediaType: part.FileData.MimeType,
 			URL:       part.FileData.FileURI,
 		}}, nil
+
+	case part.ThoughtSignature != "":
+		return &ir.Part{
+			Type: ir.PartReasoning,
+			Reasoning: &ir.Reasoning{
+				Signature: &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}},
+			},
+		}, nil
 	}
 	return nil, nil
+}
+
+func mergeGeminiRawUsage(dst, src *wireUsage) {
+	if src.PromptTokenCount != nil {
+		v := *src.PromptTokenCount
+		dst.PromptTokenCount = &v
+	}
+	if src.CandidatesTokenCount != nil {
+		v := *src.CandidatesTokenCount
+		dst.CandidatesTokenCount = &v
+	}
+	if src.TotalTokenCount != nil {
+		v := *src.TotalTokenCount
+		dst.TotalTokenCount = &v
+	}
+	if src.CachedContentTokenCount != nil {
+		v := *src.CachedContentTokenCount
+		dst.CachedContentTokenCount = &v
+	}
+	if src.ThoughtsTokenCount != nil {
+		v := *src.ThoughtsTokenCount
+		dst.ThoughtsTokenCount = &v
+	}
+	if src.ToolUsePromptTokenCount != nil {
+		v := *src.ToolUsePromptTokenCount
+		dst.ToolUsePromptTokenCount = &v
+	}
 }
 
 func geminiStop(reason string) ir.Stop {
