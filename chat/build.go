@@ -23,12 +23,15 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	nameMap := ir.BuildToolNameMap(req.Tools)
 	names := map[string]ir.ToolRef{}
 	b := &built{
-		env:                 env,
-		dia:                 opts.Dialect,
-		names:               names,
-		nameMap:             nameMap,
-		losses:              nil,
-		consumedPassthrough: map[string]bool{},
+		env:                  env,
+		dia:                  opts.Dialect,
+		source:               req.Source,
+		omitUserID:           opts.OmitUserID,
+		omitHistoryReasoning: opts.OmitHistoryReasoning,
+		names:                names,
+		nameMap:              nameMap,
+		losses:               nil,
+		consumedPassthrough:  map[string]bool{},
 	}
 
 	// 1. Tools (filter when ToolChoiceAllowed is set)
@@ -78,18 +81,63 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		if b.dia.DeveloperRole {
 			role = "developer"
 		}
+		sep := "\n"
+		if req.Source == ir.FormatResponses {
+			sep = "\n\n"
+		}
 		messages = append(messages, wireMessage{
 			Role:    role,
-			Content: mustMarshalTextParts(req.Instructions),
+			Content: mustMarshalTextParts(req.Instructions, sep),
+		})
+	}
+	foldMid := b.dia.MidSystem == "fold"
+	var pendingSystem []string
+	flushPendingSystem := func() {
+		if len(pendingSystem) == 0 {
+			return
+		}
+		note := formatSystemNote(pendingSystem)
+		pendingSystem = nil
+		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+			appendTextPartToUserMessage(&messages[len(messages)-1], note)
+			return
+		}
+		messages = append(messages, wireMessage{
+			Role:    "user",
+			Content: jsonRawString(note),
 		})
 	}
 	for i, m := range req.Messages {
 		fp := ir.Root.Key("messages").At(i)
-		wms, err := b.buildMessage(m, fp)
+		if foldMid && (m.Role == ir.RoleSystem || m.Role == ir.RoleDeveloper) {
+			for j, pt := range m.Parts {
+				if pt.Cache != nil {
+					if err := b.env.Lose(ir.LossCacheMarker, fp.Key("parts").At(j).Key("cache_control"), "prompt cache markers not supported by Chat Completions"); err != nil {
+						return nil, err
+					}
+				}
+			}
+			if text := ir.TextOf(m.Parts, "\n"); text != "" {
+				pendingSystem = append(pendingSystem, text)
+			}
+			continue
+		}
+		if foldMid && m.Role == ir.RoleAssistant {
+			flushPendingSystem()
+		}
+		var prefixNote string
+		if foldMid && m.Role == ir.RoleUser && len(pendingSystem) > 0 {
+			prefixNote = formatSystemNote(pendingSystem)
+			pendingSystem = nil
+		}
+		wms, err := b.buildMessage(m, fp, prefixNote)
 		if err != nil {
 			return nil, err
 		}
 		messages = append(messages, wms...)
+	}
+	if foldMid {
+		flushPendingSystem()
 	}
 
 	// 3. Assemble top-level object using jsonx for field order control.
@@ -112,13 +160,21 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		out.Raw("tools", toolsBytes)
 	}
 
-	// tool_choice
+	// tool_choice: omit auto/none when no tools are sent (Chat upstreams reject
+	// tool_choice without tools); reject required/named when tools are empty.
 	if req.ToolChoice.Mode != "" {
-		tcBytes, err := buildToolChoice(req.ToolChoice, b)
-		if err != nil {
-			return nil, err
+		if len(wireTools) == 0 {
+			if req.ToolChoice.Mode == ir.ToolChoiceRequired || req.ToolChoice.Mode == ir.ToolChoiceTool ||
+				(req.ToolChoice.Mode == ir.ToolChoiceAllowed && req.ToolChoice.AllowedMode == ir.ToolChoiceRequired) {
+				return nil, b.env.Err(ir.Invalid(ir.Root.Key("tool_choice"), "tool_choice requires at least one tool"))
+			}
+		} else {
+			tcBytes, err := buildToolChoice(req.ToolChoice, b)
+			if err != nil {
+				return nil, err
+			}
+			out.Raw("tool_choice", tcBytes)
 		}
-		out.Raw("tool_choice", tcBytes)
 	}
 
 	// parallel_tool_calls
@@ -212,7 +268,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// metadata
-	if req.User != "" {
+	if req.User != "" && !b.omitUserID {
 		out.Str("user", req.User)
 	}
 	if len(req.Metadata) > 0 {
@@ -229,8 +285,8 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			return nil, err
 		}
 	}
-	if len(req.Include) > 0 {
-		if err := b.env.Lose(ir.LossRequestInclude, ir.Root.Key("include"), "not supported by Chat Completions"); err != nil {
+	for i, inc := range req.Include {
+		if err := b.env.Lose(ir.LossRequestInclude, ir.Root.Key("include").At(i), inc); err != nil {
 			return nil, err
 		}
 	}
@@ -261,12 +317,15 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 // built is the state used during one BuildRequest call.
 type built struct {
-	env                 *ir.Env
-	dia                 Dialect
-	names               map[string]ir.ToolRef
-	nameMap             *ir.ToolNameMap
-	losses              []ir.Loss
-	consumedPassthrough map[string]bool
+	env                  *ir.Env
+	dia                  Dialect
+	source               ir.Format
+	omitUserID           bool
+	omitHistoryReasoning bool
+	names                map[string]ir.ToolRef
+	nameMap              *ir.ToolNameMap
+	losses               []ir.Loss
+	consumedPassthrough  map[string]bool
 }
 
 var customToolSchema = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}`)
@@ -330,7 +389,7 @@ func (b *built) buildTool(t ir.Tool, p ir.Path) (wireTool, error) {
 // buildMessage converts an ir.Message to one or more wireMessages.
 // A user message that mixes tool results with other content is split into
 // separate tool-role messages followed by a user-role message.
-func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
+func (b *built) buildMessage(m ir.Message, p ir.Path, prefixSystemNote string) ([]wireMessage, error) {
 	wm := wireMessage{Role: string(m.Role), Name: m.Name}
 	// Map IR roles back to Chat roles.
 	switch m.Role {
@@ -378,6 +437,9 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 			if part.Media == nil {
 				continue
 			}
+			if part.Media.FileID != "" && part.Media.URL == "" && part.Media.Data == "" {
+				return nil, b.env.Err(ir.Unsupported(fp.Key("file_id"), "image.file_id", "file_id inputs are not supported; send image_url"))
+			}
 			contentParts = append(contentParts, buildImageContentPart(part.Media))
 
 		case ir.PartAudio:
@@ -396,6 +458,13 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 		case ir.PartFile:
 			if part.Media == nil {
 				continue
+			}
+			if isTextDocument(part.Media) {
+				contentParts = append(contentParts, wireContentPart{Type: "text", Text: formatTextDocument(part.Media)})
+				continue
+			}
+			if !b.dia.FileParts && b.source != ir.FormatChat {
+				return nil, b.env.Err(ir.Unsupported(fp.Key("type"), "file", "file inputs are not supported by this model"))
 			}
 			if part.Media.URL != "" && part.Media.FileID == "" && part.Media.Data == "" {
 				return nil, b.env.Err(ir.Unsupported(fp, "file.url", "Chat Completions file input does not support URLs"))
@@ -425,9 +494,11 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 						return nil, err
 					}
 				}
-				reasoningText += part.Reasoning.Text
+				if !b.omitHistoryReasoning {
+					reasoningText += part.Reasoning.Text
+				}
 			}
-			if part.Signature != nil {
+			if part.Signature != nil && !b.omitHistoryReasoning {
 				reasoningSignature = part.Signature.Value
 			}
 
@@ -458,7 +529,10 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 			if part.Result == nil {
 				continue
 			}
-			resultText, imgs := buildToolResultContent(part.Result)
+			resultText, imgs, err := buildToolResultContent(part.Result, fp, b.env)
+			if err != nil {
+				return nil, err
+			}
 			toolMsgs = append(toolMsgs, wireMessage{
 				Role:       "tool",
 				ToolCallID: part.Result.CallID,
@@ -477,16 +551,43 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 		}
 	}
 
+	// Exact ordering for folded user turns:
+	// [folded <system_message>] -> [lifted tool_result images] -> [user content].
 	if len(liftedImages) > 0 {
 		contentParts = append(liftedImages, contentParts...)
 	}
+	if prefixSystemNote != "" {
+		contentParts = append([]wireContentPart{{Type: "text", Text: prefixSystemNote}}, contentParts...)
+	}
 
-	// If the message was entirely tool results (with no lifted images), return just those.
+	// If the message was entirely tool results (with no lifted images or folded note), return just those.
 	if len(contentParts) == 0 && len(toolCalls) == 0 && reasoningText == "" && refusalText == "" {
 		if len(toolMsgs) > 0 {
 			return toolMsgs, nil
 		}
 		return []wireMessage{wm}, nil
+	}
+
+	// In-place system/developer messages join multiple text parts with "\n".
+	if (m.Role == ir.RoleSystem || m.Role == ir.RoleDeveloper) && len(contentParts) > 1 {
+		allText := true
+		for _, cp := range contentParts {
+			if cp.Type != "text" {
+				allText = false
+				break
+			}
+		}
+		if allText {
+			var sb strings.Builder
+			for i, cp := range contentParts {
+				if i > 0 {
+					sb.WriteByte('\n')
+				}
+				sb.WriteString(cp.Text)
+			}
+			wm.Content = jsonRawString(sb.String())
+			contentParts = nil
+		}
 	}
 
 	// Assemble non-result content. A single text part is emitted as a plain
@@ -727,17 +828,34 @@ func buildImageContentPart(m *ir.Media) wireContentPart {
 
 // buildToolResultContent builds the text payload for a Chat tool message and
 // extracts any images to be lifted into a follow-up user message.
-func buildToolResultContent(r *ir.ToolResult) (string, []wireContentPart) {
+func buildToolResultContent(r *ir.ToolResult, p ir.Path, env *ir.Env) (string, []wireContentPart, error) {
 	var sb strings.Builder
 	var imgs []wireContentPart
-	for _, p := range r.Content {
-		switch p.Type {
+	for i, part := range r.Content {
+		fp := p.Key("content").At(i)
+		switch part.Type {
 		case ir.PartText:
-			sb.WriteString(p.Text)
+			sb.WriteString(part.Text)
 		case ir.PartImage:
-			if p.Media != nil {
-				imgs = append(imgs, buildImageContentPart(p.Media))
+			if part.Media != nil {
+				if part.Media.FileID != "" && part.Media.URL == "" && part.Media.Data == "" {
+					return "", nil, env.Err(ir.Unsupported(fp.Key("file_id"), "image.file_id", "file_id inputs are not supported; send image_url"))
+				}
+				imgs = append(imgs, buildImageContentPart(part.Media))
 			}
+		case ir.PartFile:
+			if part.Media == nil {
+				continue
+			}
+			if isTextDocument(part.Media) {
+				doc := formatTextDocument(part.Media)
+				if sb.Len() > 0 && doc != "" {
+					sb.WriteByte('\n')
+				}
+				sb.WriteString(doc)
+				continue
+			}
+			return "", nil, env.Err(ir.Unsupported(fp.Key("type"), "file", "binary documents are not supported inside tool results"))
 		}
 	}
 	if len(imgs) > 0 {
@@ -754,15 +872,64 @@ func buildToolResultContent(r *ir.ToolResult) (string, []wireContentPart) {
 			text = "[tool error] " + text
 		}
 	}
-	return text, imgs
+	return text, imgs, nil
 }
 
-// mustMarshalTextParts concatenates text parts into a single string.
-func mustMarshalTextParts(parts []ir.Part) json.RawMessage {
+func isTextDocument(m *ir.Media) bool {
+	if m == nil {
+		return false
+	}
+	if m.Text != "" {
+		return true
+	}
+	return m.MediaType == "text/plain" && m.Data == "" && m.FileID == "" && m.URL == ""
+}
+
+func formatTextDocument(m *ir.Media) string {
+	header := m.Title
+	if m.Context != "" {
+		if header != "" {
+			header += "\n" + m.Context
+		} else {
+			header = m.Context
+		}
+	}
+	if header != "" {
+		return header + "\n\n" + m.Text
+	}
+	return m.Text
+}
+
+func formatSystemNote(texts []string) string {
+	return "<system_message>\n" + strings.Join(texts, "\n") + "\n</system_message>"
+}
+
+func appendTextPartToUserMessage(wm *wireMessage, text string) {
+	var parts []wireContentPart
+	switch jsonx.Kind(wm.Content) {
+	case '"':
+		s, _ := jsonx.String(wm.Content)
+		parts = append(parts, wireContentPart{Type: "text", Text: s})
+	case '[':
+		_ = json.Unmarshal(wm.Content, &parts)
+	}
+	parts = append(parts, wireContentPart{Type: "text", Text: text})
+	if cb, err := jsonx.Marshal(parts); err == nil {
+		wm.Content = cb
+	}
+}
+
+// mustMarshalTextParts joins text parts with sep into a single JSON string.
+func mustMarshalTextParts(parts []ir.Part, sep string) json.RawMessage {
 	var sb strings.Builder
+	n := 0
 	for _, p := range parts {
 		if p.Type == ir.PartText {
+			if n > 0 {
+				sb.WriteString(sep)
+			}
 			sb.WriteString(p.Text)
+			n++
 		}
 	}
 	return jsonRawString(sb.String())

@@ -57,7 +57,8 @@ type Dialect struct {
 
 	// MidSystem controls system/developer messages that appear in the middle of
 	// the conversation (after the first user message):
-	// "" or "keep": passed through; "fold": merged into the nearest assistant turn.
+	// "" or "keep": passed through in place; "fold": wrapped in
+	// <system_message>...</system_message> and folded into adjacent user turns.
 	MidSystem string
 
 	// ReasoningReplay controls how reasoning is replayed in tool-call rounds.

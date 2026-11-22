@@ -70,9 +70,15 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 			return nil, err
 		}
 		// Extract leading system/developer messages into Instructions.
+		// Within a single leading message, join multiple text parts with "\n"
+		// so Instructions holds one part per instructions/message entry (joined
+		// with "\n\n" when building Chat Completions).
 		i := 0
 		for i < len(msgs) && (msgs[i].Role == ir.RoleSystem || msgs[i].Role == ir.RoleDeveloper) {
-			req.Instructions = append(req.Instructions, msgs[i].Parts...)
+			txt := ir.TextOf(msgs[i].Parts, "\n")
+			if txt != "" {
+				req.Instructions = append(req.Instructions, ir.TextPart(txt))
+			}
 			i++
 		}
 		req.Messages = msgs[i:]
@@ -97,43 +103,147 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 		req.ToolChoice = tc
 	}
 
-	// parallel_tool_calls
-	if v, ok := fields["parallel_tool_calls"]; ok {
-		if b, ok2 := jsonx.Bool(v); ok2 {
-			req.ParallelToolCalls = &b
+	// Validate tool_choice references against declared tools.
+	if req.ToolChoice.Mode != ir.ToolChoiceUnset {
+		toolSet := make(map[string]bool, len(req.Tools))
+		bareNameSet := make(map[string]bool, len(req.Tools))
+		for _, t := range req.Tools {
+			toolSet[t.Namespace+"\x00"+t.Name] = true
+			bareNameSet[t.Name] = true
+		}
+		hasTool := func(ns, name string) bool {
+			if name == "" {
+				return false
+			}
+			if toolSet[ns+"\x00"+name] {
+				return true
+			}
+			return ns == "" && bareNameSet[name]
+		}
+		hasAnyTools := len(req.Tools) > 0 || len(req.Builtins) > 0
+		switch req.ToolChoice.Mode {
+		case ir.ToolChoiceRequired:
+			if !hasAnyTools {
+				return nil, env.Err(ir.Invalid(p.Key("tool_choice"), `tool_choice "required" needs at least one tool`))
+			}
+		case ir.ToolChoiceTool:
+			if !hasTool(req.ToolChoice.Namespace, req.ToolChoice.Name) {
+				return nil, env.Err(ir.Invalid(p.Key("tool_choice").Key("name"), "tool_choice names a tool that is not in tools: "+req.ToolChoice.Name))
+			}
+		case ir.ToolChoiceAllowed:
+			for i, ref := range req.ToolChoice.Allowed {
+				if !hasTool(ref.Namespace, ref.Name) {
+					return nil, env.Err(ir.Invalid(p.Key("tool_choice").Key("tools").At(i), "allowed tool not found in tools: "+ref.Name))
+				}
+			}
 		}
 	}
 
+	// parallel_tool_calls
+	if v, ok := fields["parallel_tool_calls"]; ok && !jsonx.IsNull(v) {
+		b, ok2 := jsonx.Bool(v)
+		if !ok2 {
+			return nil, env.Err(ir.Invalid(p.Key("parallel_tool_calls"), "must be a boolean"))
+		}
+		req.ParallelToolCalls = &b
+	}
+
 	// sampling
-	if v, ok := fields["temperature"]; ok {
-		if f, ok2 := jsonx.Float(v); ok2 {
-			req.Temperature = &f
+	if v, ok := fields["temperature"]; ok && !jsonx.IsNull(v) {
+		f, ok2 := jsonx.Float(v)
+		if !ok2 {
+			return nil, env.Err(ir.Invalid(p.Key("temperature"), "must be a number"))
 		}
-	}
-	if v, ok := fields["top_p"]; ok {
-		if f, ok2 := jsonx.Float(v); ok2 {
-			req.TopP = &f
+		if f < 0 || f > 2 {
+			return nil, env.Err(ir.Invalid(p.Key("temperature"), "must be between 0 and 2"))
 		}
+		req.Temperature = &f
 	}
-	if v, ok := fields["max_output_tokens"]; ok {
-		if n, ok2 := jsonx.Int(v); ok2 {
-			ni := int(n)
-			req.MaxOutputTokens = &ni
+	if v, ok := fields["top_p"]; ok && !jsonx.IsNull(v) {
+		f, ok2 := jsonx.Float(v)
+		if !ok2 {
+			return nil, env.Err(ir.Invalid(p.Key("top_p"), "must be a number"))
 		}
+		if f < 0 || f > 1 {
+			return nil, env.Err(ir.Invalid(p.Key("top_p"), "must be between 0 and 1"))
+		}
+		req.TopP = &f
 	}
-	if v, ok := fields["seed"]; ok {
+	if v, ok := fields["max_output_tokens"]; ok && !jsonx.IsNull(v) {
+		n, ok2 := jsonx.Int(v)
+		if !ok2 {
+			return nil, env.Err(ir.Invalid(p.Key("max_output_tokens"), "must be an integer"))
+		}
+		if n <= 0 {
+			return nil, env.Err(ir.Invalid(p.Key("max_output_tokens"), "must be greater than 0"))
+		}
+		ni := int(n)
+		req.MaxOutputTokens = &ni
+	}
+	if v, ok := fields["seed"]; ok && !jsonx.IsNull(v) {
 		if n, ok2 := jsonx.Int(v); ok2 {
 			req.Seed = &n
 		}
 	}
-	if v, ok := fields["presence_penalty"]; ok {
-		if f, ok2 := jsonx.Float(v); ok2 {
-			req.PresencePenalty = &f
+	if v, ok := fields["presence_penalty"]; ok && !jsonx.IsNull(v) {
+		f, ok2 := jsonx.Float(v)
+		if !ok2 {
+			return nil, env.Err(ir.Invalid(p.Key("presence_penalty"), "must be a number"))
+		}
+		if f < -2 || f > 2 {
+			return nil, env.Err(ir.Invalid(p.Key("presence_penalty"), "must be between -2 and 2"))
+		}
+		req.PresencePenalty = &f
+	}
+	if v, ok := fields["frequency_penalty"]; ok && !jsonx.IsNull(v) {
+		f, ok2 := jsonx.Float(v)
+		if !ok2 {
+			return nil, env.Err(ir.Invalid(p.Key("frequency_penalty"), "must be a number"))
+		}
+		if f < -2 || f > 2 {
+			return nil, env.Err(ir.Invalid(p.Key("frequency_penalty"), "must be between -2 and 2"))
+		}
+		req.FrequencyPenalty = &f
+	}
+	if v, ok := fields["top_logprobs"]; ok && !jsonx.IsNull(v) {
+		n, ok2 := jsonx.Int(v)
+		if !ok2 || n < 0 {
+			return nil, env.Err(ir.Invalid(p.Key("top_logprobs"), "must be a non-negative integer"))
+		}
+		if n > 0 {
+			ni := int(n)
+			req.TopLogprobs = &ni
+			if err := env.Lose(ir.LossSamplingLogprobs, p.Key("top_logprobs"), "top_logprobs is not supported"); err != nil {
+				return nil, err
+			}
 		}
 	}
-	if v, ok := fields["frequency_penalty"]; ok {
-		if f, ok2 := jsonx.Float(v); ok2 {
-			req.FrequencyPenalty = &f
+	if v, ok := fields["logprobs"]; ok && !jsonx.IsNull(v) {
+		b, ok2 := jsonx.Bool(v)
+		if !ok2 {
+			return nil, env.Err(ir.Invalid(p.Key("logprobs"), "must be a boolean"))
+		}
+		if b {
+			req.Logprobs = &b
+			if err := env.Lose(ir.LossSamplingLogprobs, p.Key("logprobs"), "logprobs is not supported"); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if v, ok := fields["truncation"]; ok && !jsonx.IsNull(v) {
+		s, ok2 := jsonx.String(v)
+		if !ok2 {
+			return nil, env.Err(ir.Invalid(p.Key("truncation"), "must be a string"))
+		}
+		switch s {
+		case "disabled":
+			// accepted no-op
+		case "auto":
+			if err := env.Lose(ir.LossUnknownField, p.Key("truncation"), `truncation "auto" is not supported`); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, env.Err(ir.Invalid(p.Key("truncation"), "unknown truncation mode: "+s))
 		}
 	}
 
@@ -170,10 +280,19 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 		if !ok2 {
 			return nil, env.Err(ir.Invalid(p.Key("include"), "must be an array"))
 		}
-		for _, e := range elems {
-			s, _ := jsonx.String(e)
+		for i, e := range elems {
+			s, ok3 := jsonx.String(e)
+			if !ok3 {
+				return nil, env.Err(ir.Invalid(p.Key("include").At(i), "must be a string"))
+			}
 			if s != "" {
 				req.Include = append(req.Include, s)
+				if s == "reasoning.encrypted_content" {
+					if req.Reasoning == nil {
+						req.Reasoning = &ir.ReasoningConfig{}
+					}
+					req.Reasoning.IncludeEncrypted = true
+				}
 			}
 		}
 	}
@@ -190,7 +309,13 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 		req.PreviousResponseID, _ = jsonx.String(v)
 	}
 
-	// service_tier, user, metadata
+	// Input must contain at least one non-system/developer message unless continuing
+	// from previous_response_id.
+	if req.PreviousResponseID == "" && len(req.Messages) == 0 {
+		return nil, env.Err(ir.Invalid(p.Key("input"), "input must contain at least one user or assistant item"))
+	}
+
+	// service_tier, user, metadata, prompt_cache_key, prompt_cache_retention
 	if v, ok := fields["service_tier"]; ok {
 		req.ServiceTier, _ = jsonx.String(v)
 	}
@@ -199,6 +324,12 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 	}
 	if v, ok := fields["metadata"]; ok {
 		req.Metadata = append(json.RawMessage(nil), v...)
+	}
+	if v, ok := fields["prompt_cache_key"]; ok && !jsonx.IsNull(v) {
+		req.PromptCacheKey, _ = jsonx.String(v)
+	}
+	if v, ok := fields["prompt_cache_retention"]; ok && !jsonx.IsNull(v) {
+		req.PromptCacheRetention, _ = jsonx.String(v)
 	}
 
 	// Echo: preserve client fields for response echoing.
@@ -209,7 +340,8 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 			"parallel_tool_calls", "temperature", "top_p", "max_output_tokens",
 			"seed", "stop", "reasoning", "text", "include", "store",
 			"previous_response_id", "stream", "service_tier", "user", "metadata",
-			"presence_penalty", "frequency_penalty":
+			"presence_penalty", "frequency_penalty", "top_logprobs", "logprobs",
+			"truncation", "prompt_cache_key", "prompt_cache_retention":
 			// known, don't echo separately
 		default:
 			if err := env.UnknownParam(p.Key(kv.Key)); err != nil {
@@ -252,6 +384,8 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message,
 	}
 
 	var msgs []ir.Message
+	knownCalls := map[string]ir.ToolKind{}
+	answeredCalls := map[string]bool{}
 
 	type pending struct {
 		role  ir.Role
@@ -311,6 +445,10 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message,
 			if err != nil {
 				return nil, err
 			}
+			if _, dup := knownCalls[part.Call.ID]; dup {
+				return nil, env.Err(ir.Invalid(fp.Key("call_id"), "duplicate call_id: "+part.Call.ID))
+			}
+			knownCalls[part.Call.ID] = ir.ToolFunction
 			c.parts = append(c.parts, part)
 
 		case "function_call_output":
@@ -319,6 +457,19 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message,
 			if err != nil {
 				return nil, err
 			}
+			callID := part.Result.CallID
+			callKind, known := knownCalls[callID]
+			if !known {
+				if !env.Repairs(ir.RepairOrphanResults) {
+					return nil, env.Err(ir.Invalid(fp.Key("call_id"), "no tool call found for call_id: "+callID))
+				}
+			} else if callKind != ir.ToolFunction {
+				return nil, env.Err(ir.Invalid(fp.Key("type"), "call_id "+callID+" belongs to a custom_tool call, not function"))
+			}
+			if answeredCalls[callID] && !env.Repairs(ir.RepairDuplicateResults) {
+				return nil, env.Err(ir.Invalid(fp.Key("call_id"), "call_id already has an output: "+callID))
+			}
+			answeredCalls[callID] = true
 			c.parts = append(c.parts, part)
 
 		case "custom_tool_call":
@@ -327,6 +478,10 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message,
 			if err != nil {
 				return nil, err
 			}
+			if _, dup := knownCalls[part.Call.ID]; dup {
+				return nil, env.Err(ir.Invalid(fp.Key("call_id"), "duplicate call_id: "+part.Call.ID))
+			}
+			knownCalls[part.Call.ID] = ir.ToolCustom
 			c.parts = append(c.parts, part)
 
 		case "custom_tool_call_output":
@@ -335,6 +490,19 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message,
 			if err != nil {
 				return nil, err
 			}
+			callID := part.Result.CallID
+			callKind, known := knownCalls[callID]
+			if !known {
+				if !env.Repairs(ir.RepairOrphanResults) {
+					return nil, env.Err(ir.Invalid(fp.Key("call_id"), "no tool call found for call_id: "+callID))
+				}
+			} else if callKind != ir.ToolCustom {
+				return nil, env.Err(ir.Invalid(fp.Key("type"), "call_id "+callID+" belongs to a function call, not custom_tool"))
+			}
+			if answeredCalls[callID] && !env.Repairs(ir.RepairDuplicateResults) {
+				return nil, env.Err(ir.Invalid(fp.Key("call_id"), "call_id already has an output: "+callID))
+			}
+			answeredCalls[callID] = true
 			c.parts = append(c.parts, part)
 
 		case "item_reference":
@@ -421,9 +589,22 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 		return ir.Part{Type: ir.PartRefusal, Text: text}, nil
 
 	case "input_image":
+		fileID, _ := jsonx.String(fields["file_id"])
 		imageURL, _ := jsonx.String(fields["image_url"])
+		if imageURL == "" && len(fields["image_url"]) > 0 && jsonx.Kind(fields["image_url"]) == '{' {
+			if ikvs, err := jsonx.Object(fields["image_url"]); err == nil {
+				for _, ikv := range ikvs {
+					if ikv.Key == "url" {
+						imageURL, _ = jsonx.String(ikv.Value)
+					}
+				}
+			}
+		}
+		if imageURL == "" && fileID == "" {
+			return ir.Part{}, env.Err(ir.Invalid(p.Key("image_url"), "input_image requires image_url"))
+		}
 		detail, _ := jsonx.String(fields["detail"])
-		media := &ir.Media{URL: imageURL, Detail: detail}
+		media := &ir.Media{URL: imageURL, FileID: fileID, Detail: detail}
 		// Detect inline data URIs.
 		if strings.HasPrefix(imageURL, "data:") {
 			mediaType, data, ok := parseDataURI(imageURL)
@@ -530,12 +711,25 @@ func parseReasoningItem(fields map[string]json.RawMessage, p ir.Path, env *ir.En
 
 func parseFunctionCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 	rawCallID, _ := jsonx.String(fields["call_id"])
+	if rawCallID == "" {
+		return ir.Part{}, env.Err(ir.Invalid(p.Key("call_id"), "call_id is required"))
+	}
 	callID, sig := ir.DecodeCallSignatureID(env, rawCallID)
 	name, _ := jsonx.String(fields["name"])
+	if name == "" {
+		return ir.Part{}, env.Err(ir.Invalid(p.Key("name"), "name is required"))
+	}
 	ns, _ := jsonx.String(fields["namespace"])
-	argsStr, _ := jsonx.String(fields["arguments"])
+	var argsStr string
+	if rawArgs, ok := fields["arguments"]; ok && !jsonx.IsNull(rawArgs) {
+		var okStr bool
+		argsStr, okStr = jsonx.String(rawArgs)
+		if !okStr {
+			return ir.Part{}, env.Err(ir.Invalid(p.Key("arguments"), "arguments must be a JSON-encoded string"))
+		}
+	}
 	args := json.RawMessage(argsStr)
-	if len(args) == 0 {
+	if strings.TrimSpace(argsStr) == "" {
 		args = json.RawMessage(`{}`)
 	}
 	return ir.Part{
@@ -553,6 +747,9 @@ func parseFunctionCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir
 
 func parseFunctionCallOutputItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 	rawCallID, _ := jsonx.String(fields["call_id"])
+	if rawCallID == "" {
+		return ir.Part{}, env.Err(ir.Invalid(p.Key("call_id"), "call_id is required"))
+	}
 	callID, _ := ir.DecodeCallSignatureID(env, rawCallID)
 	parts, err := parseToolOutputContent(fields["output"], p.Key("output"), env)
 	if err != nil {
@@ -598,10 +795,23 @@ func parseToolOutputContent(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.P
 
 func parseCustomToolCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 	rawCallID, _ := jsonx.String(fields["call_id"])
+	if rawCallID == "" {
+		return ir.Part{}, env.Err(ir.Invalid(p.Key("call_id"), "call_id is required"))
+	}
 	callID, sig := ir.DecodeCallSignatureID(env, rawCallID)
 	name, _ := jsonx.String(fields["name"])
+	if name == "" {
+		return ir.Part{}, env.Err(ir.Invalid(p.Key("name"), "name is required"))
+	}
 	ns, _ := jsonx.String(fields["namespace"])
-	input, _ := jsonx.String(fields["input"])
+	var input string
+	if rawIn, ok := fields["input"]; ok && !jsonx.IsNull(rawIn) {
+		var okStr bool
+		input, okStr = jsonx.String(rawIn)
+		if !okStr {
+			return ir.Part{}, env.Err(ir.Invalid(p.Key("input"), "input must be a string"))
+		}
+	}
 	args, _ := json.Marshal(map[string]string{"input": input})
 	return ir.Part{
 		Type: ir.PartToolCall,
@@ -611,6 +821,7 @@ func parseCustomToolCallItem(fields map[string]json.RawMessage, p ir.Path, env *
 			Namespace: ns,
 			Kind:      ir.ToolCustom,
 			Arguments: args,
+			Input:     input,
 			Signature: sig,
 		},
 	}, nil
@@ -618,6 +829,9 @@ func parseCustomToolCallItem(fields map[string]json.RawMessage, p ir.Path, env *
 
 func parseCustomToolCallOutputItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 	rawCallID, _ := jsonx.String(fields["call_id"])
+	if rawCallID == "" {
+		return ir.Part{}, env.Err(ir.Invalid(p.Key("call_id"), "call_id is required"))
+	}
 	callID, _ := ir.DecodeCallSignatureID(env, rawCallID)
 	parts, err := parseToolOutputContent(fields["output"], p.Key("output"), env)
 	if err != nil {
@@ -640,6 +854,10 @@ func parseCustomToolCallOutputItem(fields map[string]json.RawMessage, p ir.Path,
 }
 
 func parseTools(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Tool, []ir.BuiltinTool, error) {
+	return parseToolsWithSeen(raw, p, env, map[string]bool{}, "")
+}
+
+func parseToolsWithSeen(raw json.RawMessage, p ir.Path, env *ir.Env, seen map[string]bool, namespace string) ([]ir.Tool, []ir.BuiltinTool, error) {
 	elems, ok := jsonx.Array(raw)
 	if !ok {
 		return nil, nil, env.Err(ir.Invalid(p, "must be an array"))
@@ -663,12 +881,24 @@ func parseTools(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Tool, []ir.Bu
 			if err != nil {
 				return nil, nil, err
 			}
+			t.Namespace = namespace
+			key := t.Namespace + "\x00" + t.Name
+			if seen[key] {
+				return nil, nil, env.Err(ir.Invalid(fp.Key("name"), "duplicate tool name: "+t.Name))
+			}
+			seen[key] = true
 			tools = append(tools, t)
 		case "custom":
 			t, err := parseCustomTool(fields, fp, env)
 			if err != nil {
 				return nil, nil, err
 			}
+			t.Namespace = namespace
+			key := t.Namespace + "\x00" + t.Name
+			if seen[key] {
+				return nil, nil, env.Err(ir.Invalid(fp.Key("name"), "duplicate tool name: "+t.Name))
+			}
+			seen[key] = true
 			tools = append(tools, t)
 		case "namespace":
 			nsName, _ := jsonx.String(fields["name"])
@@ -679,12 +909,9 @@ func parseTools(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Tool, []ir.Bu
 			if !ok || jsonx.IsNull(subRaw) {
 				break
 			}
-			subTools, subBuiltins, err := parseTools(subRaw, fp.Key("tools"), env)
+			subTools, subBuiltins, err := parseToolsWithSeen(subRaw, fp.Key("tools"), env, seen, nsName)
 			if err != nil {
 				return nil, nil, err
-			}
-			for j := range subTools {
-				subTools[j].Namespace = nsName
 			}
 			tools = append(tools, subTools...)
 			builtins = append(builtins, subBuiltins...)
@@ -796,19 +1023,25 @@ func parseToolChoice(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.ToolChoice
 			return ir.ToolChoice{Mode: ir.ToolChoiceNone}, nil
 		case "required":
 			return ir.ToolChoice{Mode: ir.ToolChoiceRequired}, nil
-		case "function":
+		case "function", "custom":
 			name, _ := jsonx.String(fields["name"])
-			return ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: name}, nil
+			ns, _ := jsonx.String(fields["namespace"])
+			return ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: name, Namespace: ns}, nil
 		case "allowed_tools":
 			var allowed []ir.ToolRef
 			var allowedMode ir.ToolChoiceMode
-			if mv, ok := fields["mode"]; ok {
-				ms, _ := jsonx.String(mv)
+			if mv, ok := fields["mode"]; ok && !jsonx.IsNull(mv) {
+				ms, okStr := jsonx.String(mv)
+				if !okStr {
+					return ir.ToolChoice{}, env.Err(ir.Invalid(p.Key("mode"), "must be a string"))
+				}
 				switch ms {
-				case "auto":
+				case "", "auto":
 					allowedMode = ir.ToolChoiceAuto
 				case "required":
 					allowedMode = ir.ToolChoiceRequired
+				default:
+					return ir.ToolChoice{}, env.Err(ir.Invalid(p.Key("mode"), "unknown allowed_tools mode: "+ms))
 				}
 			}
 			// Official schema: "tools": [{"type":"function","name":"..."}]
@@ -852,6 +1085,9 @@ func parseToolChoice(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.ToolChoice
 						allowed = append(allowed, ir.ToolRef{Name: s})
 					}
 				}
+			}
+			if allowedMode == ir.ToolChoiceRequired && len(allowed) == 0 {
+				return ir.ToolChoice{}, env.Err(ir.Invalid(p.Key("tools"), `tool_choice "required" needs at least one allowed tool`))
 			}
 			return ir.ToolChoice{Mode: ir.ToolChoiceAllowed, Allowed: allowed, AllowedMode: allowedMode}, nil
 		}
@@ -911,8 +1147,19 @@ func parseReasoning(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.ReasoningC
 				rc.Mode = ir.ReasoningOff
 			}
 		case "summary":
-			s, _ := jsonx.String(kv.Value)
-			rc.Summary = s
+			if jsonx.IsNull(kv.Value) {
+				break
+			}
+			s, ok := jsonx.String(kv.Value)
+			if !ok {
+				return nil, env.Err(ir.Invalid(p.Key("summary"), "must be a string"))
+			}
+			switch s {
+			case "", "none", "auto", "concise", "detailed":
+				rc.Summary = s
+			default:
+				return nil, env.Err(ir.Invalid(p.Key("summary"), "unrecognised reasoning summary: "+s))
+			}
 		}
 	}
 	return rc, nil
