@@ -222,5 +222,66 @@ func TestStrictA6_CodexReviewFixes(t *testing.T) {
 		if !strings.Contains(s, `"start_index":0`) || !strings.Contains(s, `"end_index":5`) {
 			t.Fatalf("stream citation not shifted to [0,5):\n%s", s)
 		}
+
+		// Follow-up P2: newline-only chunk before EvBuiltin must NOT shift citations on a later message.
+		enc2 := responses.NewStreamEncoder(responses.EncodeOptions{Env: &ir.Env{}, Model: "m", TrimLeadingNewlines: true})
+		var dst2 []byte
+		for _, ev := range []ir.Event{
+			{Type: ir.EvText, Index: 0, Text: "\n\n"},
+			{Type: ir.EvBuiltin, Index: 0, Builtin: &ir.BuiltinActivity{Kind: ir.BuiltinWebSearch, ID: "ws_1"}},
+			{Type: ir.EvText, Index: 0, Text: "Paris"},
+			{Type: ir.EvCitation, Index: 0, Citation: &ir.Citation{Type: "url_citation", URL: "https://example.test", Title: "Paris", StartIndex: 0, EndIndex: 5}},
+			{Type: ir.EvStop, Index: 0, Stop: &ir.Stop{Reason: ir.StopEndTurn}},
+		} {
+			dst2, err = enc2.Encode(dst2, ev)
+			if err != nil {
+				t.Fatalf("Encode enc2: %v", err)
+			}
+		}
+		dst2, _ = enc2.Close(dst2)
+		if !strings.Contains(string(dst2), `"start_index":0`) || !strings.Contains(string(dst2), `"end_index":5`) {
+			t.Fatalf("pendingTrimRunes leaked across EvBuiltin boundary:\n%s", dst2)
+		}
+	})
+
+	// Follow-up P2: mid-name repeated syllable ("foo" + "foo" + "bar" -> "foofoobar") and
+	// KeepTurns counting merged consecutive assistant turns.
+	t.Run("R2_P2_mid_name_repeated_prefix_and_merged_keep_turns", func(t *testing.T) {
+		reqBody := []byte(`{"model":"m","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"go"}],"tools":[{"name":"foofoobar","input_schema":{"type":"object"}}]}`)
+		plan, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, reqBody, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		rawSSE := `data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"foo"}}]}}]}` + "\n\n" +
+			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"foo"}}]}}]}` + "\n\n" +
+			`data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"bar","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
+			"data: [DONE]\n\n"
+		out := string(feedSSE(t, plan.NewStream(), rawSSE))
+		parsed := parseAnthropicSSE(t, out)
+		if parsed.Errors != 0 || len(parsed.Blocks) != 1 || parsed.Blocks[0].Name != "foofoobar" {
+			t.Fatalf("expected tool name \"foofoobar\", got blocks=%+v errors=%d\n%s", parsed.Blocks, parsed.Errors, out)
+		}
+
+		// Consecutive assistant messages in the latest turn both keep thinking under KeepTurns=1.
+		ktBody := []byte(`{
+			"model": "claude-sonnet-4",
+			"max_tokens": 100,
+			"context_management": {"edits": [{"type": "clear_thinking_20251015", "keep": {"type": "thinking_turns", "value": 1}}]},
+			"messages": [
+				{"role": "user", "content": "q1"},
+				{"role": "assistant", "content": [{"type": "thinking", "thinking": "older_turn", "signature": "s0"}, {"type": "text", "text": "a0"}]},
+				{"role": "user", "content": "q2"},
+				{"role": "assistant", "content": [{"type": "thinking", "thinking": "latest_part1", "signature": "s1"}, {"type": "text", "text": "p1"}]},
+				{"role": "assistant", "content": [{"type": "text", "text": "p2"}]},
+				{"role": "user", "content": "q3"}
+			]
+		}`)
+		pChat, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, ktBody, bridge.Options{})
+		if err != nil {
+			t.Fatalf("KeepTurns merged turn: %v", err)
+		}
+		if strings.Contains(string(pChat.Body), "older_turn") || !strings.Contains(string(pChat.Body), "latest_part1") {
+			t.Fatalf("KeepTurns=1 should drop older_turn and keep latest_part1 across consecutive assistant msgs: %s", pChat.Body)
+		}
 	})
 }

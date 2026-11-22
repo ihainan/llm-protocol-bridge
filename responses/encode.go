@@ -343,6 +343,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvSealed:
+		e.pendingTrimRunes = 0
 		if ev.Sealed == nil {
 			break
 		}
@@ -519,6 +520,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvBuiltin:
+		e.pendingTrimRunes = 0
 		if ev.Builtin == nil {
 			break
 		}
@@ -569,6 +571,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvStop:
+		e.pendingTrimRunes = 0
 		st := ir.Stop{}
 		if ev.Stop != nil {
 			st = *ev.Stop

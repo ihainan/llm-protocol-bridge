@@ -108,20 +108,28 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		})
 	}
 	// Determine which assistant turns keep historical reasoning when KeepTurns is set.
+	// Consecutive assistant messages (without an intervening user turn) count as one turn.
 	keepFromAssistantIdx := -1
 	if !b.omitHistoryReasoning && req.Reasoning != nil && req.Reasoning.KeepTurns != nil {
 		keep := *req.Reasoning.KeepTurns
 		if keep <= 0 {
 			keepFromAssistantIdx = len(req.Messages)
 		} else {
-			var asstIndices []int
+			var turnStarts []int
+			inAssistantTurn := false
 			for i, m := range req.Messages {
-				if m.Role == ir.RoleAssistant {
-					asstIndices = append(asstIndices, i)
+				switch m.Role {
+				case ir.RoleAssistant:
+					if !inAssistantTurn {
+						turnStarts = append(turnStarts, i)
+						inAssistantTurn = true
+					}
+				case ir.RoleUser:
+					inAssistantTurn = false
 				}
 			}
-			if len(asstIndices) > keep {
-				keepFromAssistantIdx = asstIndices[len(asstIndices)-keep]
+			if len(turnStarts) > keep {
+				keepFromAssistantIdx = turnStarts[len(turnStarts)-keep]
 			}
 		}
 	}

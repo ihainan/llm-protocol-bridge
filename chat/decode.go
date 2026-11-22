@@ -244,9 +244,13 @@ func mergeToolNameFragment(current, fragment string, known map[string]ir.ToolRef
 	}
 	if known != nil {
 		_, curKnown := known[current]
-		_, concatKnown := known[current+fragment]
-		if concatKnown && !curKnown {
-			return current + fragment
+		if !curKnown {
+			concat := current + fragment
+			for k := range known {
+				if strings.HasPrefix(k, concat) {
+					return concat
+				}
+			}
 		}
 	}
 	if fragment == current {
