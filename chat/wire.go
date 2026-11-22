@@ -153,13 +153,13 @@ type wireThinking struct {
 
 // wireResponse is the non-streaming Chat Completions response body.
 type wireResponse struct {
-	ID                string       `json:"id"`
-	Object            string       `json:"object"`
-	Created           int64        `json:"created"`
-	Model             string       `json:"model"`
-	Choices           []wireChoice `json:"choices"`
-	Usage             *wireUsage   `json:"usage,omitempty"`
-	SystemFingerprint string       `json:"system_fingerprint,omitempty"`
+	ID                string          `json:"id"`
+	Object            string          `json:"object"`
+	Created           int64           `json:"created"`
+	Model             string          `json:"model"`
+	Choices           []wireChoice    `json:"choices"`
+	Usage             json.RawMessage `json:"usage,omitempty"`
+	SystemFingerprint string          `json:"system_fingerprint,omitempty"`
 }
 
 // wireChunk is one streaming chunk.
@@ -169,7 +169,7 @@ type wireChunk struct {
 	Created int64              `json:"created"`
 	Model   string             `json:"model"`
 	Choices []wireStreamChoice `json:"choices"`
-	Usage   *wireUsage         `json:"usage,omitempty"`
+	Usage   json.RawMessage    `json:"usage,omitempty"`
 	// Bare error from some providers
 	Error *wireError `json:"error,omitempty"`
 }

@@ -21,6 +21,8 @@ type StreamEncoder struct {
 	openBlock int
 	// openBlockType is the type string of the open block.
 	openBlockType string
+	stop          *ir.Stop
+	usage         *ir.Usage
 }
 
 // NewStreamEncoder returns an Anthropic stream encoder.
@@ -31,8 +33,27 @@ func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
 	}
 }
 
+func (e *StreamEncoder) ensureStarted(dst []byte) []byte {
+	if e.started {
+		return dst
+	}
+	e.started = true
+	if e.id == "" {
+		e.id = "msg_" + e.opts.Env.NewID("", 24)
+	}
+	if e.model == "" {
+		e.model = e.opts.Model
+	}
+	dst = e.emitMessageStart(dst, ir.Event{Usage: e.usage})
+	dst = e.emitPing(dst)
+	return dst
+}
+
 // Encode serialises one ir.Event to Anthropic SSE bytes appended to dst.
 func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
+	if e.errored {
+		return dst, nil
+	}
 	switch ev.Type {
 	case ir.EvStart:
 		e.id = ev.ID
@@ -43,6 +64,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if e.model == "" && ev.Model != "" {
 			e.model = ev.Model
 		}
+		if ev.Usage != nil {
+			if e.usage == nil {
+				u := *ev.Usage
+				e.usage = &u
+			} else {
+				e.usage.Merge(*ev.Usage)
+			}
+		}
 		if !e.started {
 			e.started = true
 			dst = e.emitMessageStart(dst, ev)
@@ -50,6 +79,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvText:
+		dst = e.ensureStarted(dst)
 		dst = e.ensureTextBlock(dst)
 		dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 			"type":  "content_block_delta",
@@ -58,6 +88,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		})
 
 	case ir.EvReasoningStart:
+		dst = e.ensureStarted(dst)
 		dst = e.closeBlock(dst)
 		idx := e.blockIdx
 		e.blockIdx++
@@ -70,6 +101,19 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		})
 
 	case ir.EvReasoning:
+		dst = e.ensureStarted(dst)
+		if e.openBlock < 0 || e.openBlockType != "thinking" {
+			dst = e.closeBlock(dst)
+			idx := e.blockIdx
+			e.blockIdx++
+			e.openBlock = idx
+			e.openBlockType = "thinking"
+			dst = e.appendSSE(dst, "content_block_start", map[string]any{
+				"type":          "content_block_start",
+				"index":         idx,
+				"content_block": map[string]any{"type": "thinking", "thinking": ""},
+			})
+		}
 		dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 			"type":  "content_block_delta",
 			"index": e.openBlock,
@@ -77,7 +121,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		})
 
 	case ir.EvSignature:
-		if ev.Signature != nil {
+		if ev.Signature != nil && e.openBlock >= 0 && e.openBlockType == "thinking" {
 			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
 				"index": e.openBlock,
@@ -87,6 +131,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvSealed:
 		if ev.Sealed != nil {
+			dst = e.ensureStarted(dst)
 			dst = e.closeBlock(dst)
 			idx := e.blockIdx
 			e.blockIdx++
@@ -107,6 +152,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvToolStart:
+		dst = e.ensureStarted(dst)
 		dst = e.closeBlock(dst)
 		idx := e.blockIdx
 		e.blockIdx++
@@ -135,27 +181,22 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvStop:
 		dst = e.closeBlock(dst)
-		reason := stopToAnthropic(ev.Stop)
-		seq := ""
 		if ev.Stop != nil {
-			seq = ev.Stop.Sequence
+			st := *ev.Stop
+			e.stop = &st
+		} else {
+			st := ir.Stop{Reason: ir.StopEndTurn}
+			e.stop = &st
 		}
-		dst = e.appendSSE(dst, "message_delta", map[string]any{
-			"type": "message_delta",
-			"delta": map[string]any{
-				"stop_reason":   reason,
-				"stop_sequence": seqOrNull(seq),
-			},
-			"usage": map[string]any{"output_tokens": 0},
-		})
 
 	case ir.EvUsage:
 		if ev.Usage != nil {
-			dst = e.appendSSE(dst, "message_delta", map[string]any{
-				"type":  "message_delta",
-				"delta": map[string]any{},
-				"usage": buildAnthropicUsage(*ev.Usage),
-			})
+			if e.usage == nil {
+				u := *ev.Usage
+				e.usage = &u
+			} else {
+				e.usage.Merge(*ev.Usage)
+			}
 		}
 
 	case ir.EvError:
@@ -167,12 +208,35 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	return dst, nil
 }
 
-// Close writes the message_stop event unless the stream ended with an error.
+// Close writes the merged message_delta and message_stop events unless the stream ended with an error.
 func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 	if e.errored {
 		return dst, nil
 	}
+	if !e.started && e.stop == nil && e.usage == nil {
+		return dst, nil
+	}
+	dst = e.ensureStarted(dst)
 	dst = e.closeBlock(dst)
+	reason := stopToAnthropic(e.stop)
+	seq := ""
+	if e.stop != nil {
+		seq = e.stop.Sequence
+	}
+	var usageMap map[string]any
+	if e.usage != nil {
+		usageMap = buildAnthropicUsage(*e.usage)
+	} else {
+		usageMap = map[string]any{"output_tokens": 0}
+	}
+	dst = e.appendSSE(dst, "message_delta", map[string]any{
+		"type": "message_delta",
+		"delta": map[string]any{
+			"stop_reason":   reason,
+			"stop_sequence": seqOrNull(seq),
+		},
+		"usage": usageMap,
+	})
 	dst = e.appendSSE(dst, "message_stop", map[string]any{"type": "message_stop"})
 	return dst, nil
 }
@@ -183,11 +247,20 @@ func (e *StreamEncoder) Keepalive(dst []byte) []byte {
 }
 
 func (e *StreamEncoder) emitMessageStart(dst []byte, ev ir.Event) []byte {
-	var promptTokens int
+	usageMap := map[string]any{
+		"input_tokens":  0,
+		"output_tokens": 0,
+	}
 	if ev.Usage != nil {
-		promptTokens = ev.Usage.PromptTokens()
+		usageMap["input_tokens"] = ev.Usage.InputTokens
+		if ev.Usage.Has(ir.UCacheRead) {
+			usageMap["cache_read_input_tokens"] = ev.Usage.CacheReadTokens
+		}
+		if ev.Usage.Has(ir.UCacheWrite) {
+			usageMap["cache_creation_input_tokens"] = ev.Usage.CacheWriteTokens
+		}
 	} else if e.opts.PromptEstimate > 0 {
-		promptTokens = e.opts.PromptEstimate
+		usageMap["input_tokens"] = e.opts.PromptEstimate
 	}
 	model := e.model
 	if model == "" {
@@ -201,10 +274,7 @@ func (e *StreamEncoder) emitMessageStart(dst []byte, ev ir.Event) []byte {
 		"content":       []any{},
 		"stop_reason":   nil,
 		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  promptTokens,
-			"output_tokens": 0,
-		},
+		"usage":         usageMap,
 	}
 	return e.appendSSE(dst, "message_start", map[string]any{
 		"type":    "message_start",
@@ -334,8 +404,9 @@ func stopToAnthropic(s *ir.Stop) string {
 }
 
 func buildAnthropicUsage(u ir.Usage) map[string]any {
+	// Anthropic input_tokens excludes cache_read_input_tokens and cache_creation_input_tokens.
 	m := map[string]any{
-		"input_tokens":  u.PromptTokens(),
+		"input_tokens":  u.InputTokens,
 		"output_tokens": u.OutputTokens,
 	}
 	if u.Has(ir.UCacheRead) {
@@ -343,6 +414,26 @@ func buildAnthropicUsage(u ir.Usage) map[string]any {
 	}
 	if u.Has(ir.UCacheWrite) {
 		m["cache_creation_input_tokens"] = u.CacheWriteTokens
+	}
+	if u.Has(ir.UCacheWriteSplit) && (u.CacheWrite5mTokens > 0 || u.CacheWrite1hTokens > 0) {
+		cc := map[string]any{}
+		if u.CacheWrite5mTokens > 0 {
+			cc["ephemeral_5m_input_tokens"] = u.CacheWrite5mTokens
+		}
+		if u.CacheWrite1hTokens > 0 {
+			cc["ephemeral_1h_input_tokens"] = u.CacheWrite1hTokens
+		}
+		m["cache_creation"] = cc
+	}
+	if u.WebSearchRequests > 0 || u.WebFetchRequests > 0 {
+		stu := map[string]any{}
+		if u.WebSearchRequests > 0 {
+			stu["web_search_requests"] = u.WebSearchRequests
+		}
+		if u.WebFetchRequests > 0 {
+			stu["web_fetch_requests"] = u.WebFetchRequests
+		}
+		m["server_tool_use"] = stu
 	}
 	return m
 }

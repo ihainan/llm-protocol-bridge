@@ -235,9 +235,17 @@ func irUsageToWire(u *ir.Usage) *wireUsage {
 	if u == nil || !u.Any() {
 		return nil
 	}
+	prompt := u.PromptTokens() - u.ToolUsePromptTokens
+	if prompt < 0 {
+		prompt = 0
+	}
+	cands := u.OutputTokens - u.ReasoningTokens
+	if cands < 0 {
+		cands = 0
+	}
 	w := &wireUsage{
-		PromptTokenCount:     u.PromptTokens(),
-		CandidatesTokenCount: u.OutputTokens,
+		PromptTokenCount:     prompt,
+		CandidatesTokenCount: cands,
 		TotalTokenCount:      u.TotalTokens(),
 	}
 	if u.Has(ir.UCacheRead) {

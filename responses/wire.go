@@ -110,7 +110,7 @@ type wireResponse struct {
 	Status            string                 `json:"status"` // completed | incomplete | failed
 	IncompleteDetails *wireIncompleteDetails `json:"incomplete_details,omitempty"`
 	Output            []wireOutputItem       `json:"output"`
-	Usage             *wireUsage             `json:"usage,omitempty"`
+	Usage             json.RawMessage        `json:"usage,omitempty"`
 	Error             *wireError             `json:"error,omitempty"`
 	ServiceTier       string                 `json:"service_tier,omitempty"`
 }
@@ -225,7 +225,7 @@ type wireStreamResponse struct {
 	Status            string                 `json:"status"`
 	IncompleteDetails *wireIncompleteDetails `json:"incomplete_details,omitempty"`
 	Output            []wireOutputItem       `json:"output"`
-	Usage             *wireUsage             `json:"usage,omitempty"`
+	Usage             json.RawMessage        `json:"usage,omitempty"`
 	Error             *wireError             `json:"error,omitempty"`
 	ServiceTier       string                 `json:"service_tier,omitempty"`
 }

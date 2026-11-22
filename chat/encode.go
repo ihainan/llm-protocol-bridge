@@ -212,11 +212,9 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 		Model:   model,
 		Choices: choices,
 	}
-	u := buildUsage(resp.Usage)
-	if u != nil {
-		raw, _ := jsonx.Marshal(u)
-		_ = raw // attach below
-		wr.Usage = usageToWire(resp.Usage)
+	if resp.Usage.Any() {
+		raw, _ := jsonx.Marshal(usageToWire(resp.Usage))
+		wr.Usage = raw
 	}
 	return jsonx.Marshal(wr)
 }

@@ -82,7 +82,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			stop.Reason = ir.StopToolUse
 		}
 		out = append(out, ir.Event{Type: ir.EvStop, Stop: &stop})
-		if se.Response != nil && se.Response.Usage != nil {
+		if se.Response != nil && !jsonx.IsNull(se.Response.Usage) {
 			u := decodeResponsesUsage(se.Response.Usage, d.dia)
 			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
 		}
@@ -99,7 +99,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			}
 		}
 		out = append(out, ir.Event{Type: ir.EvStop, Stop: &stop})
-		if se.Response != nil && se.Response.Usage != nil {
+		if se.Response != nil && !jsonx.IsNull(se.Response.Usage) {
 			u := decodeResponsesUsage(se.Response.Usage, d.dia)
 			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
 		}
@@ -352,7 +352,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 		ID:    wr.ID,
 		Model: wr.Model,
 	}
-	if wr.Usage != nil {
+	if !jsonx.IsNull(wr.Usage) {
 		resp.Usage = decodeResponsesUsage(wr.Usage, opts.Dialect)
 	}
 
@@ -494,7 +494,11 @@ func statusToStop(status string) ir.Stop {
 	return ir.Stop{}
 }
 
-func decodeResponsesUsage(u *wireUsage, dia Dialect) ir.Usage {
+func decodeResponsesUsage(raw json.RawMessage, dia Dialect) ir.Usage {
+	var u wireUsage
+	if err := json.Unmarshal(raw, &u); err != nil {
+		return ir.Usage{}
+	}
 	out := ir.Usage{
 		OutputTokens: u.OutputTokens,
 		Reported:     ir.UOutput,
@@ -509,10 +513,49 @@ func decodeResponsesUsage(u *wireUsage, dia Dialect) ir.Usage {
 			out.Reported |= ir.UCacheWrite
 		}
 	}
+	if !out.Has(ir.UCacheWrite) && dia.CacheWriteField != "" {
+		var m map[string]any
+		if json.Unmarshal(raw, &m) == nil {
+			if v, ok := lookupIntField(m, "input_tokens_details."+dia.CacheWriteField); ok {
+				out.CacheWriteTokens = v
+				out.Reported |= ir.UCacheWrite
+			} else if v, ok := lookupIntField(m, dia.CacheWriteField); ok {
+				out.CacheWriteTokens = v
+				out.Reported |= ir.UCacheWrite
+			}
+		}
+	}
 	out.FromInclusivePrompt(u.InputTokens)
 	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ReasoningTokens > 0 {
 		out.ReasoningTokens = u.OutputTokensDetails.ReasoningTokens
 		out.Reported |= ir.UReasoning
 	}
 	return out
+}
+
+func lookupIntField(m map[string]any, dotted string) (int, bool) {
+	cur := any(m)
+	start := 0
+	for i := 0; i <= len(dotted); i++ {
+		if i < len(dotted) && dotted[i] != '.' {
+			continue
+		}
+		key := dotted[start:i]
+		start = i + 1
+		obj, ok := cur.(map[string]any)
+		if !ok {
+			return 0, false
+		}
+		cur, ok = obj[key]
+		if !ok {
+			return 0, false
+		}
+	}
+	switch v := cur.(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	}
+	return 0, false
 }

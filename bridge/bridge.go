@@ -295,6 +295,7 @@ type Stream struct {
 	dec       decoder
 	enc       encoder
 	collector *ir.Collector
+	usage     ir.Usage
 	done      bool
 }
 
@@ -378,6 +379,9 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 		return dst, err
 	}
 	for _, e := range events {
+		if e.Usage != nil && (e.Type == ir.EvStart || e.Type == ir.EvUsage) {
+			s.usage.Merge(*e.Usage)
+		}
 		if e.Type == ir.EvError {
 			s.done = true
 		}
@@ -426,7 +430,7 @@ func (s *Stream) Usage() ir.Usage {
 	if s.collector != nil {
 		return s.collector.Usage()
 	}
-	return ir.Usage{}
+	return s.usage
 }
 
 // Result returns the collected client JSON response (collector mode only).

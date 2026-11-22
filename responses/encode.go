@@ -580,13 +580,17 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 
 	stop := respStop(resp)
 	status := stopToResponsesStatus(stop)
+	var usageRaw json.RawMessage
+	if wu := irUsageToWire(&resp.Usage); wu != nil {
+		usageRaw, _ = json.Marshal(wu)
+	}
 	wr := wireResponse{
 		ID:     id,
 		Object: "response",
 		Model:  model,
 		Status: status,
 		Output: out,
-		Usage:  irUsageToWire(&resp.Usage),
+		Usage:  usageRaw,
 	}
 	if status == "incomplete" {
 		reason := "max_output_tokens"

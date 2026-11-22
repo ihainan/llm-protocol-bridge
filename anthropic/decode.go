@@ -187,20 +187,46 @@ func stopFromAnthropic(reason, seq string) ir.Stop {
 	return ir.Stop{Reason: ir.StopEndTurn, Raw: reason}
 }
 
-// decodeUsage converts a wireUsage to ir.Usage.
+// decodeUsage converts a wireUsage to ir.Usage, marking only fields actually
+// present in JSON so partial message_delta updates never zero earlier counters.
 func decodeUsage(u *wireUsage) ir.Usage {
-	out := ir.Usage{
-		InputTokens:      u.InputTokens,
-		CacheReadTokens:  u.CacheReadInputTokens,
-		CacheWriteTokens: u.CacheCreationInputTokens,
-		OutputTokens:     u.OutputTokens,
+	var out ir.Usage
+	if u.InputTokens != nil {
+		out.InputTokens = *u.InputTokens
+		out.Reported |= ir.UInput
 	}
-	out.Reported |= ir.UInput | ir.UOutput
-	if u.CacheReadInputTokens > 0 {
+	if u.OutputTokens != nil {
+		out.OutputTokens = *u.OutputTokens
+		out.Reported |= ir.UOutput
+	}
+	if u.CacheReadInputTokens != nil {
+		out.CacheReadTokens = *u.CacheReadInputTokens
 		out.Reported |= ir.UCacheRead
 	}
-	if u.CacheCreationInputTokens > 0 {
+	if u.CacheCreationInputTokens != nil {
+		out.CacheWriteTokens = *u.CacheCreationInputTokens
 		out.Reported |= ir.UCacheWrite
+	}
+	if u.CacheCreation != nil {
+		out.CacheWrite5mTokens = u.CacheCreation.Ephemeral5mInputTokens
+		out.CacheWrite1hTokens = u.CacheCreation.Ephemeral1hInputTokens
+		if out.CacheWrite5mTokens > 0 || out.CacheWrite1hTokens > 0 {
+			out.Reported |= ir.UCacheWriteSplit
+			if !out.Has(ir.UCacheWrite) {
+				out.CacheWriteTokens = out.CacheWrite5mTokens + out.CacheWrite1hTokens
+				out.Reported |= ir.UCacheWrite
+			}
+		}
+	}
+	if u.ServerToolUse != nil {
+		if u.ServerToolUse.WebSearchRequests > 0 {
+			out.WebSearchRequests = u.ServerToolUse.WebSearchRequests
+			out.Reported |= ir.UWebSearch
+		}
+		if u.ServerToolUse.WebFetchRequests > 0 {
+			out.WebFetchRequests = u.ServerToolUse.WebFetchRequests
+			out.Reported |= ir.UWebFetch
+		}
 	}
 	return out
 }

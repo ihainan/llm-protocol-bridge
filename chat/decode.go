@@ -126,9 +126,10 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		// If the first chunk already has usage (some dialects send prompt usage
 		// early), attach it to start.
 		var usage *ir.Usage
-		if chunk.Usage != nil {
-			u := decodeUsage(chunk.Usage, d.dia)
-			usage = &u
+		if !jsonx.IsNull(chunk.Usage) {
+			if u, ok := decodeUsageRaw(chunk.Usage, d.dia); ok {
+				usage = &u
+			}
 		}
 		out = append(out, ir.Event{
 			Type:  ir.EvStart,
@@ -148,9 +149,10 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 	}
 
 	// Usage on a later chunk (the final usage chunk has choices: []).
-	if chunk.Usage != nil {
-		u := decodeUsage(chunk.Usage, d.dia)
-		out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
+	if !jsonx.IsNull(chunk.Usage) {
+		if u, ok := decodeUsageRaw(chunk.Usage, d.dia); ok {
+			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
+		}
 	}
 
 	return out, nil
@@ -311,46 +313,88 @@ func rawToString(raw json.RawMessage) string {
 	return s
 }
 
-// decodeUsage decodes a wire usage object into ir.Usage using the dialect.
-func decodeUsage(u *wireUsage, dia Dialect) ir.Usage {
-	out := ir.Usage{}
-	out.InputTokens = u.PromptTokens
-	out.OutputTokens = u.CompletionTokens
-	out.Reported |= ir.UInput | ir.UOutput
+func decodeUsageRaw(raw json.RawMessage, dia Dialect) (ir.Usage, bool) {
+	if jsonx.IsNull(raw) {
+		return ir.Usage{}, false
+	}
+	var u wireUsage
+	if json.Unmarshal(raw, &u) != nil {
+		return ir.Usage{}, false
+	}
+	return decodeUsage(&u, raw, dia), true
+}
 
-	// Cache read.
+// decodeUsage decodes a wire usage object into ir.Usage using the dialect.
+func decodeUsage(u *wireUsage, raw json.RawMessage, dia Dialect) ir.Usage {
+	out := ir.Usage{
+		OutputTokens: u.CompletionTokens,
+		Reported:     ir.UOutput,
+	}
+
+	// Cache read: standard prompt_tokens_details.cached_tokens, else dialect fallbacks.
 	if u.PromptTokensDetails != nil {
 		out.CacheReadTokens = u.PromptTokensDetails.CachedTokens
 		out.Reported |= ir.UCacheRead
+	} else if len(dia.CacheReadFields) > 0 && len(raw) > 0 {
+		for _, field := range dia.CacheReadFields {
+			if n, ok := lookupIntPath(raw, field); ok {
+				out.CacheReadTokens = n
+				out.Reported |= ir.UCacheRead
+				break
+			}
+		}
 	}
+
+	// Cache write: dialect-configured field paths.
+	if len(dia.CacheWriteFields) > 0 && len(raw) > 0 {
+		for _, field := range dia.CacheWriteFields {
+			if n, ok := lookupIntPath(raw, field); ok {
+				out.CacheWriteTokens = n
+				out.Reported |= ir.UCacheWrite
+				break
+			}
+		}
+	}
+
 	// Reasoning tokens.
 	if u.CompletionTokensDetails != nil {
 		out.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
 		out.Reported |= ir.UReasoning
 	}
 
-	// Prompt-token adjustment: by default InputTokens = prompt_tokens, but if the
-	// dialect says the prompt count already excludes cache, we add cache back in
-	// (so InputTokens reflects the total prompt input). The IR.PromptTokens()
-	// helper does InputTokens + CacheRead + CacheWrite; if the dialect includes
-	// cache in prompt_tokens (the common case), we must subtract to avoid
-	// double-counting.
-	if !dia.PromptExcludesCache {
-		// prompt_tokens includes cached tokens; subtract them so InputTokens
-		// reflects non-cached input only.
-		if out.InputTokens > out.CacheReadTokens+out.CacheWriteTokens {
-			out.InputTokens -= out.CacheReadTokens + out.CacheWriteTokens
-		} else if out.CacheReadTokens+out.CacheWriteTokens > 0 {
-			// Edge: cache > prompt (shouldn't happen, but be defensive).
-			out.InputTokens = 0
-		}
+	if dia.PromptExcludesCache {
+		out.InputTokens = u.PromptTokens
+		out.Reported |= ir.UInput
+	} else {
+		out.FromInclusivePrompt(u.PromptTokens)
 	}
-	// Reasoning exclusion from completion tokens.
 	if dia.ReasoningExcludedFromCompletion && out.ReasoningTokens > 0 {
 		out.OutputTokens += out.ReasoningTokens
 	}
-
 	return out
+}
+
+func lookupIntPath(raw json.RawMessage, dotPath string) (int, bool) {
+	cur := raw
+	for _, part := range strings.Split(dotPath, ".") {
+		kvs, err := jsonx.Object(cur)
+		if err != nil {
+			return 0, false
+		}
+		found := false
+		for _, kv := range kvs {
+			if kv.Key == part {
+				cur = kv.Value
+				found = true
+				break
+			}
+		}
+		if !found {
+			return 0, false
+		}
+	}
+	n, ok := jsonx.Int(cur)
+	return int(n), ok
 }
 
 // ParseResponse decodes a non-streaming Chat Completions response body.
@@ -399,8 +443,10 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 		out.Stop = ir.FinalStop(out.Stop, out.Parts)
 		resp.Outputs = append(resp.Outputs, out)
 	}
-	if wr.Usage != nil {
-		resp.Usage = decodeUsage(wr.Usage, opts.Dialect)
+	if !jsonx.IsNull(wr.Usage) {
+		if u, ok := decodeUsageRaw(wr.Usage, opts.Dialect); ok {
+			resp.Usage = u
+		}
 	}
 	if len(resp.Outputs) == 0 {
 		resp.Outputs = []ir.Output{{Stop: ir.FinalStop(ir.Stop{}, nil)}}

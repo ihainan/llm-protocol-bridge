@@ -331,19 +331,21 @@ func geminiStop(reason string) ir.Stop {
 }
 
 func decodeGeminiUsage(u *wireUsage) ir.Usage {
+	// Per design.md section 6:
+	// Input = promptTokenCount - cachedContentTokenCount + toolUsePromptTokenCount
+	// Output = candidatesTokenCount + thoughtsTokenCount
 	out := ir.Usage{
-		OutputTokens:        u.CandidatesTokenCount,
+		OutputTokens:        u.CandidatesTokenCount + u.ThoughtsTokenCount,
 		ReasoningTokens:     u.ThoughtsTokenCount,
 		ToolUsePromptTokens: u.ToolUsePromptTokenCount,
-		Reported:            ir.UInput | ir.UOutput,
+		CacheReadTokens:     u.CachedContentTokenCount,
+		Reported:            ir.UOutput,
 	}
-	// Gemini's promptTokenCount is inclusive of cached tokens.
-	cached := u.CachedContentTokenCount
-	out.InputTokens = u.PromptTokenCount - cached
-	out.CacheReadTokens = cached
-	if cached > 0 {
+	if u.CachedContentTokenCount > 0 {
 		out.Reported |= ir.UCacheRead
 	}
+	out.FromInclusivePrompt(u.PromptTokenCount)
+	out.InputTokens += u.ToolUsePromptTokenCount
 	if u.ThoughtsTokenCount > 0 {
 		out.Reported |= ir.UReasoning
 	}

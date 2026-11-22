@@ -115,12 +115,25 @@ type wireResponse struct {
 	Usage        *wireUsage         `json:"usage,omitempty"`
 }
 
-// wireUsage is the usage object.
+// wireUsage is the usage object. Pointer fields distinguish absent keys
+// (such as input_tokens omitted in message_delta) from explicit zeroes.
 type wireUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	InputTokens              *int               `json:"input_tokens,omitempty"`
+	OutputTokens             *int               `json:"output_tokens,omitempty"`
+	CacheReadInputTokens     *int               `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens *int               `json:"cache_creation_input_tokens,omitempty"`
+	CacheCreation            *wireCacheCreation `json:"cache_creation,omitempty"`
+	ServerToolUse            *wireServerToolUse `json:"server_tool_use,omitempty"`
+}
+
+type wireCacheCreation struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens,omitempty"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens,omitempty"`
+}
+
+type wireServerToolUse struct {
+	WebSearchRequests int `json:"web_search_requests,omitempty"`
+	WebFetchRequests  int `json:"web_fetch_requests,omitempty"`
 }
 
 // wireStreamEvent is one SSE event in a streamed Anthropic response.
