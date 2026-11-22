@@ -2,6 +2,7 @@
 package bridge
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -649,6 +650,11 @@ type StreamStats struct {
 	Images    int
 }
 
+type streamToolKey struct {
+	cand int
+	id   string
+}
+
 // Stream is a live stream converter (decoder + filter pipeline + encoder).
 type Stream struct {
 	plan          *Plan
@@ -664,8 +670,9 @@ type Stream struct {
 	outText       strings.Builder
 	outToolCalls  int
 	outImages     int
-	toolCallsSeen map[string]bool
-	toolArgsSeen  map[string]bool
+	toolCallsSeen map[streamToolKey]bool
+	toolArgsSeen  map[streamToolKey]int
+	toolKinds     map[streamToolKey]ir.ToolKind
 	expectedCands int
 	finishedCands map[int]bool
 	done          bool
@@ -783,7 +790,11 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 	if err != nil {
 		return dst, err
 	}
+	roundOrigin := ir.Origin{Format: s.plan.Upstream, Provider: s.plan.opts.ProviderID}
 	for _, rawEv := range events {
+		if (rawEv.Type == ir.EvReasoningStart || rawEv.Type == ir.EvReasoning) && rawEv.Origin.Format == "" {
+			rawEv.Origin = roundOrigin
+		}
 		s.recordOutputEvent(rawEv)
 		if rawEv.Usage != nil && (rawEv.Type == ir.EvStart || rawEv.Type == ir.EvUsage) {
 			s.roundUsage.Merge(*rawEv.Usage)
@@ -883,32 +894,50 @@ func (s *Stream) Stats() StreamStats {
 }
 
 func (s *Stream) recordOutputEvent(ev ir.Event) {
+	key := streamToolKey{cand: ev.Index, id: ev.ID}
 	switch ev.Type {
 	case ir.EvText, ir.EvRefusal, ir.EvReasoning:
 		s.outText.WriteString(ev.Text)
 	case ir.EvToolStart:
 		if ev.ID != "" {
 			if s.toolCallsSeen == nil {
-				s.toolCallsSeen = map[string]bool{}
+				s.toolCallsSeen = map[streamToolKey]bool{}
 			}
-			if s.toolCallsSeen[ev.ID] {
+			if s.toolCallsSeen[key] {
 				return
 			}
-			s.toolCallsSeen[ev.ID] = true
+			s.toolCallsSeen[key] = true
 		}
+		if s.toolKinds == nil {
+			s.toolKinds = map[streamToolKey]ir.ToolKind{}
+		}
+		s.toolKinds[key] = ev.Kind
 		s.outToolCalls++
 		s.outText.WriteString(ev.Name)
 	case ir.EvToolArgs:
 		if ev.Text != "" {
 			if s.toolArgsSeen == nil {
-				s.toolArgsSeen = map[string]bool{}
+				s.toolArgsSeen = map[streamToolKey]int{}
 			}
-			s.toolArgsSeen[ev.ID] = true
+			s.toolArgsSeen[key] += len(ev.Text)
 			s.outText.WriteString(ev.Text)
 		}
 	case ir.EvToolEnd:
-		if len(ev.Arguments) > 0 && !s.toolArgsSeen[ev.ID] {
-			s.outText.Write(ev.Arguments)
+		if len(ev.Arguments) == 0 {
+			return
+		}
+		finalText := string(ev.Arguments)
+		if s.toolKinds[key] == ir.ToolCustom {
+			var raw string
+			if json.Unmarshal(ev.Arguments, &raw) == nil {
+				finalText = raw
+			}
+		}
+		streamed := s.toolArgsSeen[key]
+		if streamed == 0 {
+			s.outText.WriteString(finalText)
+		} else if len(finalText) > streamed {
+			s.outText.WriteString(finalText[streamed:])
 		}
 	case ir.EvImage:
 		s.outImages++
@@ -1007,6 +1036,7 @@ func (s *Stream) NextRound(p *Plan) {
 	s.finishedCands = map[int]bool{}
 	s.toolCallsSeen = nil
 	s.toolArgsSeen = nil
+	s.toolKinds = nil
 	s.done = false
 }
 

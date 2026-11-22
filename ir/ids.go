@@ -223,6 +223,24 @@ func VerifyUnsignedReasoning(env *Env, client Format, sealed, text string) (Orig
 	if !ok || rec.Kind != SealUnsigned {
 		return Origin{}, "", false
 	}
+	if client == FormatAnthropic {
+		// Anthropic carries reasoning plaintext alongside signature; require an
+		// explicit binding check so neither tampered text nor a cross-format
+		// envelope can bypass verification.
+		switch {
+		case rec.TextSum != "":
+			if rec.TextSum != TextSum(text) {
+				return Origin{}, "", false
+			}
+		case rec.Text != "":
+			if rec.Text != text {
+				return Origin{}, "", false
+			}
+		default:
+			return Origin{}, "", false
+		}
+		return rec.Origin, text, true
+	}
 	if rec.TextSum != "" && rec.TextSum != TextSum(text) {
 		return Origin{}, "", false
 	}

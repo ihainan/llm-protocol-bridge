@@ -74,6 +74,7 @@ type StreamEncoder struct {
 	reasonPartOpened bool
 	reasonEnc        string
 	reasonSig        *ir.Signature
+	reasonOrigin     ir.Origin
 
 	outputs []map[string]any
 	stop    ir.Stop
@@ -262,6 +263,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.reasonAccum.Reset()
 		e.reasonPartOpened = false
 		e.reasonIsSummary = useSummaryMode(e.opts, ev.Summary)
+		e.reasonOrigin = ev.Origin
 		dst = e.appendEvent(dst, "response.output_item.added", map[string]any{
 			"sequence_number": e.nextSeq(),
 			"output_index":    e.outputIndex,
@@ -275,7 +277,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	case ir.EvReasoning:
 		delete(e.pendingTrimRunes, ev.Index)
 		dst = e.ensureStarted(dst)
-		if e.openItemType != "reasoning" || e.openItemCand != ev.Index {
+		originSwitch := ev.Origin.Format != "" && e.reasonOrigin.Format != "" && ev.Origin != e.reasonOrigin
+		if e.openItemType != "reasoning" || e.openItemCand != ev.Index || originSwitch {
 			dst = e.closeItem(dst)
 			if e.errored {
 				break
@@ -287,6 +290,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			e.reasonAccum.Reset()
 			e.reasonPartOpened = false
 			e.reasonIsSummary = useSummaryMode(e.opts, ev.Summary)
+			e.reasonOrigin = ev.Origin
 			dst = e.appendEvent(dst, "response.output_item.added", map[string]any{
 				"sequence_number": e.nextSeq(),
 				"output_index":    e.outputIndex,
@@ -296,6 +300,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 					"summary": []any{},
 				},
 			})
+		} else if ev.Origin.Format != "" && e.reasonOrigin.Format == "" {
+			e.reasonOrigin = ev.Origin
 		}
 		if !e.reasonPartOpened {
 			e.reasonIsSummary = useSummaryMode(e.opts, ev.Summary)
@@ -1227,9 +1233,16 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 				Text:   rtext,
 			})
 		} else if enc == "" && e.opts.SealUnsignedReasoning && rtext != "" && wantsEncryptedReasoning(e.opts.Request) {
-			origin := e.opts.UnsignedOrigin
+			origin := e.reasonOrigin
 			if origin.Format == "" {
-				origin = ir.Origin{Format: ir.FormatChat, Provider: e.opts.Env.ProviderID}
+				origin = e.opts.UnsignedOrigin
+			}
+			if origin.Format == "" {
+				providerID := ""
+				if e.opts.Env != nil {
+					providerID = e.opts.Env.ProviderID
+				}
+				origin = ir.Origin{Format: ir.FormatChat, Provider: providerID}
 			}
 			enc = ir.SealUnsignedReasoning(e.opts.Env, ir.FormatResponses, origin, rtext)
 		}
@@ -1238,6 +1251,7 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 		}
 		e.reasonEnc = ""
 		e.reasonSig = nil
+		e.reasonOrigin = ir.Origin{}
 		e.reasonPartOpened = false
 		e.outputs = append(e.outputs, doneItem)
 		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
@@ -1500,7 +1514,10 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env, opts EncodeOptions) 
 				rtext = strings.Join(p.Reasoning.Summary, "\n\n")
 			}
 			if rtext != "" {
-				origin := opts.UnsignedOrigin
+				origin := p.Reasoning.Origin
+				if origin.Format == "" {
+					origin = opts.UnsignedOrigin
+				}
 				if origin.Format == "" {
 					origin = ir.Origin{Format: ir.FormatChat, Provider: env.ProviderID}
 				}

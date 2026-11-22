@@ -30,6 +30,7 @@ type collected struct {
 	callSeq     int
 	fresh       bool   // a reasoning_start asked for a new reasoning part
 	rid         string // id given by reasoning_start
+	rorigin     Origin // origin given by reasoning_start
 }
 
 // NewCollector returns an empty collector.
@@ -206,8 +207,8 @@ func (o *collected) openReasoning() *Part {
 }
 
 func (o *collected) newReasoning() *Part {
-	p := o.add(Part{Type: PartReasoning, Reasoning: &Reasoning{ID: o.rid}})
-	o.fresh, o.rid = false, ""
+	p := o.add(Part{Type: PartReasoning, Reasoning: &Reasoning{ID: o.rid, Origin: o.rorigin}})
+	o.fresh, o.rid, o.rorigin = false, "", Origin{}
 	return p
 }
 
@@ -266,11 +267,17 @@ func (c *Collector) Add(ev Event) {
 		}
 	case EvReasoningStart:
 		o.flushText()
-		o.fresh, o.rid = true, ev.ID
+		o.fresh, o.rid, o.rorigin = true, ev.ID, ev.Origin
 	case EvReasoning:
 		p := o.openReasoning()
+		if p != nil && ev.Origin.Format != "" && p.Reasoning.Origin.Format != "" && p.Reasoning.Origin != ev.Origin {
+			p = nil
+		}
 		if p == nil {
 			p = o.newReasoning()
+		}
+		if ev.Origin.Format != "" && p.Reasoning.Origin.Format == "" {
+			p.Reasoning.Origin = ev.Origin
 		}
 		if ev.Summary {
 			o.flushText()
@@ -511,12 +518,12 @@ func appendPartEvents(evs []Event, idx int, p Part) []Event {
 		if r == nil {
 			return evs
 		}
-		evs = append(evs, Event{Type: EvReasoningStart, Index: idx, ID: r.ID})
+		evs = append(evs, Event{Type: EvReasoningStart, Index: idx, ID: r.ID, Origin: r.Origin})
 		if r.Text != "" && (len(r.Summary) == 0 || r.Text != strings.Join(r.Summary, "")) {
-			evs = append(evs, Event{Type: EvReasoning, Index: idx, Text: r.Text})
+			evs = append(evs, Event{Type: EvReasoning, Index: idx, Text: r.Text, Origin: r.Origin})
 		}
 		for i, s := range r.Summary {
-			evs = append(evs, Event{Type: EvReasoning, Index: idx, Text: s, Summary: true, Part: i})
+			evs = append(evs, Event{Type: EvReasoning, Index: idx, Text: s, Summary: true, Part: i, Origin: r.Origin})
 		}
 		if r.Signature != nil {
 			s := *r.Signature

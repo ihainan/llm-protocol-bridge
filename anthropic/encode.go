@@ -46,6 +46,7 @@ type StreamEncoder struct {
 	thinkingTextAccum strings.Builder
 	thinkingSigVal    strings.Builder
 	thinkingSigOrigin ir.Origin
+	thinkingOrigin    ir.Origin
 	activeCallCand    int
 	activeCallID      string
 	// activeKind is the kind of the open tool_use block's call. A custom tool's
@@ -197,6 +198,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.openBlock = idx
 		e.openBlockType = "thinking"
 		e.openBlockCand = ev.Index
+		e.thinkingOrigin = ev.Origin
 		dst = e.appendSSE(dst, "content_block_start", map[string]any{
 			"type":          "content_block_start",
 			"index":         idx,
@@ -205,7 +207,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvReasoning:
 		dst = e.ensureStarted(dst)
-		if e.openBlock < 0 || e.openBlockType != "thinking" || e.openBlockCand != ev.Index {
+		originSwitch := ev.Origin.Format != "" && e.thinkingOrigin.Format != "" && ev.Origin != e.thinkingOrigin
+		if e.openBlock < 0 || e.openBlockType != "thinking" || e.openBlockCand != ev.Index || originSwitch {
 			dst = e.closeBlock(dst)
 			if e.errored {
 				break
@@ -215,11 +218,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			e.openBlock = idx
 			e.openBlockType = "thinking"
 			e.openBlockCand = ev.Index
+			e.thinkingOrigin = ev.Origin
 			dst = e.appendSSE(dst, "content_block_start", map[string]any{
 				"type":          "content_block_start",
 				"index":         idx,
 				"content_block": map[string]any{"type": "thinking", "thinking": ""},
 			})
+		} else if ev.Origin.Format != "" && e.thinkingOrigin.Format == "" {
+			e.thinkingOrigin = ev.Origin
 		}
 		e.thinkingTextAccum.WriteString(ev.Text)
 		dst = e.appendSSE(dst, "content_block_delta", map[string]any{
@@ -947,9 +953,16 @@ func (e *StreamEncoder) closeBlock(dst []byte) []byte {
 				"delta": map[string]any{"type": "signature_delta", "signature": sigVal},
 			})
 		} else if e.opts.SealUnsignedReasoning && e.thinkingTextAccum.Len() > 0 {
-			origin := e.opts.UnsignedOrigin
+			origin := e.thinkingOrigin
 			if origin.Format == "" {
-				origin = ir.Origin{Format: ir.FormatChat, Provider: e.opts.Env.ProviderID}
+				origin = e.opts.UnsignedOrigin
+			}
+			if origin.Format == "" {
+				providerID := ""
+				if e.opts.Env != nil {
+					providerID = e.opts.Env.ProviderID
+				}
+				origin = ir.Origin{Format: ir.FormatChat, Provider: providerID}
 			}
 			if sigVal := ir.SealUnsignedReasoning(e.opts.Env, ir.FormatAnthropic, origin, e.thinkingTextAccum.String()); sigVal != "" {
 				dst = e.appendSSE(dst, "content_block_delta", map[string]any{
@@ -963,6 +976,7 @@ func (e *StreamEncoder) closeBlock(dst []byte) []byte {
 	e.thinkingTextAccum.Reset()
 	e.thinkingSigVal.Reset()
 	e.thinkingSigOrigin = ir.Origin{}
+	e.thinkingOrigin = ir.Origin{}
 	e.openBlock = -1
 	e.openBlockType = ""
 	e.openBlockCand = 0
@@ -1074,7 +1088,10 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env, opts EncodeOptio
 					})
 				}
 			} else if opts.SealUnsignedReasoning {
-				origin := opts.UnsignedOrigin
+				origin := r.Origin
+				if origin.Format == "" {
+					origin = opts.UnsignedOrigin
+				}
 				if origin.Format == "" {
 					origin = ir.Origin{Format: ir.FormatChat, Provider: env.ProviderID}
 				}

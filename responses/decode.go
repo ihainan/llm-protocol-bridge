@@ -335,15 +335,16 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		}
 
 	case "response.function_call_arguments.done":
-		// Record final arguments in case output_item.done omits item.arguments; EvToolEnd is emitted on output_item.done.
+		// Replace accumulated deltas with authoritative final arguments so
+		// output_item.done gets the complete JSON even if deltas were partial or
+		// output_item.done omits item.arguments.
 		idx := se.OutputIndex
 		if se.Arguments != "" {
 			if d.callArgs[idx] == nil {
 				d.callArgs[idx] = &strings.Builder{}
 			}
-			if d.callArgs[idx].Len() == 0 {
-				d.callArgs[idx].WriteString(se.Arguments)
-			}
+			d.callArgs[idx].Reset()
+			d.callArgs[idx].WriteString(se.Arguments)
 		}
 
 	case "response.custom_tool_call_input.delta":
@@ -362,15 +363,16 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		}
 
 	case "response.custom_tool_call_input.done":
-		// Record final input in case output_item.done omits item.input; EvToolEnd is emitted on output_item.done.
+		// Replace accumulated deltas with authoritative final input so
+		// output_item.done gets the complete input even if deltas were partial or
+		// output_item.done omits item.input.
 		idx := se.OutputIndex
 		if se.Input != "" {
 			if d.callArgs[idx] == nil {
 				d.callArgs[idx] = &strings.Builder{}
 			}
-			if d.callArgs[idx].Len() == 0 {
-				d.callArgs[idx].WriteString(se.Input)
-			}
+			d.callArgs[idx].Reset()
+			d.callArgs[idx].WriteString(se.Input)
 		}
 
 	case "response.reasoning_summary_text.delta":

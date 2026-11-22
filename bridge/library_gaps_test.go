@@ -5,9 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ihainan/llm-protocol-bridge/anthropic"
 	"github.com/ihainan/llm-protocol-bridge/bridge"
 	"github.com/ihainan/llm-protocol-bridge/chat"
 	"github.com/ihainan/llm-protocol-bridge/ir"
+	"github.com/ihainan/llm-protocol-bridge/responses"
 	"github.com/ihainan/llm-protocol-bridge/sse"
 )
 
@@ -304,12 +306,12 @@ func TestChatReasoningReplayBudgetsAndKeepTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Convert MaxItems: %v", err)
 	}
-	// Rolling window refills at index 2 (count==2), so window starts at "cccc".
-	if strings.Contains(string(pItems.Body), "aaaa") || strings.Contains(string(pItems.Body), "bbbb") {
-		t.Fatalf("expected rolling MaxItems=2 window to drop older items: %s", pItems.Body)
+	// MaxItems=2 keeps the newest two blocks ("bbbb" and "cccc") and drops "aaaa".
+	if strings.Contains(string(pItems.Body), "aaaa") {
+		t.Fatalf("expected MaxItems=2 to drop oldest item aaaa: %s", pItems.Body)
 	}
-	if !strings.Contains(string(pItems.Body), `"reasoning":"cccc"`) {
-		t.Fatalf("expected newest item in field 'reasoning': %s", pItems.Body)
+	if !strings.Contains(string(pItems.Body), `"reasoning":"bbbb"`) || !strings.Contains(string(pItems.Body), `"reasoning":"cccc"`) {
+		t.Fatalf("expected newest two items bbbb and cccc in field 'reasoning': %s", pItems.Body)
 	}
 
 	pChars, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, req, bridge.Options{
@@ -323,11 +325,11 @@ func TestChatReasoningReplayBudgetsAndKeepTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Convert MaxChars: %v", err)
 	}
-	if strings.Contains(string(pChars.Body), "aaaa") || strings.Contains(string(pChars.Body), "bbbb") {
-		t.Fatalf("expected rolling MaxChars=8 window to reset at cccc: %s", pChars.Body)
+	if strings.Contains(string(pChars.Body), "aaaa") {
+		t.Fatalf("expected MaxChars=8 to drop oldest item aaaa: %s", pChars.Body)
 	}
-	if !strings.Contains(string(pChars.Body), `"reasoning_content":"cccc"`) {
-		t.Fatalf("expected cccc kept under MaxChars=8: %s", pChars.Body)
+	if !strings.Contains(string(pChars.Body), `"reasoning_content":"bbbb"`) || !strings.Contains(string(pChars.Body), `"reasoning_content":"cccc"`) {
+		t.Fatalf("expected newest fitting items bbbb and cccc kept under MaxChars=8: %s", pChars.Body)
 	}
 
 	// KeepTurns=1 keeps both assistant turns inside the latest tool loop while dropping an earlier user turn.
@@ -485,4 +487,309 @@ func TestStreamStatsAcrossUpstreamFormats(t *testing.T) {
 	if stats2.ToolCalls != 1 || !strings.Contains(stats2.Text, `SELECT 1`) {
 		t.Fatalf("expected done-only tool args captured in Stats(), got %+v", stats2)
 	}
+}
+
+func TestCodexReviewFixes_CrossFormatTamperNilEnvNextRoundDoneRepairMultiCandCustomStats(t *testing.T) {
+	// P1 #1: Cross-format Responses unsigned seal cannot bypass Anthropic thinking text verification.
+	t.Run("cross_format_unsigned_seal_cannot_bypass_anthropic_text_check", func(t *testing.T) {
+		keyed := ir.NewSealCodec([]byte("test-hmac-key"))
+		env := &ir.Env{ProviderID: "provA", Seal: keyed}
+		respSeal := ir.SealUnsignedReasoning(env, ir.FormatResponses, ir.Origin{Format: ir.FormatChat, Provider: "provA"}, "original")
+		if respSeal == "" {
+			t.Fatal("expected non-empty responses seal")
+		}
+		tamperedReq := []byte(`{
+			"model":"m1",
+			"max_tokens":128,
+			"messages":[
+				{"role":"user","content":"q1"},
+				{"role":"assistant","content":[
+					{"type":"thinking","thinking":"tampered","signature":"` + respSeal + `"},
+					{"type":"text","text":"a1"}
+				]},
+				{"role":"user","content":"q2"}
+			]
+		}`)
+		p, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, tamperedReq, bridge.Options{
+			ProviderID: "provA",
+			Seal:       keyed,
+			Chat: chat.Dialect{
+				ReasoningReplay: chat.ReasoningReplay{
+					Field:           "reasoning_content",
+					RequireVerified: true,
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if strings.Contains(string(p.Body), "tampered") {
+			t.Fatalf("cross-format tampered thinking must NOT be replayed: %s", p.Body)
+		}
+	})
+
+	// P1 #2: StreamEncoders with nil Env and SealUnsignedReasoning=true must not panic.
+	t.Run("nil_env_stream_encoders_do_not_panic", func(t *testing.T) {
+		aEnc := anthropic.NewStreamEncoder(anthropic.EncodeOptions{SealUnsignedReasoning: true})
+		var dst []byte
+		var err error
+		dst, err = aEnc.Encode(dst, ir.Event{Type: ir.EvReasoning, Text: "x"})
+		if err != nil {
+			t.Fatalf("anthropic Encode: %v", err)
+		}
+		dst, err = aEnc.Close(dst)
+		if err != nil {
+			t.Fatalf("anthropic Close: %v", err)
+		}
+		if !strings.Contains(string(dst), `"signature_delta"`) {
+			t.Fatalf("expected signature_delta with nil Env: %s", dst)
+		}
+
+		rEnc := responses.NewStreamEncoder(responses.EncodeOptions{
+			SealUnsignedReasoning: true,
+			Request:               &ir.Request{Include: []string{"reasoning.encrypted_content"}},
+		})
+		var rdst []byte
+		rdst, err = rEnc.Encode(rdst, ir.Event{Type: ir.EvReasoning, Text: "x"})
+		if err != nil {
+			t.Fatalf("responses Encode: %v", err)
+		}
+		rdst, err = rEnc.Close(rdst)
+		if err != nil {
+			t.Fatalf("responses Close: %v", err)
+		}
+		if !strings.Contains(string(rdst), `"encrypted_content"`) {
+			t.Fatalf("expected encrypted_content with nil Env: %s", rdst)
+		}
+	})
+
+	// P1 #3: NextRound switching provider A -> provider B stamps each round's reasoning with its own origin.
+	t.Run("next_round_provider_switch_preserves_per_round_origin", func(t *testing.T) {
+		keyed := ir.NewSealCodec([]byte("round-key"))
+		req := []byte(`{
+			"model":"m1",
+			"max_tokens":128,
+			"stream":true,
+			"tools":[{"name":"search","input_schema":{"type":"object"}}],
+			"messages":[{"role":"user","content":"hi"}]
+		}`)
+		pA, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, req, bridge.Options{
+			ProviderID:            "provA",
+			Seal:                  keyed,
+			SealUnsignedReasoning: true,
+			Intercept:             []string{"search"},
+		})
+		if err != nil {
+			t.Fatalf("Convert round 1: %v", err)
+		}
+		pB, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, req, bridge.Options{
+			ProviderID:            "provB",
+			Seal:                  keyed,
+			SealUnsignedReasoning: true,
+		})
+		if err != nil {
+			t.Fatalf("Convert round 2: %v", err)
+		}
+
+		feedTwoRounds := func(st *bridge.Stream) []byte {
+			var out []byte
+			r1 := []string{
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thoughtA"}}]}`,
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"tc1","type":"function","function":{"name":"search","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, ch := range r1 {
+				out, err = st.Feed(out, sse.Event{Data: []byte(ch)})
+				if err != nil {
+					t.Fatalf("r1 Feed: %v", err)
+				}
+			}
+			out, err = st.End(out, ir.EndDone)
+			if err != nil {
+				t.Fatalf("r1 End: %v", err)
+			}
+			if len(st.Intercepted()) != 1 {
+				t.Fatalf("expected 1 intercepted call, got %d", len(st.Intercepted()))
+			}
+			st.NextRound(pB)
+			r2 := []string{
+				`{"id":"c2","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thoughtB"}}]}`,
+				`{"id":"c2","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}`,
+			}
+			for _, ch := range r2 {
+				out, err = st.Feed(out, sse.Event{Data: []byte(ch)})
+				if err != nil {
+					t.Fatalf("r2 Feed: %v", err)
+				}
+			}
+			out, err = st.End(out, ir.EndDone)
+			if err != nil {
+				t.Fatalf("r2 End: %v", err)
+			}
+			return out
+		}
+
+		// Streaming mode: verify both signature_deltas unseal to provA and provB respectively.
+		streamBytes := feedTwoRounds(pA.NewStream())
+		var sigs []string
+		for _, line := range strings.Split(string(streamBytes), "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var ev struct {
+				Delta struct {
+					Type      string `json:"type"`
+					Signature string `json:"signature"`
+				} `json:"delta"`
+			}
+			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev) == nil && ev.Delta.Type == "signature_delta" {
+				sigs = append(sigs, ev.Delta.Signature)
+			}
+		}
+		if len(sigs) != 2 {
+			t.Fatalf("expected 2 signature_deltas across 2 rounds, got %d in:\n%s", len(sigs), streamBytes)
+		}
+		recA, okA := keyed.Unseal(sigs[0])
+		recB, okB := keyed.Unseal(sigs[1])
+		if !okA || !okB || recA.Origin.Provider != "provA" || recB.Origin.Provider != "provB" {
+			t.Fatalf("stream origins mismatch: recA=(%+v,%v) recB=(%+v,%v)", recA.Origin, okA, recB.Origin, okB)
+		}
+
+		// Collector mode: verify collected thinking blocks carry provA and provB respectively.
+		col := pA.NewCollector()
+		feedTwoRounds(col)
+		colBytes, _, err := col.Result()
+		if err != nil {
+			t.Fatalf("collector Result: %v", err)
+		}
+		var colMsg struct {
+			Content []struct {
+				Type      string `json:"type"`
+				Thinking  string `json:"thinking"`
+				Signature string `json:"signature"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(colBytes, &colMsg); err != nil {
+			t.Fatalf("unmarshal collector: %v", err)
+		}
+		var colProvs []string
+		for _, blk := range colMsg.Content {
+			if blk.Type == "thinking" {
+				rec, ok := keyed.Unseal(blk.Signature)
+				if !ok {
+					t.Fatalf("unseal collector thinking %q failed: %q", blk.Thinking, blk.Signature)
+				}
+				colProvs = append(colProvs, blk.Thinking+":"+rec.Origin.Provider)
+			}
+		}
+		if strings.Join(colProvs, ",") != "thoughtA:provA,thoughtB:provB" {
+			t.Fatalf("collector origins mismatch: %v (body=%s)", colProvs, colBytes)
+		}
+	})
+
+	// P2 #5: Authoritative arguments.done / input.done repairs partial delta when output_item.done omits arguments/input.
+	t.Run("arguments_done_repairs_partial_delta", func(t *testing.T) {
+		anthReq := []byte(`{"model":"m1","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		p, err := bridge.Convert(ir.FormatAnthropic, ir.FormatResponses, anthReq, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		st := p.NewCollector()
+		evs := []sse.Event{
+			{Name: "response.created", Data: []byte(`{"type":"response.created","response":{"id":"r1","model":"m1","status":"in_progress"}}`)},
+			{Name: "response.output_item.added", Data: []byte(`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"calc"}}`)},
+			{Name: "response.function_call_arguments.delta", Data: []byte(`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"x\":"}`)},
+			{Name: "response.function_call_arguments.done", Data: []byte(`{"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"x\":1}"}`)},
+			{Name: "response.output_item.done", Data: []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"calc","status":"completed"}}`)},
+			{Name: "response.completed", Data: []byte(`{"type":"response.completed","response":{"id":"r1","model":"m1","status":"completed"}}`)},
+		}
+		var out []byte
+		for _, ev := range evs {
+			out, err = st.Feed(out, ev)
+			if err != nil {
+				t.Fatalf("Feed %s: %v", ev.Name, err)
+			}
+		}
+		if _, err = st.End(out, ir.EndDone); err != nil {
+			t.Fatalf("End: %v", err)
+		}
+		body, _, err := st.Result()
+		if err != nil {
+			t.Fatalf("Result: %v", err)
+		}
+		if !strings.Contains(string(body), `"input":{"x":1}`) {
+			t.Fatalf("expected repaired arguments {\"x\":1}, got: %s", body)
+		}
+		if !strings.Contains(st.Stats().Text, `{"x":1}`) {
+			t.Fatalf("expected repaired arguments in Stats(), got: %+v", st.Stats())
+		}
+	})
+
+	// P2 #6: Multi-candidate n=2 with identical call_id does not collapse ToolCalls or drop second name.
+	t.Run("multi_candidate_same_call_id_stats", func(t *testing.T) {
+		chatReq := []byte(`{"model":"m1","n":2,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		p, err := bridge.Convert(ir.FormatChat, ir.FormatChat, chatReq, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		st := p.NewStream()
+		chunks := []string{
+			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_same","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`,
+			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":1,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_same","type":"function","function":{"name":"g","arguments":"{}"}}]}}]}`,
+			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"},{"index":1,"delta":{},"finish_reason":"tool_calls"}]}`,
+		}
+		var out []byte
+		for _, ch := range chunks {
+			out, err = st.Feed(out, sse.Event{Data: []byte(ch)})
+			if err != nil {
+				t.Fatalf("Feed: %v", err)
+			}
+		}
+		if _, err = st.End(out, ir.EndDone); err != nil {
+			t.Fatalf("End: %v", err)
+		}
+		stats := st.Stats()
+		if stats.ToolCalls != 2 || !strings.Contains(stats.Text, "f") || !strings.Contains(stats.Text, "g") {
+			t.Fatalf("expected 2 tool calls with both f and g in Stats(), got %+v", stats)
+		}
+	})
+
+	// P2 #7: Custom tool Stats().Text is identical whether delivered via delta or done-only.
+	t.Run("custom_tool_stats_delta_vs_done_only_identical", func(t *testing.T) {
+		req := []byte(`{"model":"m1","stream":true,"input":"hi"}`)
+		p, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, req, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		runEvents := func(evs []sse.Event) bridge.StreamStats {
+			st := p.NewStream()
+			var out []byte
+			for _, ev := range evs {
+				out, err = st.Feed(out, ev)
+				if err != nil {
+					t.Fatalf("Feed %s: %v", ev.Name, err)
+				}
+			}
+			if _, err = st.End(out, ir.EndDone); err != nil {
+				t.Fatalf("End: %v", err)
+			}
+			return st.Stats()
+		}
+		deltaStats := runEvents([]sse.Event{
+			{Name: "response.created", Data: []byte(`{"type":"response.created","response":{"id":"r1","model":"m1","status":"in_progress"}}`)},
+			{Name: "response.output_item.added", Data: []byte(`{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_c","name":"run"}}`)},
+			{Name: "response.custom_tool_call_input.delta", Data: []byte(`{"type":"response.custom_tool_call_input.delta","output_index":0,"delta":"abc\n\"q\""}`)},
+			{Name: "response.output_item.done", Data: []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_c","name":"run","input":"abc\n\"q\"","status":"completed"}}`)},
+			{Name: "response.completed", Data: []byte(`{"type":"response.completed","response":{"id":"r1","model":"m1","status":"completed"}}`)},
+		})
+		doneOnlyStats := runEvents([]sse.Event{
+			{Name: "response.created", Data: []byte(`{"type":"response.created","response":{"id":"r2","model":"m1","status":"in_progress"}}`)},
+			{Name: "response.output_item.added", Data: []byte(`{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_c","name":"run"}}`)},
+			{Name: "response.custom_tool_call_input.done", Data: []byte(`{"type":"response.custom_tool_call_input.done","output_index":0,"input":"abc\n\"q\""}`)},
+			{Name: "response.output_item.done", Data: []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_c","name":"run","status":"completed"}}`)},
+			{Name: "response.completed", Data: []byte(`{"type":"response.completed","response":{"id":"r2","model":"m1","status":"completed"}}`)},
+		})
+		if deltaStats != doneOnlyStats || deltaStats.Text != "runabc\n\"q\"" {
+			t.Fatalf("custom tool Stats mismatch: delta=%+v doneOnly=%+v", deltaStats, doneOnlyStats)
+		}
+	})
 }

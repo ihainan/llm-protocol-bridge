@@ -403,21 +403,24 @@ func selectReplayReasoning(msgs []ir.Message, omitAll bool, keepFromAssistantIdx
 	}
 	start := 0
 	if cfg.MaxChars > 0 || cfg.MaxItems > 0 {
+		// Keep the newest suffix of candidates that fits within MaxItems and MaxChars.
+		start = len(cands)
 		sum, count := 0, 0
-		for idx, c := range cands {
+		for idx := len(cands) - 1; idx >= 0; idx-- {
+			c := cands[idx]
+			if cfg.MaxItems > 0 && count >= cfg.MaxItems {
+				break
+			}
 			w := len(c.text)
-			if count > 0 && cands[idx-1].key.msgIdx == c.key.msgIdx {
+			if count > 0 && cands[idx+1].key.msgIdx == c.key.msgIdx {
 				w += 2 // "\n\n" separator between blocks in the same message
 			}
-			switch {
-			case cfg.MaxChars > 0 && len(c.text) > cfg.MaxChars:
-				start, sum, count = idx+1, 0, 0
-			case (cfg.MaxChars > 0 && sum+w > cfg.MaxChars) || (cfg.MaxItems > 0 && count >= cfg.MaxItems):
-				start, sum, count = idx, len(c.text), 1
-			default:
-				sum += w
-				count++
+			if cfg.MaxChars > 0 && sum+w > cfg.MaxChars {
+				break
 			}
+			sum += w
+			count++
+			start = idx
 		}
 	}
 	out := make(map[reasoningPartKey]string, len(cands)-start)

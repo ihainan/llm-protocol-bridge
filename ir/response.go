@@ -115,6 +115,8 @@ type Event struct {
 	// Part is then the summary part index.
 	Summary bool
 	Part    int
+	// Origin records the upstream format/provider that produced a reasoning event.
+	Origin Origin
 
 	Arguments json.RawMessage
 	Usage     *Usage

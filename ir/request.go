@@ -215,6 +215,10 @@ type Reasoning struct {
 	Summary   []string   `json:"summary,omitempty"`
 	Signature *Signature `json:"signature,omitempty"`
 	Sealed    *Sealed    `json:"sealed,omitempty"`
+	// Origin records the upstream format/provider that produced this reasoning
+	// when known (used to seal unsigned reasoning accurately across multi-round
+	// streams that switch upstreams).
+	Origin Origin `json:"origin,omitempty"`
 }
 
 // Signature is an issuer's signature over reasoning (or a Gemini thought
