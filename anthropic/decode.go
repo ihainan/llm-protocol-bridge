@@ -295,6 +295,10 @@ func decodeUsage(u *wireUsage) ir.Usage {
 			out.Reported |= ir.UWebFetch
 		}
 	}
+	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ThinkingTokens != nil {
+		out.ReasoningTokens = *u.OutputTokensDetails.ThinkingTokens
+		out.Reported |= ir.UReasoning
+	}
 	return out
 }
 

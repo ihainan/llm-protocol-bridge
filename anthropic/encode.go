@@ -761,6 +761,11 @@ func buildAnthropicUsage(u ir.Usage) map[string]any {
 		}
 		m["server_tool_use"] = stu
 	}
+	if u.Has(ir.UReasoning) && u.ReasoningTokens > 0 {
+		m["output_tokens_details"] = map[string]any{
+			"thinking_tokens": u.ReasoningTokens,
+		}
+	}
 	return m
 }
 
