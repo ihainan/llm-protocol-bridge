@@ -38,6 +38,7 @@ const (
 	LossStopLimit          LossKind = "stop.limit"
 	LossCitations          LossKind = "output.citations"
 	LossBuiltinActivity    LossKind = "output.builtin_activity"
+	LossOutputMedia        LossKind = "output.media"
 )
 
 // DefaultAllowed lists the losses tolerated unless the caller denies them.
@@ -64,6 +65,7 @@ var DefaultAllowed = LossSet{
 	LossSamplingSeed:       true,
 	LossCitations:          true,
 	LossBuiltinActivity:    true,
+	LossOutputMedia:        true,
 }
 
 // LossSet is a set of loss keys.

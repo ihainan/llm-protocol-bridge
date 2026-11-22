@@ -324,7 +324,17 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 				media.URL, _ = jsonx.String(kv.Value)
 			}
 		}
-		return ir.Part{Type: ir.PartFile, Media: media}, nil
+		pt := ir.PartFile
+		mt := strings.ToLower(media.MediaType)
+		switch {
+		case strings.HasPrefix(mt, "image/"):
+			pt = ir.PartImage
+		case strings.HasPrefix(mt, "audio/"):
+			pt = ir.PartAudio
+		case strings.HasPrefix(mt, "video/"):
+			pt = ir.PartVideo
+		}
+		return ir.Part{Type: pt, Media: media}, nil
 
 	case fields["functionCall"] != nil:
 		kvs2, err := jsonx.Object(fields["functionCall"])
@@ -389,6 +399,17 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 			}
 		}
 		return ir.Part{Type: ir.PartToolResult, Result: result}, nil
+
+	case fields["thoughtSignature"] != nil:
+		sigVal, _ := jsonx.String(fields["thoughtSignature"])
+		sig := &ir.Signature{Value: sigVal, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
+		if rec, ok := env.Sealer().Unseal(sigVal); ok && rec.Kind == ir.SealSignature {
+			sig = &ir.Signature{Value: rec.Value, Origin: rec.Origin}
+		}
+		return ir.Part{
+			Type:      ir.PartReasoning,
+			Reasoning: &ir.Reasoning{Signature: sig},
+		}, nil
 	}
 
 	return ir.Part{}, env.Err(ir.Invalid(p, "unrecognised part type"))
@@ -464,6 +485,8 @@ func parseFunctionDecl(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, er
 		case "parameters":
 			s := schema.FromOpenAPI(kv.Value)
 			t.Schema = s
+		case "parametersJsonSchema":
+			t.Schema = append(json.RawMessage(nil), kv.Value...)
 		}
 	}
 	if t.Name == "" {

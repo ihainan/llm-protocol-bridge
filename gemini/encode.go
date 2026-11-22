@@ -75,11 +75,35 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			}
 		}
 
-	case ir.EvText:
+	case ir.EvText, ir.EvRefusal:
 		if ev.Text == "" {
 			break
 		}
 		dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{Text: ev.Text}}, "")
+
+	case ir.EvImage:
+		if ev.Media != nil && ev.Media.Data != "" {
+			mt := ev.Media.MediaType
+			if mt == "" {
+				mt = "image/png"
+			}
+			dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{InlineData: &wireBlob{
+				MimeType: mt,
+				Data:     ev.Media.Data,
+			}}}, "")
+		} else if ev.Media != nil && ev.Media.URL != "" {
+			dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{FileData: &wireFileData{
+				MimeType: ev.Media.MediaType,
+				FileURI:  ev.Media.URL,
+			}}}, "")
+		}
+
+	case ir.EvCitation:
+		if ev.Citation != nil {
+			if err := e.opts.Env.Lose(ir.LossCitations, ir.Root.Key("candidates"), "citations not supported in Gemini stream output"); err != nil {
+				return dst, err
+			}
+		}
 
 	case ir.EvReasoningStart:
 		// No wire chunk needed until thought text arrives.
@@ -94,14 +118,15 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if ev.Signature == nil || ev.Signature.Value == "" {
 			break
 		}
+		sigVal := encodeGeminiSignature(e.opts.Env, ev.Signature)
 		c := e.cand(ev.Index)
 		if c.lastCallKey != "" {
 			if pc := c.calls[c.lastCallKey]; pc != nil {
-				pc.signature = ev.Signature.Value
+				pc.signature = sigVal
 				break
 			}
 		}
-		dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{ThoughtSignature: ev.Signature.Value}}, "")
+		dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{ThoughtSignature: sigVal}}, "")
 
 	case ir.EvToolStart:
 		c := e.cand(ev.Index)
@@ -115,8 +140,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			name:  ev.Name,
 			order: c.callSeq,
 		}
-		if ev.Signature != nil {
-			pc.signature = ev.Signature.Value
+		if ev.Signature != nil && ev.Signature.Value != "" {
+			pc.signature = encodeGeminiSignature(e.opts.Env, ev.Signature)
 		}
 		c.calls[key] = pc
 		c.lastCallKey = key
@@ -356,6 +381,11 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 		var parts []wirePart
 		for i, p := range out.Parts {
 			fp := ir.Root.Key("candidates").At(out.Index).Key("content").Key("parts").At(i)
+			if len(p.Citations) > 0 {
+				if err := env.Lose(ir.LossCitations, fp, "citations not supported in Gemini response output"); err != nil {
+					return nil, err
+				}
+			}
 			wps, err := irPartToWirePart(p, fp, env, Dialect{}, nil, nil, true)
 			if err != nil {
 				return nil, err
@@ -399,6 +429,37 @@ func irStopToGemini(s *ir.Stop) string {
 	return "STOP"
 }
 
+func encodeGeminiSignature(env *ir.Env, sig *ir.Signature) string {
+	if sig == nil || sig.Value == "" {
+		return ""
+	}
+	prov := ""
+	if env != nil {
+		prov = env.ProviderID
+	}
+	if sig.Origin.Format == ir.FormatGemini && sig.Origin.Provider == "" && prov == "" {
+		return sig.Value
+	}
+	if sig.Origin.Format == ir.FormatGemini && !needsGeminiSeal(sig.Origin, env) {
+		return sig.Value
+	}
+	return env.Sealer().Seal(ir.SealRecord{
+		Origin: sig.Origin,
+		Kind:   ir.SealSignature,
+		Value:  sig.Value,
+	})
+}
+
+func needsGeminiSeal(origin ir.Origin, env *ir.Env) bool {
+	if origin.Format != ir.FormatGemini {
+		return true
+	}
+	if origin.Provider != "" {
+		return true
+	}
+	return env != nil && env.ProviderID != ""
+}
+
 func irUsageToWire(u *ir.Usage) *wireUsage {
 	if u == nil || !u.Any() {
 		return nil
@@ -411,19 +472,23 @@ func irUsageToWire(u *ir.Usage) *wireUsage {
 	if cands < 0 {
 		cands = 0
 	}
+	total := u.TotalTokens()
 	w := &wireUsage{
-		PromptTokenCount:     prompt,
-		CandidatesTokenCount: cands,
-		TotalTokenCount:      u.TotalTokens(),
+		PromptTokenCount:     &prompt,
+		CandidatesTokenCount: &cands,
+		TotalTokenCount:      &total,
 	}
 	if u.Has(ir.UCacheRead) {
-		w.CachedContentTokenCount = u.CacheReadTokens
+		v := u.CacheReadTokens
+		w.CachedContentTokenCount = &v
 	}
 	if u.Has(ir.UReasoning) {
-		w.ThoughtsTokenCount = u.ReasoningTokens
+		v := u.ReasoningTokens
+		w.ThoughtsTokenCount = &v
 	}
 	if u.Has(ir.UToolUsePrompt) {
-		w.ToolUsePromptTokenCount = u.ToolUsePromptTokens
+		v := u.ToolUsePromptTokens
+		w.ToolUsePromptTokenCount = &v
 	}
 	return w
 }

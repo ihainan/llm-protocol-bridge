@@ -428,7 +428,7 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 			}
 			src = &wireImageSource{Type: "text", MediaType: mt, Data: part.Media.Text}
 		} else {
-			src, err = buildImageSource(part.Media, p, env)
+			src, err = buildMediaSource(part.Media, "application/pdf", p, env)
 			if err != nil {
 				return nil, err
 			}
@@ -529,6 +529,10 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 }
 
 func buildImageSource(m *ir.Media, p ir.Path, env *ir.Env) (*wireImageSource, error) {
+	return buildMediaSource(m, "image/jpeg", p, env)
+}
+
+func buildMediaSource(m *ir.Media, defaultMIME string, p ir.Path, env *ir.Env) (*wireImageSource, error) {
 	if m.FileID != "" {
 		return &wireImageSource{Type: "file", FileID: m.FileID}, nil
 	}
@@ -538,7 +542,7 @@ func buildImageSource(m *ir.Media, p ir.Path, env *ir.Env) (*wireImageSource, er
 	if m.Data != "" {
 		mt := m.MediaType
 		if mt == "" {
-			mt = "image/jpeg"
+			mt = defaultMIME
 		}
 		return &wireImageSource{Type: "base64", MediaType: mt, Data: m.Data}, nil
 	}

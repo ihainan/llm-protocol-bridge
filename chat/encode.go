@@ -77,6 +77,29 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}}
 		dst = e.appendChunk(dst, chunk)
 
+	case ir.EvRefusal:
+		chunk := e.baseChunk(ev.Index)
+		chunk["choices"] = []map[string]any{{
+			"index":         ev.Index,
+			"delta":         map[string]any{"refusal": ev.Text},
+			"finish_reason": nil,
+		}}
+		dst = e.appendChunk(dst, chunk)
+
+	case ir.EvCitation:
+		if ev.Citation != nil {
+			if err := e.opts.Env.Lose(ir.LossCitations, ir.Root.Key("choices"), "citations not supported by Chat Completions"); err != nil {
+				return dst, err
+			}
+		}
+
+	case ir.EvImage:
+		if ev.Media != nil {
+			if err := e.opts.Env.Lose(ir.LossOutputMedia, ir.Root.Key("choices"), "output media not supported by Chat Completions"); err != nil {
+				return dst, err
+			}
+		}
+
 	case ir.EvReasoning:
 		chunk := e.baseChunk(ev.Index)
 		chunk["choices"] = []map[string]any{{
@@ -316,9 +339,18 @@ func buildAssistantMessage(parts []ir.Part, env *ir.Env) (wireMessage, error) {
 	var reasoning string
 
 	for i, p := range parts {
+		if len(p.Citations) > 0 {
+			if err := env.Lose(ir.LossCitations, ir.Root.Key("choices").At(0).Key("message").At(i), "citations not supported by Chat Completions"); err != nil {
+				return wireMessage{}, err
+			}
+		}
 		switch p.Type {
 		case ir.PartText:
 			textParts = append(textParts, wireContentPart{Type: "text", Text: p.Text})
+		case ir.PartImage:
+			if err := env.Lose(ir.LossOutputMedia, ir.Root.Key("choices").At(0).Key("message").At(i), "output media not supported by Chat Completions"); err != nil {
+				return wireMessage{}, err
+			}
 		case ir.PartRefusal:
 			wm.Refusal = p.Text
 		case ir.PartReasoning:
@@ -420,19 +452,24 @@ func buildUsage(u ir.Usage) map[string]any {
 
 // usageToWire converts ir.Usage to wireUsage for non-streaming response.
 func usageToWire(u ir.Usage) *wireUsage {
+	prompt := u.PromptTokens()
+	comp := u.OutputTokens
+	tot := prompt + comp
 	wu := &wireUsage{
-		PromptTokens:     u.PromptTokens(),
-		CompletionTokens: u.OutputTokens,
-		TotalTokens:      u.PromptTokens() + u.OutputTokens,
+		PromptTokens:     &prompt,
+		CompletionTokens: &comp,
+		TotalTokens:      &tot,
 	}
 	if u.Has(ir.UCacheRead) {
+		v := u.CacheReadTokens
 		wu.PromptTokensDetails = &wirePromptTokensDetails{
-			CachedTokens: u.CacheReadTokens,
+			CachedTokens: &v,
 		}
 	}
 	if u.Has(ir.UReasoning) {
+		v := u.ReasoningTokens
 		wu.CompletionTokensDetails = &wireCompletionTokensDetails{
-			ReasoningTokens: u.ReasoningTokens,
+			ReasoningTokens: &v,
 		}
 	}
 	return wu

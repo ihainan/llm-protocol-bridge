@@ -93,7 +93,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			dst = e.emitPing(dst)
 		}
 
-	case ir.EvText:
+	case ir.EvText, ir.EvRefusal:
 		dst = e.ensureStarted(dst)
 		dst = e.ensureTextBlock(dst)
 		dst = e.appendSSE(dst, "content_block_delta", map[string]any{
@@ -101,6 +101,37 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			"index": e.openBlock,
 			"delta": map[string]any{"type": "text_delta", "text": ev.Text},
 		})
+
+	case ir.EvCitation:
+		if ev.Citation != nil {
+			if e.openBlock >= 0 && e.openBlockType == "text" {
+				var citObj any
+				if len(ev.Citation.Raw) > 0 {
+					citObj = json.RawMessage(ev.Citation.Raw)
+				} else {
+					citObj = map[string]any{
+						"type":       "web_search_result_location",
+						"url":        ev.Citation.URL,
+						"title":      ev.Citation.Title,
+						"cited_text": ev.Citation.CitedText,
+					}
+				}
+				dst = e.appendSSE(dst, "content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": e.openBlock,
+					"delta": map[string]any{"type": "citations_delta", "citation": citObj},
+				})
+			} else if err := e.opts.Env.Lose(ir.LossCitations, ir.Root.Key("content"), "citation without open text block in Anthropic stream"); err != nil {
+				return dst, err
+			}
+		}
+
+	case ir.EvImage:
+		if ev.Media != nil {
+			if err := e.opts.Env.Lose(ir.LossOutputMedia, ir.Root.Key("content"), "output media not supported in Anthropic assistant stream"); err != nil {
+				return dst, err
+			}
+		}
 
 	case ir.EvReasoningStart:
 		dst = e.ensureStarted(dst)

@@ -175,7 +175,7 @@ func (d *StreamDecoder) decodeChoice(out []ir.Event, ci int, ch wireStreamChoice
 	// Refusal.
 	if delta.Refusal != "" {
 		out = d.flushUnstartedToolCalls(out, ci)
-		out = append(out, ir.Event{Type: ir.EvText, Index: ci, Text: delta.Refusal})
+		out = append(out, ir.Event{Type: ir.EvRefusal, Index: ci, Text: delta.Refusal})
 	}
 
 	// Tool calls.
@@ -393,14 +393,15 @@ func decodeUsageRaw(raw json.RawMessage, dia Dialect) (ir.Usage, bool) {
 
 // decodeUsage decodes a wire usage object into ir.Usage using the dialect.
 func decodeUsage(u *wireUsage, raw json.RawMessage, dia Dialect) ir.Usage {
-	out := ir.Usage{
-		OutputTokens: u.CompletionTokens,
-		Reported:     ir.UOutput,
+	var out ir.Usage
+	if u.CompletionTokens != nil {
+		out.OutputTokens = *u.CompletionTokens
+		out.Reported |= ir.UOutput
 	}
 
 	// Cache read: standard prompt_tokens_details.cached_tokens, else dialect fallbacks.
-	if u.PromptTokensDetails != nil {
-		out.CacheReadTokens = u.PromptTokensDetails.CachedTokens
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens != nil {
+		out.CacheReadTokens = *u.PromptTokensDetails.CachedTokens
 		out.Reported |= ir.UCacheRead
 	} else if len(dia.CacheReadFields) > 0 && len(raw) > 0 {
 		for _, field := range dia.CacheReadFields {
@@ -424,18 +425,20 @@ func decodeUsage(u *wireUsage, raw json.RawMessage, dia Dialect) ir.Usage {
 	}
 
 	// Reasoning tokens.
-	if u.CompletionTokensDetails != nil {
-		out.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.ReasoningTokens != nil {
+		out.ReasoningTokens = *u.CompletionTokensDetails.ReasoningTokens
 		out.Reported |= ir.UReasoning
 	}
 
-	if dia.PromptExcludesCache {
-		out.InputTokens = u.PromptTokens
-		out.Reported |= ir.UInput
-	} else {
-		out.FromInclusivePrompt(u.PromptTokens)
+	if u.PromptTokens != nil {
+		if dia.PromptExcludesCache {
+			out.InputTokens = *u.PromptTokens
+			out.Reported |= ir.UInput
+		} else {
+			out.FromInclusivePrompt(*u.PromptTokens)
+		}
 	}
-	if dia.ReasoningExcludedFromCompletion && out.ReasoningTokens > 0 {
+	if dia.ReasoningExcludedFromCompletion && out.ReasoningTokens > 0 && u.CompletionTokens != nil {
 		out.OutputTokens += out.ReasoningTokens
 	}
 	return out

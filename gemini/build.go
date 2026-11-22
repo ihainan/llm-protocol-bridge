@@ -327,6 +327,16 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 			Name:     fnName,
 			Response: respRaw,
 		}
+		for i, cp := range result.Content {
+			if cp.Type == ir.PartText {
+				continue
+			}
+			sub, err := irPartToWirePart(cp, p.Key("content").At(i), env, dia, names, callNames, false)
+			if err != nil {
+				return nil, err
+			}
+			fr.Parts = append(fr.Parts, sub...)
+		}
 		if dia.FunctionCallIDs && result.CallID != "" {
 			fr.ID = result.CallID
 		}

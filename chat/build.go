@@ -374,6 +374,9 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 			if part.Media == nil {
 				continue
 			}
+			if part.Media.URL != "" && part.Media.FileID == "" && part.Media.Data == "" {
+				return nil, b.env.Err(ir.Unsupported(fp, "file.url", "Chat Completions file input does not support URLs"))
+			}
 			contentParts = append(contentParts, wireContentPart{
 				Type: "file",
 				File: &wireFilePart{

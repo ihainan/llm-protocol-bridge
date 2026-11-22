@@ -284,7 +284,9 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 			}
 			reasoningText = s
 		case "refusal":
-			// handled via content
+			if s, ok := jsonx.String(v); ok && s != "" {
+				msg.Parts = append(msg.Parts, ir.Part{Type: ir.PartRefusal, Text: s})
+			}
 		}
 	}
 
@@ -470,11 +472,19 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 		if json.Unmarshal(fileRaw, &f) != nil {
 			return ir.Part{}, env.Err(ir.Invalid(p.Key("file"), "invalid file"))
 		}
-		return ir.Part{Type: ir.PartFile, Media: &ir.Media{
+		media := &ir.Media{
 			FileID:   f.FileID,
 			Filename: f.Filename,
 			Data:     f.FileData,
-		}}, nil
+		}
+		if strings.HasPrefix(f.FileData, "data:") {
+			rest := f.FileData[5:]
+			if i := strings.Index(rest, ";base64,"); i >= 0 {
+				media.MediaType = rest[:i]
+				media.Data = rest[i+8:]
+			}
+		}
+		return ir.Part{Type: ir.PartFile, Media: media}, nil
 
 	case "thinking", "thought":
 		// Reasoning block in some dialects

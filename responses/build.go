@@ -38,7 +38,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 	// tools.
 	if len(req.Tools) > 0 || len(req.Builtins) > 0 {
-		var wireTools []wireTool
+		var rawTools []json.RawMessage
 		for i, t := range req.Tools {
 			fp := ir.Root.Key("tools").At(i)
 			wt, err := buildTool(t, fp, env)
@@ -46,23 +46,40 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 				return nil, err
 			}
 			names[t.Name] = ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: t.Kind}
-			wireTools = append(wireTools, wt)
+			tb, err := jsonx.Marshal(wt)
+			if err != nil {
+				return nil, err
+			}
+			rawTools = append(rawTools, tb)
 		}
 		for _, bt := range req.Builtins {
 			switch bt.Kind {
 			case ir.BuiltinWebSearch:
-				wt := wireTool{Type: "web_search"}
-				if len(bt.Config) > 0 {
-					wt.WebSearchOptions = bt.Config
+				if bt.Origin == ir.FormatResponses && len(bt.Raw) > 0 {
+					rawTools = append(rawTools, append(json.RawMessage(nil), bt.Raw...))
+				} else if len(bt.Config) > 0 {
+					m := map[string]json.RawMessage{}
+					if kvs, err := jsonx.Object(bt.Config); err == nil {
+						for _, kv := range kvs {
+							m[kv.Key] = kv.Value
+						}
+					}
+					m["type"] = json.RawMessage(`"web_search"`)
+					tb, err := jsonx.Marshal(m)
+					if err != nil {
+						return nil, err
+					}
+					rawTools = append(rawTools, tb)
+				} else {
+					rawTools = append(rawTools, json.RawMessage(`{"type":"web_search"}`))
 				}
-				wireTools = append(wireTools, wt)
 			default:
 				if err := env.Err(ir.Unsupported(ir.Root.Key("tools"), string(bt.Kind), "builtin tool not supported by Responses")); err != nil {
 					return nil, err
 				}
 			}
 		}
-		tb, err := jsonx.Marshal(wireTools)
+		tb, err := jsonx.Marshal(rawTools)
 		if err != nil {
 			return nil, err
 		}
@@ -278,29 +295,23 @@ func userPartsToContent(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireContentP
 				break
 			}
 			r := part.Result
-			text := toolResultText(r.Content)
-			isErr := r.IsError
+			outRaw, err := buildToolOutputValue(r, fp, env)
+			if err != nil {
+				return nil, nil, err
+			}
 			switch r.Kind {
 			case ir.ToolCustom:
 				item := wireInputItem{
 					Type:   "custom_tool_call_output",
 					CallID: r.CallID,
-					Output: text,
-				}
-				if isErr {
-					t := true
-					item.IsError = &t
+					Output: outRaw,
 				}
 				results = append(results, item)
 			default:
 				item := wireInputItem{
 					Type:   "function_call_output",
 					CallID: r.CallID,
-					Output: text,
-				}
-				if isErr {
-					t := true
-					item.IsError = &t
+					Output: outRaw,
 				}
 				results = append(results, item)
 			}
@@ -551,6 +562,66 @@ func buildTextFormat(of *ir.OutputFormat) (json.RawMessage, error) {
 	}
 	b, _ := jsonx.Marshal(map[string]any{"format": fmt})
 	return b, nil
+}
+
+func buildToolOutputValue(r *ir.ToolResult, fp ir.Path, env *ir.Env) (json.RawMessage, error) {
+	hasNonText := false
+	for _, cp := range r.Content {
+		if cp.Type != ir.PartText {
+			hasNonText = true
+			break
+		}
+	}
+	if !hasNonText {
+		text := toolResultText(r.Content)
+		if r.IsError && !strings.HasPrefix(text, "[tool error] ") {
+			text = "[tool error] " + text
+		}
+		b, err := jsonx.Marshal(text)
+		return b, err
+	}
+	var cparts []wireContentPart
+	if r.IsError {
+		cparts = append(cparts, wireContentPart{Type: "input_text", Text: "[tool error]"})
+	}
+	for i, cp := range r.Content {
+		cfp := fp.Key("output").At(i)
+		switch cp.Type {
+		case ir.PartText:
+			cparts = append(cparts, wireContentPart{Type: "input_text", Text: cp.Text})
+		case ir.PartImage:
+			if cp.Media == nil {
+				continue
+			}
+			imageURL := cp.Media.URL
+			if imageURL == "" && cp.Media.Data != "" {
+				mt := cp.Media.MediaType
+				if mt == "" {
+					mt = "image/png"
+				}
+				imageURL = "data:" + mt + ";base64," + cp.Media.Data
+			}
+			cparts = append(cparts, wireContentPart{
+				Type:     "input_image",
+				ImageURL: imageURL,
+				Detail:   cp.Media.Detail,
+			})
+		case ir.PartFile:
+			if cp.Media == nil {
+				continue
+			}
+			cparts = append(cparts, wireContentPart{
+				Type:     "input_file",
+				FileID:   cp.Media.FileID,
+				Filename: cp.Media.Filename,
+				FileData: cp.Media.Data,
+			})
+		default:
+			return nil, env.Err(ir.Unsupported(cfp, string(cp.Type), "tool result part type not supported by Responses"))
+		}
+	}
+	b, err := jsonx.Marshal(cparts)
+	return b, err
 }
 
 func toolResultText(parts []ir.Part) string {

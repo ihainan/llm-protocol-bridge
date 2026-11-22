@@ -23,7 +23,8 @@ type wireMessage struct {
 type wireContentBlock struct {
 	Type string `json:"type"`
 	// text
-	Text string `json:"text,omitempty"`
+	Text      string            `json:"text,omitempty"`
+	Citations []json.RawMessage `json:"citations,omitempty"`
 	// image
 	Source *wireImageSource `json:"source,omitempty"`
 	// document
@@ -133,13 +134,14 @@ type wireStreamEvent struct {
 }
 
 type wireDelta struct {
-	Type         string `json:"type,omitempty"`
-	Text         string `json:"text,omitempty"`
-	Thinking     string `json:"thinking,omitempty"`
-	Signature    string `json:"signature,omitempty"`
-	PartialJSON  string `json:"partial_json,omitempty"`
-	StopReason   string `json:"stop_reason,omitempty"`
-	StopSequence string `json:"stop_sequence,omitempty"`
+	Type         string          `json:"type,omitempty"`
+	Text         string          `json:"text,omitempty"`
+	Thinking     string          `json:"thinking,omitempty"`
+	Signature    string          `json:"signature,omitempty"`
+	PartialJSON  string          `json:"partial_json,omitempty"`
+	Citation     json.RawMessage `json:"citation,omitempty"`
+	StopReason   string          `json:"stop_reason,omitempty"`
+	StopSequence string          `json:"stop_sequence,omitempty"`
 }
 
 // wireAPIError is the error object in a streaming event or top-level error body.

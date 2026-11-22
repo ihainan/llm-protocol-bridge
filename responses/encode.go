@@ -116,6 +116,50 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		})
 		e.textAccum.WriteString(ev.Text)
 
+	case ir.EvRefusal:
+		dst = e.ensureStarted(dst)
+		dst = e.ensureRefusalOpen(dst)
+		dst = e.appendEvent(dst, "response.refusal.delta", map[string]any{
+			"sequence_number": e.nextSeq(),
+			"item_id":         e.itemID,
+			"output_index":    e.outputIndex,
+			"content_index":   0,
+			"delta":           ev.Text,
+		})
+		e.textAccum.WriteString(ev.Text)
+
+	case ir.EvCitation:
+		if ev.Citation != nil {
+			if e.openItemType == "message" {
+				ann := map[string]any{
+					"type":        "url_citation",
+					"url":         ev.Citation.URL,
+					"title":       ev.Citation.Title,
+					"start_index": ev.Citation.StartIndex,
+					"end_index":   ev.Citation.EndIndex,
+				}
+				if ev.Citation.Type != "" {
+					ann["type"] = ev.Citation.Type
+				}
+				dst = e.appendEvent(dst, "response.output_text.annotation.added", map[string]any{
+					"sequence_number": e.nextSeq(),
+					"item_id":         e.itemID,
+					"output_index":    e.outputIndex,
+					"content_index":   0,
+					"annotation":      ann,
+				})
+			} else if err := e.opts.Env.Lose(ir.LossCitations, ir.Root.Key("output"), "citation without open message in Responses stream"); err != nil {
+				return dst, err
+			}
+		}
+
+	case ir.EvImage:
+		if ev.Media != nil {
+			if err := e.opts.Env.Lose(ir.LossOutputMedia, ir.Root.Key("output"), "output media not supported in Responses stream"); err != nil {
+				return dst, err
+			}
+		}
+
 	case ir.EvReasoningStart:
 		dst = e.ensureStarted(dst)
 		dst = e.closeItem(dst)
@@ -405,6 +449,39 @@ func (e *StreamEncoder) Keepalive(dst []byte) []byte {
 	return e.emitResponseEvent(dst, "response.in_progress", "in_progress")
 }
 
+func (e *StreamEncoder) ensureRefusalOpen(dst []byte) []byte {
+	if e.openItemType == "refusal" {
+		return dst
+	}
+	dst = e.closeItem(dst)
+	e.openItemType = "refusal"
+	e.outputIndex++
+	e.itemID = "msg_" + e.opts.Env.NewID("", 16)
+	e.textAccum.Reset()
+	dst = e.appendEvent(dst, "response.output_item.added", map[string]any{
+		"sequence_number": e.nextSeq(),
+		"output_index":    e.outputIndex,
+		"item": map[string]any{
+			"type":    "message",
+			"id":      e.itemID,
+			"role":    "assistant",
+			"status":  "in_progress",
+			"content": []any{},
+		},
+	})
+	dst = e.appendEvent(dst, "response.content_part.added", map[string]any{
+		"sequence_number": e.nextSeq(),
+		"item_id":         e.itemID,
+		"output_index":    e.outputIndex,
+		"content_index":   0,
+		"part": map[string]any{
+			"type":    "refusal",
+			"refusal": "",
+		},
+	})
+	return dst
+}
+
 func (e *StreamEncoder) ensureMessageOpen(dst []byte) []byte {
 	if e.openItemType == "message" {
 		return dst
@@ -627,6 +704,40 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 			"output_index":    e.outputIndex,
 			"item":            doneItem,
 		})
+	case "refusal":
+		text := e.textAccum.String()
+		dst = e.appendEvent(dst, "response.refusal.done", map[string]any{
+			"sequence_number": e.nextSeq(),
+			"item_id":         e.itemID,
+			"output_index":    e.outputIndex,
+			"content_index":   0,
+			"refusal":         text,
+		})
+		dst = e.appendEvent(dst, "response.content_part.done", map[string]any{
+			"sequence_number": e.nextSeq(),
+			"item_id":         e.itemID,
+			"output_index":    e.outputIndex,
+			"content_index":   0,
+			"part": map[string]any{
+				"type":    "refusal",
+				"refusal": text,
+			},
+		})
+		doneItem := map[string]any{
+			"type":   "message",
+			"id":     e.itemID,
+			"role":   "assistant",
+			"status": "completed",
+			"content": []map[string]any{
+				{"type": "refusal", "refusal": text},
+			},
+		}
+		e.outputs = append(e.outputs, doneItem)
+		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
+			"sequence_number": e.nextSeq(),
+			"output_index":    e.outputIndex,
+			"item":            doneItem,
+		})
 	case "reasoning":
 		rtext := e.reasonAccum.String()
 		summary := []map[string]any{}
@@ -784,12 +895,26 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 	switch p.Type {
 	case ir.PartText:
 		id := "msg_" + env.NewID("", 16)
+		op := wireOutputPart{Type: "output_text", Text: p.Text}
+		for _, c := range p.Citations {
+			typ := c.Type
+			if typ == "" {
+				typ = "url_citation"
+			}
+			op.Annotations = append(op.Annotations, wireAnnotation{
+				Type:       typ,
+				URL:        c.URL,
+				Title:      c.Title,
+				StartIndex: c.StartIndex,
+				EndIndex:   c.EndIndex,
+			})
+		}
 		return []wireOutputItem{{
 			Type:    "message",
 			ID:      id,
 			Role:    "assistant",
 			Status:  "completed",
-			Content: []wireOutputPart{{Type: "output_text", Text: p.Text}},
+			Content: []wireOutputPart{op},
 		}}, nil
 
 	case ir.PartRefusal:

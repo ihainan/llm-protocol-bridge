@@ -549,7 +549,10 @@ func parseFunctionCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir
 
 func parseFunctionCallOutputItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 	callID, _ := jsonx.String(fields["call_id"])
-	output, _ := jsonx.String(fields["output"])
+	parts, err := parseToolOutputContent(fields["output"], p.Key("output"), env)
+	if err != nil {
+		return ir.Part{}, err
+	}
 	var isErr bool
 	if v, ok := fields["is_error"]; ok {
 		b, _ := jsonx.Bool(v)
@@ -560,9 +563,32 @@ func parseFunctionCallOutputItem(fields map[string]json.RawMessage, p ir.Path, e
 		Result: &ir.ToolResult{
 			CallID:  callID,
 			IsError: isErr,
-			Content: []ir.Part{ir.TextPart(output)},
+			Content: parts,
 		},
 	}, nil
+}
+
+func parseToolOutputContent(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Part, error) {
+	if len(raw) == 0 || jsonx.IsNull(raw) {
+		return []ir.Part{ir.TextPart("")}, nil
+	}
+	if jsonx.Kind(raw) == '[' {
+		elems, ok := jsonx.Array(raw)
+		if !ok {
+			return nil, env.Err(ir.Invalid(p, "output must be a string or array"))
+		}
+		var parts []ir.Part
+		for i, elem := range elems {
+			pt, err := parseContentPart(elem, p.At(i), env)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, pt)
+		}
+		return parts, nil
+	}
+	s, _ := jsonx.String(raw)
+	return []ir.Part{ir.TextPart(s)}, nil
 }
 
 func parseCustomToolCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
@@ -585,7 +611,10 @@ func parseCustomToolCallItem(fields map[string]json.RawMessage, p ir.Path, env *
 
 func parseCustomToolCallOutputItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 	callID, _ := jsonx.String(fields["call_id"])
-	output, _ := jsonx.String(fields["output"])
+	parts, err := parseToolOutputContent(fields["output"], p.Key("output"), env)
+	if err != nil {
+		return ir.Part{}, err
+	}
 	var isErr bool
 	if v, ok := fields["is_error"]; ok {
 		b, _ := jsonx.Bool(v)
@@ -597,7 +626,7 @@ func parseCustomToolCallOutputItem(fields map[string]json.RawMessage, p ir.Path,
 			CallID:  callID,
 			Kind:    ir.ToolCustom,
 			IsError: isErr,
-			Content: []ir.Part{ir.TextPart(output)},
+			Content: parts,
 		},
 	}, nil
 }

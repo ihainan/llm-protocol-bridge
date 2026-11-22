@@ -146,21 +146,22 @@ type wireStreamChoice struct {
 	FinishReason string      `json:"finish_reason,omitempty"`
 }
 
-// wireUsage is the usage object in a response.
+// wireUsage is the usage object in a response. Pointer fields distinguish
+// absent keys in partial streaming snapshots from explicit zeroes.
 type wireUsage struct {
-	PromptTokens            int                          `json:"prompt_tokens"`
-	CompletionTokens        int                          `json:"completion_tokens"`
-	TotalTokens             int                          `json:"total_tokens"`
+	PromptTokens            *int                         `json:"prompt_tokens,omitempty"`
+	CompletionTokens        *int                         `json:"completion_tokens,omitempty"`
+	TotalTokens             *int                         `json:"total_tokens,omitempty"`
 	PromptTokensDetails     *wirePromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *wireCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
 type wirePromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens *int `json:"cached_tokens,omitempty"`
 }
 
 type wireCompletionTokensDetails struct {
-	ReasoningTokens int `json:"reasoning_tokens"`
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 }
 
 // wireError is the error object inside a Chat Completions error response.

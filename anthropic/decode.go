@@ -118,6 +118,28 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 					Text:  string(se.ContentBlock.Input),
 				})
 			}
+		case "server_tool_use":
+			kind := ir.BuiltinKind(se.ContentBlock.Name)
+			if kind == "" {
+				kind = ir.BuiltinWebSearch
+			}
+			out = append(out, ir.Event{
+				Type:  ir.EvBuiltin,
+				Index: 0,
+				Builtin: &ir.BuiltinActivity{
+					Kind:   kind,
+					ID:     se.ContentBlock.ID,
+					Input:  append(json.RawMessage(nil), se.ContentBlock.Input...),
+					Origin: ir.FormatAnthropic,
+				},
+			})
+		case "web_search_tool_result", "web_fetch_tool_result":
+			kind := ir.BuiltinWebSearch
+			if se.ContentBlock.Type == "web_fetch_tool_result" {
+				kind = ir.BuiltinWebFetch
+			}
+			b := parseAnthropicBuiltinResult(kind, se.ContentBlock.ToolUseID, se.ContentBlock.Content)
+			out = append(out, ir.Event{Type: ir.EvBuiltin, Index: 0, Builtin: b})
 		}
 
 	case "content_block_delta":
@@ -129,6 +151,11 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		case "text_delta":
 			if blockType == "text" {
 				out = append(out, ir.Event{Type: ir.EvText, Index: 0, Text: se.Delta.Text})
+			}
+		case "citations_delta":
+			if len(se.Delta.Citation) > 0 {
+				cit := parseAnthropicCitation(se.Delta.Citation)
+				out = append(out, ir.Event{Type: ir.EvCitation, Index: 0, Citation: &cit})
 			}
 		case "thinking_delta":
 			out = append(out, ir.Event{Type: ir.EvReasoning, Index: 0, Text: se.Delta.Thinking})
@@ -304,6 +331,34 @@ func responseBlockToPart(block wireContentBlock, p ir.Path, names map[string]ir.
 	switch block.Type {
 	case "text":
 		part := ir.TextPart(block.Text)
+		for _, rawCit := range block.Citations {
+			part.Citations = append(part.Citations, parseAnthropicCitation(rawCit))
+		}
+		return &part, nil
+	case "server_tool_use":
+		kind := ir.BuiltinKind(block.Name)
+		if kind == "" {
+			kind = ir.BuiltinWebSearch
+		}
+		part := ir.Part{
+			Type: ir.PartBuiltinCall,
+			Builtin: &ir.BuiltinActivity{
+				Kind:   kind,
+				ID:     block.ID,
+				Input:  append(json.RawMessage(nil), block.Input...),
+				Origin: ir.FormatAnthropic,
+			},
+		}
+		return &part, nil
+	case "web_search_tool_result", "web_fetch_tool_result":
+		kind := ir.BuiltinWebSearch
+		if block.Type == "web_fetch_tool_result" {
+			kind = ir.BuiltinWebFetch
+		}
+		part := ir.Part{
+			Type:    ir.PartBuiltinResult,
+			Builtin: parseAnthropicBuiltinResult(kind, block.ToolUseID, block.Content),
+		}
 		return &part, nil
 	case "thinking":
 		part := ir.Part{
@@ -358,4 +413,51 @@ func responseBlockToPart(block wireContentBlock, p ir.Path, names map[string]ir.
 		return &part, nil
 	}
 	return nil, nil
+}
+
+func parseAnthropicCitation(raw json.RawMessage) ir.Citation {
+	var c struct {
+		Type       string `json:"type"`
+		URL        string `json:"url"`
+		Title      string `json:"title"`
+		CitedText  string `json:"cited_text"`
+		StartIndex int    `json:"start_char_index"`
+		EndIndex   int    `json:"end_char_index"`
+	}
+	_ = json.Unmarshal(raw, &c)
+	return ir.Citation{
+		Type:       c.Type,
+		URL:        c.URL,
+		Title:      c.Title,
+		CitedText:  c.CitedText,
+		StartIndex: c.StartIndex,
+		EndIndex:   c.EndIndex,
+		Raw:        append(json.RawMessage(nil), raw...),
+	}
+}
+
+func parseAnthropicBuiltinResult(kind ir.BuiltinKind, id string, raw json.RawMessage) *ir.BuiltinActivity {
+	b := &ir.BuiltinActivity{
+		Kind:     kind,
+		ID:       id,
+		IsResult: true,
+		Origin:   ir.FormatAnthropic,
+		Raw:      append(json.RawMessage(nil), raw...),
+	}
+	var items []struct {
+		Type    string `json:"type"`
+		URL     string `json:"url"`
+		Title   string `json:"title"`
+		PageAge string `json:"page_age"`
+	}
+	if json.Unmarshal(raw, &items) == nil && len(items) > 0 {
+		for _, it := range items {
+			if it.URL != "" {
+				b.Hits = append(b.Hits, ir.Hit{URL: it.URL, Title: it.Title, PageAge: it.PageAge})
+			}
+		}
+	} else if s, ok := jsonx.String(raw); ok {
+		b.Content = s
+	}
+	return b
 }

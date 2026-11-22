@@ -198,6 +198,16 @@ func (c *Collector) Add(ev Event) {
 			o.open = len(o.out.Parts)
 		}
 		o.text.WriteString(ev.Text)
+	case EvRefusal:
+		if p := o.last(); p == nil || p.Type != PartRefusal || o.fresh {
+			o.add(Part{Type: PartRefusal})
+			o.fresh = false
+		}
+		if o.open != len(o.out.Parts) {
+			o.flushText()
+			o.open = len(o.out.Parts)
+		}
+		o.text.WriteString(ev.Text)
 	case EvCitation:
 		if ev.Citation == nil {
 			return
@@ -438,7 +448,7 @@ func appendPartEvents(evs []Event, idx int, p Part) []Event {
 			evs = append(evs, Event{Type: EvSignature, Index: idx, Signature: &s})
 		}
 	case PartRefusal:
-		evs = append(evs, Event{Type: EvText, Index: idx, Text: p.Text})
+		evs = append(evs, Event{Type: EvRefusal, Index: idx, Text: p.Text})
 	case PartReasoning:
 		r := p.Reasoning
 		if r == nil {

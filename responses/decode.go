@@ -263,8 +263,22 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 	case "response.output_text.delta":
 		out = append(out, ir.Event{Type: ir.EvText, Text: se.Delta})
 
+	case "response.output_text.annotation.added":
+		if se.Annotation != nil {
+			out = append(out, ir.Event{
+				Type: ir.EvCitation,
+				Citation: &ir.Citation{
+					Type:       se.Annotation.Type,
+					URL:        se.Annotation.URL,
+					Title:      se.Annotation.Title,
+					StartIndex: se.Annotation.StartIndex,
+					EndIndex:   se.Annotation.EndIndex,
+				},
+			})
+		}
+
 	case "response.refusal.delta":
-		out = append(out, ir.Event{Type: ir.EvText, Text: se.Delta})
+		out = append(out, ir.Event{Type: ir.EvRefusal, Text: se.Delta})
 
 	case "response.function_call_arguments.delta":
 		idx := se.OutputIndex
@@ -511,7 +525,17 @@ func outputItemToIR(item wireOutputItem, p ir.Path, names map[string]ir.ToolRef,
 func outputPartToIR(cp wireOutputPart, p ir.Path, env *ir.Env) (ir.Part, error) {
 	switch cp.Type {
 	case "output_text", "text":
-		return ir.TextPart(cp.Text), nil
+		pt := ir.TextPart(cp.Text)
+		for _, a := range cp.Annotations {
+			pt.Citations = append(pt.Citations, ir.Citation{
+				Type:       a.Type,
+				URL:        a.URL,
+				Title:      a.Title,
+				StartIndex: a.StartIndex,
+				EndIndex:   a.EndIndex,
+			})
+		}
+		return pt, nil
 	case "refusal":
 		return ir.Part{Type: ir.PartRefusal, Text: cp.Refusal}, nil
 	}

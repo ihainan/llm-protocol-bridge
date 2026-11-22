@@ -15,8 +15,8 @@ type wireInputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	// function_call_output fields
-	Output  string `json:"output,omitempty"`
-	IsError *bool  `json:"is_error,omitempty"`
+	Output  json.RawMessage `json:"output,omitempty"`
+	IsError *bool           `json:"is_error,omitempty"`
 	// reasoning fields
 	ID               string          `json:"id,omitempty"`
 	Summary          json.RawMessage `json:"summary,omitempty"`
@@ -99,9 +99,18 @@ type wireOutputItem struct {
 type wireOutputPart struct {
 	Type string `json:"type"`
 	// output_text
-	Text string `json:"text,omitempty"`
+	Text        string           `json:"text,omitempty"`
+	Annotations []wireAnnotation `json:"annotations,omitempty"`
 	// refusal
 	Refusal string `json:"refusal,omitempty"`
+}
+
+type wireAnnotation struct {
+	Type       string `json:"type"`
+	URL        string `json:"url,omitempty"`
+	Title      string `json:"title,omitempty"`
+	StartIndex int    `json:"start_index,omitempty"`
+	EndIndex   int    `json:"end_index,omitempty"`
 }
 
 // wireReasoningPart is one part of a reasoning item's summary.
@@ -156,8 +165,9 @@ type wireStreamEvent struct {
 	ContentIndex int             `json:"content_index,omitempty"`
 	Part         *wireOutputPart `json:"part,omitempty"`
 	// output_text.delta / output_text.done
-	Delta string `json:"delta,omitempty"`
-	Text  string `json:"text,omitempty"`
+	Delta      string          `json:"delta,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	Annotation *wireAnnotation `json:"annotation,omitempty"`
 	// function_call_arguments.delta / function_call_arguments.done
 	Arguments string `json:"arguments,omitempty"`
 	// custom_tool_call_input.delta

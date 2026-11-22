@@ -70,6 +70,7 @@ type EventType uint8
 const (
 	EvStart          EventType = iota + 1 // ID, Model, Usage (prompt side)
 	EvText                                // Text
+	EvRefusal                             // Text (model refusal)
 	EvCitation                            // Citation
 	EvReasoningStart                      // ID
 	EvReasoning                           // Text, Summary
@@ -85,7 +86,7 @@ const (
 	EvError                               // Err
 )
 
-var eventNames = [...]string{"", "start", "text", "citation", "reasoning_start", "reasoning",
+var eventNames = [...]string{"", "start", "text", "refusal", "citation", "reasoning_start", "reasoning",
 	"signature", "sealed", "tool_start", "tool_args", "tool_end", "builtin", "image", "stop",
 	"usage", "error"}
 

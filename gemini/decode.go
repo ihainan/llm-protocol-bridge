@@ -97,6 +97,9 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		for _, part := range cand.Content.Parts {
 			out = d.decodePart(out, part, idx)
 		}
+		if cand.GroundingMetadata != nil {
+			out = decodeGroundingEvents(out, idx, cand.GroundingMetadata)
+		}
 		if cand.FinishReason != "" && cand.FinishReason != "FINISH_REASON_UNSPECIFIED" {
 			stop := geminiStop(cand.FinishReason)
 			if d.hasToolCalls[idx] && stop.Reason == ir.StopEndTurn {
@@ -203,6 +206,56 @@ func (d *StreamDecoder) decodePart(out []ir.Event, part wirePart, idx int) []ir.
 		if part.ThoughtSignature != "" {
 			sig := &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: d.env.ProviderID}}
 			out = append(out, ir.Event{Type: ir.EvSignature, Index: idx, Signature: sig})
+		}
+
+	case part.InlineData != nil:
+		d.inThought[idx] = false
+		out = append(out, ir.Event{
+			Type:  ir.EvImage,
+			Index: idx,
+			Media: &ir.Media{
+				MediaType: part.InlineData.MimeType,
+				Data:      part.InlineData.Data,
+			},
+		})
+
+	case part.ThoughtSignature != "":
+		sig := &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: d.env.ProviderID}}
+		out = append(out, ir.Event{Type: ir.EvSignature, Index: idx, Signature: sig})
+	}
+	return out
+}
+
+func decodeGroundingEvents(out []ir.Event, idx int, gm *wireGroundingMeta) []ir.Event {
+	if len(gm.WebSearchQueries) > 0 {
+		var hits []ir.Hit
+		for _, ch := range gm.GroundingChunks {
+			if ch.Web != nil && ch.Web.URI != "" {
+				hits = append(hits, ir.Hit{URL: ch.Web.URI, Title: ch.Web.Title})
+			}
+		}
+		out = append(out, ir.Event{
+			Type:  ir.EvBuiltin,
+			Index: idx,
+			Builtin: &ir.BuiltinActivity{
+				Kind:   ir.BuiltinWebSearch,
+				Query:  gm.WebSearchQueries[0],
+				Hits:   hits,
+				Origin: ir.FormatGemini,
+			},
+		})
+	}
+	for _, ch := range gm.GroundingChunks {
+		if ch.Web != nil && ch.Web.URI != "" {
+			out = append(out, ir.Event{
+				Type:  ir.EvCitation,
+				Index: idx,
+				Citation: &ir.Citation{
+					Type:  "url_citation",
+					URL:   ch.Web.URI,
+					Title: ch.Web.Title,
+				},
+			})
 		}
 	}
 	return out
@@ -385,23 +438,33 @@ func decodeGeminiUsage(u *wireUsage) ir.Usage {
 	// Per design.md section 6:
 	// Input = promptTokenCount - cachedContentTokenCount + toolUsePromptTokenCount
 	// Output = candidatesTokenCount + thoughtsTokenCount
-	out := ir.Usage{
-		OutputTokens:        u.CandidatesTokenCount + u.ThoughtsTokenCount,
-		ReasoningTokens:     u.ThoughtsTokenCount,
-		ToolUsePromptTokens: u.ToolUsePromptTokenCount,
-		CacheReadTokens:     u.CachedContentTokenCount,
-		Reported:            ir.UOutput,
-	}
-	if u.CachedContentTokenCount > 0 {
+	var out ir.Usage
+	if u.CachedContentTokenCount != nil {
+		out.CacheReadTokens = *u.CachedContentTokenCount
 		out.Reported |= ir.UCacheRead
 	}
-	out.FromInclusivePrompt(u.PromptTokenCount)
-	out.InputTokens += u.ToolUsePromptTokenCount
-	if u.ThoughtsTokenCount > 0 {
+	if u.ThoughtsTokenCount != nil {
+		out.ReasoningTokens = *u.ThoughtsTokenCount
 		out.Reported |= ir.UReasoning
 	}
-	if u.ToolUsePromptTokenCount > 0 {
+	if u.ToolUsePromptTokenCount != nil {
+		out.ToolUsePromptTokens = *u.ToolUsePromptTokenCount
 		out.Reported |= ir.UToolUsePrompt
+	}
+	if u.CandidatesTokenCount != nil || u.ThoughtsTokenCount != nil {
+		cands := 0
+		if u.CandidatesTokenCount != nil {
+			cands = *u.CandidatesTokenCount
+		}
+		out.OutputTokens = cands + out.ReasoningTokens
+		out.Reported |= ir.UOutput
+	}
+	if u.PromptTokenCount != nil {
+		out.FromInclusivePrompt(*u.PromptTokenCount)
+		out.InputTokens += out.ToolUsePromptTokens
+	} else if u.ToolUsePromptTokenCount != nil {
+		out.InputTokens = out.ToolUsePromptTokens
+		out.Reported |= ir.UInput
 	}
 	return out
 }

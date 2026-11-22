@@ -60,6 +60,7 @@ type wireFunctionResponse struct {
 	ID       string          `json:"id,omitempty"`
 	Name     string          `json:"name"`
 	Response json.RawMessage `json:"response"`
+	Parts    []wirePart      `json:"parts,omitempty"`
 }
 
 type wireExecutableCode struct {
@@ -162,14 +163,15 @@ type wireGroundWeb struct {
 	Title string `json:"title,omitempty"`
 }
 
-// wireUsage is the usageMetadata object.
+// wireUsage is the usageMetadata object. Pointer fields distinguish absent keys
+// in partial streaming snapshots from explicit zeroes.
 type wireUsage struct {
-	PromptTokenCount        int `json:"promptTokenCount"`
-	CandidatesTokenCount    int `json:"candidatesTokenCount"`
-	TotalTokenCount         int `json:"totalTokenCount"`
-	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
-	ThoughtsTokenCount      int `json:"thoughtsTokenCount,omitempty"`
-	ToolUsePromptTokenCount int `json:"toolUsePromptTokenCount,omitempty"`
+	PromptTokenCount        *int `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount    *int `json:"candidatesTokenCount,omitempty"`
+	TotalTokenCount         *int `json:"totalTokenCount,omitempty"`
+	CachedContentTokenCount *int `json:"cachedContentTokenCount,omitempty"`
+	ThoughtsTokenCount      *int `json:"thoughtsTokenCount,omitempty"`
+	ToolUsePromptTokenCount *int `json:"toolUsePromptTokenCount,omitempty"`
 }
 
 // wireError is the top-level Gemini error body.
