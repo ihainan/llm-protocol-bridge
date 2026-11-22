@@ -12,6 +12,7 @@ import (
 type pendingTool struct {
 	id        string
 	name      string
+	sig       *ir.Signature
 	args      strings.Builder
 	finalArgs json.RawMessage
 	done      bool
@@ -214,14 +215,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		dst = e.ensureStarted(dst)
 		if e.openBlock >= 0 && e.openBlockType == "tool_use" {
 			// Another tool call is already streaming; queue this one until the active block closes.
-			pt := &pendingTool{id: ev.ID, name: ev.Name}
+			pt := &pendingTool{id: ev.ID, name: ev.Name, sig: ev.Signature}
 			e.pendingTools = append(e.pendingTools, pt)
 			if ev.ID != "" {
 				e.pendingByID[ev.ID] = pt
 			}
 			break
 		}
-		dst = e.openToolBlock(dst, ev.ID, ev.Name)
+		dst = e.openToolBlock(dst, ev.ID, ev.Name, ev.Signature)
 
 	case ir.EvToolArgs:
 		if ev.ID != "" && ev.ID != e.activeCallID {
@@ -446,19 +447,20 @@ func (e *StreamEncoder) ensureTextBlock(dst []byte) []byte {
 	})
 }
 
-func (e *StreamEncoder) openToolBlock(dst []byte, id, name string) []byte {
+func (e *StreamEncoder) openToolBlock(dst []byte, id, name string, sig *ir.Signature) []byte {
 	dst = e.closeBlock(dst)
 	idx := e.blockIdx
 	e.blockIdx++
 	e.openBlock = idx
 	e.openBlockType = "tool_use"
 	e.activeCallID = id
+	wireID := ir.AnthropicSafeID(ir.EncodeCallSignatureID(e.opts.Env, id, sig))
 	return e.appendSSE(dst, "content_block_start", map[string]any{
 		"type":  "content_block_start",
 		"index": idx,
 		"content_block": map[string]any{
 			"type":  "tool_use",
-			"id":    ir.AnthropicSafeID(id),
+			"id":    wireID,
 			"name":  name,
 			"input": json.RawMessage(`{}`),
 		},
@@ -472,7 +474,7 @@ func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 		if pt.id != "" {
 			delete(e.pendingByID, pt.id)
 		}
-		dst = e.openToolBlock(dst, pt.id, pt.name)
+		dst = e.openToolBlock(dst, pt.id, pt.name, pt.sig)
 		if s := pt.args.String(); s != "" {
 			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
@@ -704,6 +706,23 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 			}
 		}
 		return []wireContentBlock{{Type: "text", Text: part.Text, Citations: cits, CacheControl: irCacheToWire(part.Cache)}}, nil
+	}
+	if part.Type == ir.PartToolCall && part.Call != nil {
+		call := part.Call
+		args := call.Arguments
+		if call.Kind == ir.ToolCustom && len(args) == 0 && call.Input != "" {
+			args, _ = jsonx.Marshal(map[string]string{"input": call.Input})
+		}
+		if len(args) == 0 {
+			args = json.RawMessage(`{}`)
+		}
+		wireID := ir.AnthropicSafeID(ir.EncodeCallSignatureID(env, call.ID, call.Signature))
+		return []wireContentBlock{{
+			Type:  "tool_use",
+			ID:    wireID,
+			Name:  call.Name,
+			Input: args,
+		}}, nil
 	}
 	return partToBlocks(part, p, env)
 }

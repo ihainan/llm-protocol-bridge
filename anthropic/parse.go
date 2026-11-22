@@ -309,8 +309,8 @@ func parseContentBlock(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, er
 		return part, nil
 
 	case "tool_use":
-		id, _ := jsonx.String(fields["id"])
-		id = ir.AnthropicRawID(id)
+		rawID, _ := jsonx.String(fields["id"])
+		id, sig := ir.DecodeCallSignatureID(env, ir.AnthropicRawID(rawID))
 		name, _ := jsonx.String(fields["name"])
 		if name == "" {
 			return ir.Part{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
@@ -318,12 +318,12 @@ func parseContentBlock(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, er
 		args := fields["input"]
 		return ir.Part{
 			Type: ir.PartToolCall,
-			Call: &ir.ToolCall{ID: id, Name: name, Kind: ir.ToolFunction, Arguments: append(json.RawMessage(nil), args...)},
+			Call: &ir.ToolCall{ID: id, Name: name, Kind: ir.ToolFunction, Arguments: append(json.RawMessage(nil), args...), Signature: sig},
 		}, nil
 
 	case "tool_result":
-		callID, _ := jsonx.String(fields["tool_use_id"])
-		callID = ir.AnthropicRawID(callID)
+		rawCallID, _ := jsonx.String(fields["tool_use_id"])
+		callID, _ := ir.DecodeCallSignatureID(env, ir.AnthropicRawID(rawCallID))
 		isErr := false
 		if b, ok := jsonx.Bool(fields["is_error"]); ok {
 			isErr = b

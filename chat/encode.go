@@ -374,15 +374,7 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 }
 
 func encodeChatCallID(env *ir.Env, id string, sig *ir.Signature) string {
-	if sig != nil && sig.Value != "" && sig.Origin.Format == ir.FormatGemini {
-		sealed := env.Sealer().Seal(ir.SealRecord{
-			Origin: sig.Origin,
-			Kind:   ir.SealSignature,
-			Value:  sig.Value,
-		})
-		return id + "::" + sealed
-	}
-	return id
+	return ir.EncodeCallSignatureID(env, id, sig)
 }
 
 // buildAssistantMessage converts output parts to a wireMessage.

@@ -529,7 +529,8 @@ func parseReasoningItem(fields map[string]json.RawMessage, p ir.Path, env *ir.En
 }
 
 func parseFunctionCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
-	callID, _ := jsonx.String(fields["call_id"])
+	rawCallID, _ := jsonx.String(fields["call_id"])
+	callID, sig := ir.DecodeCallSignatureID(env, rawCallID)
 	name, _ := jsonx.String(fields["name"])
 	argsStr, _ := jsonx.String(fields["arguments"])
 	args := json.RawMessage(argsStr)
@@ -543,12 +544,14 @@ func parseFunctionCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir
 			Name:      name,
 			Kind:      ir.ToolFunction,
 			Arguments: args,
+			Signature: sig,
 		},
 	}, nil
 }
 
 func parseFunctionCallOutputItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
-	callID, _ := jsonx.String(fields["call_id"])
+	rawCallID, _ := jsonx.String(fields["call_id"])
+	callID, _ := ir.DecodeCallSignatureID(env, rawCallID)
 	parts, err := parseToolOutputContent(fields["output"], p.Key("output"), env)
 	if err != nil {
 		return ir.Part{}, err
@@ -592,7 +595,8 @@ func parseToolOutputContent(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.P
 }
 
 func parseCustomToolCallItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
-	callID, _ := jsonx.String(fields["call_id"])
+	rawCallID, _ := jsonx.String(fields["call_id"])
+	callID, sig := ir.DecodeCallSignatureID(env, rawCallID)
 	name, _ := jsonx.String(fields["name"])
 	ns, _ := jsonx.String(fields["namespace"])
 	input, _ := jsonx.String(fields["input"])
@@ -605,12 +609,14 @@ func parseCustomToolCallItem(fields map[string]json.RawMessage, p ir.Path, env *
 			Namespace: ns,
 			Kind:      ir.ToolCustom,
 			Arguments: args,
+			Signature: sig,
 		},
 	}, nil
 }
 
 func parseCustomToolCallOutputItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
-	callID, _ := jsonx.String(fields["call_id"])
+	rawCallID, _ := jsonx.String(fields["call_id"])
+	callID, _ := ir.DecodeCallSignatureID(env, rawCallID)
 	parts, err := parseToolOutputContent(fields["output"], p.Key("output"), env)
 	if err != nil {
 		return ir.Part{}, err

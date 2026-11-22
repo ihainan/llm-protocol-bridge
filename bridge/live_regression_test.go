@@ -223,3 +223,203 @@ func assertUsageThinking14(t *testing.T, fmt ir.Format, stream bool, raw []byte)
 		}
 	}
 }
+
+// TestLiveRegression_GeminiToolThoughtSignatureRoundTrip verifies that Gemini 3
+// functionCall thoughtSignature survives a round trip through Responses and
+// Anthropic clients (both non-streaming and streaming) so round 2 requests back
+// to Gemini include thoughtSignature on the historical functionCall part.
+func TestLiveRegression_GeminiToolThoughtSignatureRoundTrip(t *testing.T) {
+	const testSig = "AY89a1_sanitized_gemini3_thought_signature_example_001=="
+
+	// Sanitized Gemini 3 functionCall response fixtures.
+	gemNonStream := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"Tokyo"}},"thoughtSignature":"` + testSig + `"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":39,"candidatesTokenCount":16,"thoughtsTokenCount":41,"totalTokenCount":96},"modelVersion":"gemini-3-flash-preview"}`)
+
+	gemStreamSSE := "data: " + string(gemNonStream) + "\n\n"
+
+	for _, clientFmt := range []ir.Format{ir.FormatResponses, ir.FormatAnthropic} {
+		for _, stream := range []bool{false, true} {
+			name := string(clientFmt) + "/non-stream"
+			if stream {
+				name = string(clientFmt) + "/stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				var r1Req []byte
+				if clientFmt == ir.FormatResponses {
+					r1Req = []byte(`{"model":"gemini-3-flash-preview","input":"weather in Tokyo?","tools":[{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}],"stream":` + map[bool]string{false: "false", true: "true"}[stream] + `}`)
+				} else {
+					r1Req = []byte(`{"model":"gemini-3-flash-preview","max_tokens":256,"messages":[{"role":"user","content":"weather in Tokyo?"}],"tools":[{"name":"get_weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}],"stream":` + map[bool]string{false: "false", true: "true"}[stream] + `}`)
+				}
+
+				plan1, err := bridge.Convert(clientFmt, ir.FormatGemini, r1Req, bridge.Options{})
+				if err != nil {
+					t.Fatalf("r1 Convert: %v", err)
+				}
+
+				var out1 []byte
+				if !stream {
+					out1, _, err = plan1.ConvertResponse(gemNonStream)
+					if err != nil {
+						t.Fatalf("r1 ConvertResponse: %v", err)
+					}
+				} else {
+					st := plan1.NewStream()
+					rd := sse.NewReader(strings.NewReader(gemStreamSSE))
+					for {
+						ev, rerr := rd.Next()
+						if rerr != nil {
+							break
+						}
+						if len(ev.Data) == 0 {
+							continue
+						}
+						out1, err = st.Feed(out1, ev)
+						if err != nil {
+							t.Fatalf("r1 Feed: %v", err)
+						}
+					}
+					out1, err = st.End(out1, ir.EndEOF)
+					if err != nil {
+						t.Fatalf("r1 End: %v", err)
+					}
+				}
+
+				wireCallID := extractWireToolCallID(t, clientFmt, stream, out1)
+				if wireCallID == "" {
+					t.Fatalf("missing tool call id in r1 output:\n%s", string(out1))
+				}
+				if clientFmt == ir.FormatAnthropic {
+					for i := 0; i < len(wireCallID); i++ {
+						c := wireCallID[i]
+						if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+							t.Fatalf("anthropic tool_use.id %q contains illegal character %q", wireCallID, c)
+						}
+					}
+				}
+
+				// Round 2: client echoes wireCallID back in both call and tool result.
+				var r2Req []byte
+				if clientFmt == ir.FormatResponses {
+					r2Req, _ = json.Marshal(map[string]any{
+						"model": "gemini-3-flash-preview",
+						"input": []any{
+							map[string]any{"role": "user", "content": "weather in Tokyo?"},
+							map[string]any{"type": "function_call", "call_id": wireCallID, "name": "get_weather", "arguments": `{"city":"Tokyo"}`},
+							map[string]any{"type": "function_call_output", "call_id": wireCallID, "output": `{"temp_c":22}`},
+						},
+						"tools": []any{map[string]any{"type": "function", "name": "get_weather", "parameters": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}}}},
+					})
+				} else {
+					r2Req, _ = json.Marshal(map[string]any{
+						"model":      "gemini-3-flash-preview",
+						"max_tokens": 256,
+						"messages": []any{
+							map[string]any{"role": "user", "content": "weather in Tokyo?"},
+							map[string]any{"role": "assistant", "content": []any{
+								map[string]any{"type": "tool_use", "id": wireCallID, "name": "get_weather", "input": map[string]any{"city": "Tokyo"}},
+							}},
+							map[string]any{"role": "user", "content": []any{
+								map[string]any{"type": "tool_result", "tool_use_id": wireCallID, "content": `{"temp_c":22}`},
+							}},
+						},
+						"tools": []any{map[string]any{"name": "get_weather", "input_schema": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}}}},
+					})
+				}
+
+				plan2, err := bridge.Convert(clientFmt, ir.FormatGemini, r2Req, bridge.Options{})
+				if err != nil {
+					t.Fatalf("r2 Convert: %v", err)
+				}
+
+				var gemReq struct {
+					Contents []struct {
+						Role  string `json:"role"`
+						Parts []struct {
+							ThoughtSignature string `json:"thoughtSignature"`
+							FunctionCall     *struct {
+								ID   string `json:"id"`
+								Name string `json:"name"`
+							} `json:"functionCall"`
+							FunctionResponse *struct {
+								ID   string `json:"id"`
+								Name string `json:"name"`
+							} `json:"functionResponse"`
+						} `json:"parts"`
+					} `json:"contents"`
+				}
+				if err := json.Unmarshal(plan2.Body, &gemReq); err != nil {
+					t.Fatalf("unmarshal r2 gemini body: %v", err)
+				}
+				if len(gemReq.Contents) < 3 || len(gemReq.Contents[1].Parts) == 0 {
+					t.Fatalf("unexpected gemini r2 contents: %s", string(plan2.Body))
+				}
+				fcPart := gemReq.Contents[1].Parts[0]
+				if fcPart.ThoughtSignature != testSig {
+					t.Fatalf("r2 Gemini functionCall thoughtSignature = %q, want %q\nbody=%s", fcPart.ThoughtSignature, testSig, string(plan2.Body))
+				}
+				if len(gemReq.Contents[2].Parts) == 0 || gemReq.Contents[2].Parts[0].FunctionResponse == nil || gemReq.Contents[2].Parts[0].FunctionResponse.Name != "get_weather" {
+					t.Fatalf("r2 Gemini functionResponse missing name get_weather: %s", string(plan2.Body))
+				}
+
+				// Switching upstream to Anthropic on round 2 must strip the sealed signature from tool_use.id / tool_use_id.
+				planAnth, err := bridge.Convert(clientFmt, ir.FormatAnthropic, r2Req, bridge.Options{})
+				if err != nil {
+					t.Fatalf("r2 Convert->Anthropic: %v", err)
+				}
+				if strings.Contains(string(planAnth.Body), "lpb1.") || strings.Contains(string(planAnth.Body), testSig) {
+					t.Fatalf("r2 Anthropic body leaked Gemini signature: %s", string(planAnth.Body))
+				}
+			})
+		}
+	}
+}
+
+func extractWireToolCallID(t *testing.T, fmt ir.Format, stream bool, raw []byte) string {
+	t.Helper()
+	if !stream {
+		var doc map[string]any
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if fmt == ir.FormatResponses {
+			for _, it := range doc["output"].([]any) {
+				m := it.(map[string]any)
+				if m["type"] == "function_call" {
+					return m["call_id"].(string)
+				}
+			}
+		} else {
+			for _, b := range doc["content"].([]any) {
+				m := b.(map[string]any)
+				if m["type"] == "tool_use" {
+					return m["id"].(string)
+				}
+			}
+		}
+		return ""
+	}
+	rd := sse.NewReader(strings.NewReader(string(raw)))
+	for {
+		ev, err := rd.Next()
+		if err != nil {
+			break
+		}
+		if len(ev.Data) == 0 || sse.IsDone(ev.Data) {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal(ev.Data, &m) != nil {
+			continue
+		}
+		if fmt == ir.FormatResponses && m["type"] == "response.output_item.done" {
+			if it, ok := m["item"].(map[string]any); ok && it["type"] == "function_call" {
+				return it["call_id"].(string)
+			}
+		}
+		if fmt == ir.FormatAnthropic && m["type"] == "content_block_start" {
+			if cb, ok := m["content_block"].(map[string]any); ok && cb["type"] == "tool_use" {
+				return cb["id"].(string)
+			}
+		}
+	}
+	return ""
+}

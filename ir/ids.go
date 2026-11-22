@@ -57,6 +57,32 @@ func AnthropicRawID(id string) string {
 	return string(b)
 }
 
+// EncodeCallSignatureID attaches a sealed Gemini tool-call signature to a call
+// id so formats without a dedicated call-signature field (Chat, Responses,
+// Anthropic) can carry it back on the next turn.
+func EncodeCallSignatureID(env *Env, id string, sig *Signature) string {
+	if sig != nil && sig.Value != "" && sig.Origin.Format == FormatGemini {
+		sealed := env.Sealer().Seal(SealRecord{
+			Origin: sig.Origin,
+			Kind:   SealSignature,
+			Value:  sig.Value,
+		})
+		return id + "::" + sealed
+	}
+	return id
+}
+
+// DecodeCallSignatureID reverses EncodeCallSignatureID, returning the original
+// call id and any unsealed signature.
+func DecodeCallSignatureID(env *Env, id string) (string, *Signature) {
+	if idx := strings.LastIndex(id, "::"); idx >= 0 {
+		if rec, ok := env.Sealer().Unseal(id[idx+2:]); ok && rec.Kind == SealSignature {
+			return id[:idx], &Signature{Value: rec.Value, Origin: rec.Origin}
+		}
+	}
+	return id, nil
+}
+
 // SealKind is what a seal envelope carries.
 type SealKind string
 

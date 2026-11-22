@@ -14,6 +14,7 @@ type pendingRespTool struct {
 	name      string
 	ns        string
 	kind      ir.ToolKind
+	sig       *ir.Signature
 	args      strings.Builder
 	finalArgs json.RawMessage
 	done      bool
@@ -38,8 +39,10 @@ type StreamEncoder struct {
 
 	// itemID is the wire item id assigned to the open item.
 	itemID string
-	// callID is the tool call_id (may differ from itemID).
-	callID       string
+	// callID is the raw IR tool call_id (for matching EvToolArgs/EvToolEnd).
+	callID string
+	// wireCallID is the wire call_id emitted to the client (may carry sealed Gemini signature).
+	wireCallID   string
 	callName     string
 	callNS       string
 	pendingTools []*pendingRespTool
@@ -282,14 +285,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	case ir.EvToolStart:
 		dst = e.ensureStarted(dst)
 		if e.openItemType == "function_call" || e.openItemType == "custom_tool_call" {
-			pt := &pendingRespTool{id: ev.ID, name: ev.Name, ns: ev.Namespace, kind: ev.Kind}
+			pt := &pendingRespTool{id: ev.ID, name: ev.Name, ns: ev.Namespace, kind: ev.Kind, sig: ev.Signature}
 			e.pendingTools = append(e.pendingTools, pt)
 			if ev.ID != "" {
 				e.pendingByID[ev.ID] = pt
 			}
 			break
 		}
-		dst = e.openToolItem(dst, ev.ID, ev.Name, ev.Namespace, ev.Kind)
+		dst = e.openToolItem(dst, ev.ID, ev.Name, ev.Namespace, ev.Kind, ev.Signature)
 
 	case ir.EvToolArgs:
 		if ev.ID != "" && ev.ID != e.callID {
@@ -525,7 +528,7 @@ func (e *StreamEncoder) ensureMessageOpen(dst []byte) []byte {
 	return dst
 }
 
-func (e *StreamEncoder) openToolItem(dst []byte, id, name, ns string, kind ir.ToolKind) []byte {
+func (e *StreamEncoder) openToolItem(dst []byte, id, name, ns string, kind ir.ToolKind, sig *ir.Signature) []byte {
 	dst = e.closeItem(dst)
 	e.outputIndex++
 	e.callName = name
@@ -534,6 +537,7 @@ func (e *StreamEncoder) openToolItem(dst []byte, id, name, ns string, kind ir.To
 	if e.callID == "" {
 		e.callID = "call_" + e.opts.Env.NewID("", 16)
 	}
+	e.wireCallID = ir.EncodeCallSignatureID(e.opts.Env, e.callID, sig)
 	e.argAccum.Reset()
 	if kind == ir.ToolCustom {
 		e.openItemType = "custom_tool_call"
@@ -541,7 +545,7 @@ func (e *StreamEncoder) openToolItem(dst []byte, id, name, ns string, kind ir.To
 		item := map[string]any{
 			"type":    "custom_tool_call",
 			"id":      e.itemID,
-			"call_id": e.callID,
+			"call_id": e.wireCallID,
 			"name":    name,
 			"input":   "",
 			"status":  "in_progress",
@@ -563,7 +567,7 @@ func (e *StreamEncoder) openToolItem(dst []byte, id, name, ns string, kind ir.To
 		"item": map[string]any{
 			"type":      "function_call",
 			"id":        e.itemID,
-			"call_id":   e.callID,
+			"call_id":   e.wireCallID,
 			"name":      name,
 			"arguments": "",
 			"status":    "in_progress",
@@ -578,7 +582,7 @@ func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 		if pt.id != "" {
 			delete(e.pendingByID, pt.id)
 		}
-		dst = e.openToolItem(dst, pt.id, pt.name, pt.ns, pt.kind)
+		dst = e.openToolItem(dst, pt.id, pt.name, pt.ns, pt.kind, pt.sig)
 		if s := pt.args.String(); s != "" {
 			e.argAccum.WriteString(s)
 			evName := "response.function_call_arguments.delta"
@@ -628,7 +632,7 @@ func (e *StreamEncoder) finishToolItem(dst []byte, finalArgs json.RawMessage) []
 		doneItem := map[string]any{
 			"type":      "function_call",
 			"id":        e.itemID,
-			"call_id":   e.callID,
+			"call_id":   e.wireCallID,
 			"name":      e.callName,
 			"arguments": args,
 			"status":    "completed",
@@ -658,7 +662,7 @@ func (e *StreamEncoder) finishToolItem(dst []byte, finalArgs json.RawMessage) []
 		doneItem := map[string]any{
 			"type":    "custom_tool_call",
 			"id":      e.itemID,
-			"call_id": e.callID,
+			"call_id": e.wireCallID,
 			"name":    e.callName,
 			"input":   input,
 			"status":  "completed",
@@ -994,6 +998,7 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 		if args == "" {
 			args = "{}"
 		}
+		wireCallID := ir.EncodeCallSignatureID(env, c.ID, c.Signature)
 		switch c.Kind {
 		case ir.ToolCustom:
 			input := c.Input
@@ -1006,7 +1011,7 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 			return []wireOutputItem{{
 				Type:      "custom_tool_call",
 				ID:        "ctc_" + env.NewID("", 16),
-				CallID:    c.ID,
+				CallID:    wireCallID,
 				Name:      c.Name,
 				Namespace: c.Namespace,
 				Input:     input,
@@ -1015,7 +1020,7 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 			return []wireOutputItem{{
 				Type:      "function_call",
 				ID:        "fc_" + env.NewID("", 16),
-				CallID:    c.ID,
+				CallID:    wireCallID,
 				Name:      c.Name,
 				Arguments: args,
 				Status:    "completed",
