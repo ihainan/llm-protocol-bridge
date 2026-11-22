@@ -23,6 +23,7 @@ type StreamEncoder struct {
 	callHasArgs  map[int]map[string]bool
 	lastCallID   map[int]string
 	lastCallSlot map[int]int
+	usage        ir.Usage
 }
 
 // NewStreamEncoder returns a Chat Completions stream encoder.
@@ -51,6 +52,10 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			e.model = ev.Model
 		}
 		e.created = e.opts.Env.Now().Unix()
+
+		if ev.Usage != nil {
+			e.usage.Merge(*ev.Usage)
+		}
 
 		// Emit the role chunk.
 		if !e.started {
@@ -178,7 +183,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvUsage:
 		if ev.Usage != nil {
-			u := buildUsage(*ev.Usage)
+			e.usage.Merge(*ev.Usage)
+			u := buildUsage(e.usage)
 			chunk := e.baseChunk(0)
 			chunk["choices"] = []any{}
 			chunk["usage"] = u

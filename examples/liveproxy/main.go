@@ -30,11 +30,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -147,22 +150,28 @@ func (cfg *config) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plan, err := bridge.Convert(cfg.clientFormat, cfg.upstreamFormat, body, bridge.Options{})
+	convOpts := bridge.Options{}
+	if cfg.clientFormat == ir.FormatGemini {
+		convOpts.Model, convOpts.Stream = parseGeminiRequestPath(r.URL.Path)
+		convOpts.AltSSE = r.URL.Query().Get("alt") == "sse"
+	}
+
+	plan, err := bridge.Convert(cfg.clientFormat, cfg.upstreamFormat, body, convOpts)
 	if err != nil {
 		log.Printf("convert: %v", err)
-		http.Error(w, fmt.Sprintf("conversion error: %v", err), http.StatusUnprocessableEntity)
+		writeClientError(w, cfg.clientFormat, err)
 		return
 	}
 
 	upstreamPath := cfg.upstreamPath
 	if upstreamPath == "" {
-		upstreamPath = defaultPath(cfg.upstreamFormat, plan.UpstreamStream)
+		upstreamPath = defaultPath(cfg.upstreamFormat, plan.Model, plan.UpstreamStream)
 	}
 	upstreamURL := cfg.upstreamURL + upstreamPath
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, strings.NewReader(string(plan.Body)))
 	if err != nil {
-		http.Error(w, "failed to build upstream request", http.StatusInternalServerError)
+		writeClientError(w, cfg.clientFormat, err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -176,7 +185,7 @@ func (cfg *config) handleRequest(w http.ResponseWriter, r *http.Request) {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("upstream request: %v", err)
-		http.Error(w, "upstream request failed", http.StatusBadGateway)
+		writeClientError(w, cfg.clientFormat, &ir.APIError{Status: http.StatusBadGateway, Type: ir.ErrServer, Message: "upstream request failed"})
 		return
 	}
 	defer resp.Body.Close()
@@ -191,19 +200,20 @@ func (cfg *config) handleRequest(w http.ResponseWriter, r *http.Request) {
 func (cfg *config) handleNonStream(w http.ResponseWriter, resp *http.Response, plan *bridge.Plan) {
 	upBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		http.Error(w, "failed to read upstream response", http.StatusBadGateway)
+		writeClientError(w, cfg.clientFormat, &ir.APIError{Status: http.StatusBadGateway, Type: ir.ErrServer, Message: "failed to read upstream response"})
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
+		st, errBody := plan.ConvertError(resp.StatusCode, upBody)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
-		w.Write(upBody)
+		w.WriteHeader(st)
+		w.Write(errBody)
 		return
 	}
 	out, _, err := plan.ConvertResponse(upBody)
 	if err != nil {
 		log.Printf("response convert: %v", err)
-		http.Error(w, fmt.Sprintf("response conversion error: %v", err), http.StatusInternalServerError)
+		writeClientError(w, cfg.clientFormat, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -213,10 +223,11 @@ func (cfg *config) handleNonStream(w http.ResponseWriter, resp *http.Response, p
 
 func (cfg *config) handleStream(w http.ResponseWriter, resp *http.Response, plan *bridge.Plan) {
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		st, errBody := plan.ConvertError(resp.StatusCode, body)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
-		w.Write(body)
+		w.WriteHeader(st)
+		w.Write(errBody)
 		return
 	}
 
@@ -230,9 +241,17 @@ func (cfg *config) handleStream(w http.ResponseWriter, resp *http.Response, plan
 	r := sse.NewReader(resp.Body)
 
 	var out []byte
+	endKind := ir.EndDone
 	for {
 		ev, err := r.Next()
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				endKind = ir.EndEOF
+			} else if isTimeout(err) {
+				endKind = ir.EndTimeout
+			} else {
+				endKind = ir.EndError
+			}
 			break
 		}
 		if len(ev.Data) == 0 && ev.Name == "" {
@@ -241,6 +260,7 @@ func (cfg *config) handleStream(w http.ResponseWriter, resp *http.Response, plan
 		out, err = s.Feed(out[:0], ev)
 		if err != nil {
 			log.Printf("stream feed: %v", err)
+			endKind = ir.EndError
 			break
 		}
 		if len(out) > 0 {
@@ -251,7 +271,7 @@ func (cfg *config) handleStream(w http.ResponseWriter, resp *http.Response, plan
 		}
 	}
 
-	out, err := s.End(out[:0], ir.EndDone)
+	out, err := s.End(out[:0], endKind)
 	if err != nil {
 		log.Printf("stream end: %v", err)
 	}
@@ -263,7 +283,33 @@ func (cfg *config) handleStream(w http.ResponseWriter, resp *http.Response, plan
 	}
 }
 
-func defaultPath(f ir.Format, stream bool) string {
+func writeClientError(w http.ResponseWriter, client ir.Format, err error) {
+	st, body := bridge.ErrorResponse(client, err)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(st)
+	w.Write(body)
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+func parseGeminiRequestPath(path string) (model string, stream bool) {
+	if idx := strings.Index(path, "/models/"); idx >= 0 {
+		rest := path[idx+len("/models/"):]
+		if colon := strings.IndexByte(rest, ':'); colon >= 0 {
+			model = rest[:colon]
+			action := rest[colon+1:]
+			stream = strings.HasPrefix(action, "streamGenerateContent")
+			return model, stream
+		}
+		model = strings.Trim(rest, "/")
+	}
+	return model, false
+}
+
+func defaultPath(f ir.Format, model string, stream bool) string {
 	switch f {
 	case ir.FormatChat:
 		return "/v1/chat/completions"
@@ -272,10 +318,14 @@ func defaultPath(f ir.Format, stream bool) string {
 	case ir.FormatAnthropic:
 		return "/v1/messages"
 	case ir.FormatGemini:
-		if stream {
-			return "/v1beta/models:streamGenerateContent?alt=sse"
+		m := url.PathEscape(model)
+		if m == "" {
+			m = "gemini-2.5-flash"
 		}
-		return "/v1beta/models:generateContent"
+		if stream {
+			return "/v1beta/models/" + m + ":streamGenerateContent?alt=sse"
+		}
+		return "/v1beta/models/" + m + ":generateContent"
 	default:
 		return "/"
 	}

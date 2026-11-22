@@ -36,6 +36,29 @@ operations: parse (wire request → IR), build (IR → wire request), decode
 
 See [`docs/design.md`](docs/design.md) for the full specification.
 
+## Capability Matrix
+
+Support by target upstream format (all 4 client formats parse into the shared IR; unsupported features return a structured `*ir.Error` with `Code` and `Path` unless listed as a configurable loss key):
+
+| Capability | → Chat | → Responses | → Anthropic | → Gemini |
+|---|---|---|---|---|
+| Text, multi-turn, system/developer | Full (`system`/`developer` via dialect) | Full (`instructions` + mid-turn roles) | Full (`system` + consecutive role merge) | Full (`systemInstruction` + `contents`) |
+| Streaming & Collector | Full SSE + `[DONE]` | Full `response.*` SSE (`sequence_number`) | Full `message_*`/`content_block_*` SSE | Full JSON array stream & `alt=sse` |
+| Function tools & parallel calls | Full (interleaved + sorted close) | Full (sequential item stream) | Full (`AnthropicSafeID` + sequential blocks) | Full (ID resolution + deterministic IDs) |
+| Custom & namespaced tools | Full (wrapped `{input}` + `<ns>__<name>`) | Full (`custom`, `namespace`) | Function mapping | Function mapping |
+| `tool_choice` (`auto`/`none`/`required`/`tool`/`allowed`) | Full (`allowed` filters tools) | Full (`allowed_tools` with `mode` + `tools`) | Full (`type: "none"`, `allowed` filters tools) | Full (`AUTO`/`NONE`/`ANY` + `allowedFunctionNames`) |
+| Tool result images & `is_error` | Lifted follow-up user turn + `[tool error]` | Text output + `is_error` | Native blocks + `is_error` | `{output}` / `{error}` object |
+| Tool `strict` schema | Preserved | Preserved | `tool.strict` loss (unless dialect enables) | `tool.strict` loss |
+| Reasoning (effort / budget / off / adaptive) | Full via `ModelProfile.Resolve` | Full via `ModelProfile.Resolve` | Full (`budget_tokens` + `max_tokens` & sampling constraints) | Full (`*int thinkingBudget` incl. `0`, `thinkingLevel`) |
+| Signatures & sealed reasoning (`Origin.Matches` + `SealCodec`) | `reasoning.signature` / `reasoning.sealed` loss | Native `encrypted_content` + seal | Native `thinking`/`redacted_thinking` + seal | Native `thoughtSignature` |
+| Structured output (`json_schema` / `json_object`) | Full (`response_format`) | Full (`text.format`) | `json_schema` via `output_config.format`; `json_object` → `unsupported` | Full (`responseSchema` + `responseMimeType`) |
+| Hosted builtins (`web_search`, etc.) | `unsupported` (use `Options.Intercept`) | `web_search`; others → `unsupported` | `web_search` / `web_fetch`; others → `unsupported` | `googleSearch`, `codeExecution`, `urlContext` |
+| Multiple candidates (`n > 1`) | Full | Single candidate | `unsupported` (`CodeUnsupported`) | Full (`candidateCount`) |
+| Stop sequences | Up to 4 (`stop.limit` loss) | `stop.limit` loss (or `StopEmulate`) | Full (`stop_sequences`) | Up to 5 (`stop.limit` loss) |
+| Usage (input, output, cache, reasoning, server tools) | Full (incl. dialect cache fields) | Full (incl. dialect `CacheWriteField`) | Full (non-inclusive input, 5m/1h split, `server_tool_use`) | Full (`thoughtsTokenCount`, `toolUsePromptTokenCount`) |
+| Error conversion (`ConvertError` / `ErrorResponse`) | Standard OpenAI wire error types | Standard OpenAI wire error types + `response.failed` | Anthropic error envelope + SSE `error` | Gemini RPC error envelope (JSON & SSE) |
+| Stateful features (`conversation`, `background`, `item_reference`, cross-format `previous_response_id`) | Rejected (`unsupported`) | Identity `previous_response_id` only; others rejected | Rejected (`unsupported`) | Rejected (`unsupported`) |
+
 ## Loss keys
 
 When a request or response field has no equivalent in the target format, the

@@ -1,10 +1,12 @@
 package bridge_test
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/ihainan/llm-protocol-bridge/bridge"
 	"github.com/ihainan/llm-protocol-bridge/ir"
+	"github.com/ihainan/llm-protocol-bridge/sse"
 )
 
 var (
@@ -65,4 +67,85 @@ func BenchmarkConvert_GeminiToAnthropic(b *testing.B) {
 }
 func BenchmarkConvert_GeminiToResponses(b *testing.B) {
 	benchConvert(b, ir.FormatGemini, ir.FormatResponses, geminiBody)
+}
+
+var (
+	benchChatEvent = sse.Event{
+		Data: []byte(`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":"hello world"},"finish_reason":null}]}`),
+	}
+	benchAnthropicEvent = sse.Event{
+		Name: "content_block_delta",
+		Data: []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello world"}}`),
+	}
+	benchChatFullStream = []byte(
+		`data: {"id":"c1","model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}` + "\n\n" +
+			`data: {"id":"c1","model":"gpt-4","choices":[{"index":0,"delta":{"content":"hello "}}]}` + "\n\n" +
+			`data: {"id":"c1","model":"gpt-4","choices":[{"index":0,"delta":{"content":"world"}}]}` + "\n\n" +
+			`data: {"id":"c1","model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}` + "\n\n" +
+			"data: [DONE]\n\n",
+	)
+)
+
+func BenchmarkStream_EventChatToAnthropic(b *testing.B) {
+	plan, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, anthropicBody, opts())
+	if err != nil {
+		b.Fatalf("Convert: %v", err)
+	}
+	s := plan.NewStream()
+	var dst []byte
+	dst, _ = s.Feed(dst[:0], sse.Event{Data: []byte(`{"id":"c1","model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`)})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dst, err = s.Feed(dst[:0], benchChatEvent)
+		if err != nil {
+			b.Fatalf("Feed: %v", err)
+		}
+	}
+}
+
+func BenchmarkStream_EventAnthropicToResponses(b *testing.B) {
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, responsesBody, opts())
+	if err != nil {
+		b.Fatalf("Convert: %v", err)
+	}
+	s := plan.NewStream()
+	var dst []byte
+	dst, _ = s.Feed(dst[:0], sse.Event{Name: "message_start", Data: []byte(`{"type":"message_start","message":{"id":"m1","model":"claude","usage":{"input_tokens":5,"output_tokens":0}}}`)})
+	dst, _ = s.Feed(dst[:0], sse.Event{Name: "content_block_start", Data: []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dst, err = s.Feed(dst[:0], benchAnthropicEvent)
+		if err != nil {
+			b.Fatalf("Feed: %v", err)
+		}
+	}
+}
+
+func BenchmarkStream_FullChatToAnthropic(b *testing.B) {
+	plan, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, anthropicBody, opts())
+	if err != nil {
+		b.Fatalf("Convert: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s := plan.NewStream()
+		r := sse.NewReader(bytes.NewReader(benchChatFullStream))
+		var dst []byte
+		for {
+			ev, err := r.Next()
+			if err != nil {
+				break
+			}
+			dst, err = s.Feed(dst, ev)
+			if err != nil {
+				b.Fatalf("Feed: %v", err)
+			}
+		}
+		if _, err := s.End(dst, ir.EndDone); err != nil {
+			b.Fatalf("End: %v", err)
+		}
+	}
 }
