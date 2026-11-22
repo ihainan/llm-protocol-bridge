@@ -160,7 +160,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			d.itemType[idx] = se.Item.Type
 			switch se.Item.Type {
 			case "function_call":
-				if isIncompleteToolStatus(se.Item.Status) {
+				if isAbortedToolStatus(se.Item.Status) {
 					break
 				}
 				id := se.Item.CallID
@@ -175,7 +175,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				d.hasToolCalls = true
 				out = d.emitToolStart(out, idx, id, se.Item.Name, se.Item.Namespace, ir.ToolFunction)
 			case "custom_tool_call":
-				if isIncompleteToolStatus(se.Item.Status) {
+				if isAbortedToolStatus(se.Item.Status) {
 					break
 				}
 				id := se.Item.CallID
@@ -462,6 +462,8 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 		} else {
 			out.Stop = ir.Stop{Reason: ir.StopMaxTokens, Raw: wr.Status}
 		}
+	default:
+		return nil, ir.Protocol("responses: response did not complete (status: " + wr.Status + ")")
 	}
 	out.Stop = ir.FinalStop(out.Stop, out.Parts)
 
@@ -599,12 +601,16 @@ func outputPartToIR(cp wireOutputPart, p ir.Path, env *ir.Env) (ir.Part, error) 
 	return ir.TextPart(""), nil
 }
 
-func isIncompleteToolStatus(status string) bool {
+func isAbortedToolStatus(status string) bool {
 	switch status {
 	case "incomplete", "failed", "cancelled", "canceled":
 		return true
 	}
 	return false
+}
+
+func isIncompleteToolStatus(status string) bool {
+	return status != "" && status != "completed"
 }
 
 func statusToStop(status string) ir.Stop {

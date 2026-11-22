@@ -355,8 +355,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			break
 		}
 		if ev.Builtin.Kind == ir.BuiltinWebSearch {
-			if ev.Builtin.IsResult || len(ev.Builtin.Hits) > 0 || ev.Builtin.Content != "" || ev.Builtin.Error != "" || (ev.Builtin.Origin != ir.FormatResponses && len(ev.Builtin.Raw) > 0) {
-				if err := e.opts.Env.Lose(ir.LossBuiltinActivity, ir.Root.Key("output"), "web_search result details cannot be represented in Responses web_search_call"); err != nil {
+			if webSearchHasLossyDetails(ev.Builtin) {
+				if err := e.opts.Env.Lose(ir.LossBuiltinActivity, ir.Root.Key("output"), "web_search activity details cannot be represented in Responses web_search_call"); err != nil {
 					return dst, err
 				}
 			}
@@ -1098,8 +1098,8 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 
 	case ir.PartBuiltinCall, ir.PartBuiltinResult:
 		if p.Builtin != nil && p.Builtin.Kind == ir.BuiltinWebSearch {
-			if p.Builtin.IsResult || len(p.Builtin.Hits) > 0 || p.Builtin.Content != "" || p.Builtin.Error != "" || (p.Builtin.Origin != ir.FormatResponses && len(p.Builtin.Raw) > 0) {
-				if err := env.Lose(ir.LossBuiltinActivity, fp, "web_search result details cannot be represented in Responses web_search_call"); err != nil {
+			if webSearchHasLossyDetails(p.Builtin) {
+				if err := env.Lose(ir.LossBuiltinActivity, fp, "web_search activity details cannot be represented in Responses web_search_call"); err != nil {
 					return nil, err
 				}
 			}
@@ -1117,6 +1117,19 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 	default:
 		return nil, env.Err(ir.Unsupported(fp, string(p.Type), "part type not supported in Responses output"))
 	}
+}
+
+func webSearchHasLossyDetails(b *ir.BuiltinActivity) bool {
+	if b == nil {
+		return false
+	}
+	if b.IsResult || len(b.Hits) > 0 || b.Content != "" || b.Error != "" {
+		return true
+	}
+	if s := strings.TrimSpace(string(b.Input)); s != "" && s != "{}" && s != "null" {
+		return true
+	}
+	return b.Origin != ir.FormatResponses && len(b.Raw) > 0
 }
 
 func needsResponsesSeal(origin ir.Origin, env *ir.Env) bool {

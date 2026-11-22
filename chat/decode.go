@@ -739,9 +739,12 @@ func parseAssistantMessage(wm wireMessage, p ir.Path, names map[string]ir.ToolRe
 					part.Call.Kind = ref.Kind
 				}
 				if part.Call.Kind == ir.ToolCustom && part.Call.Input == "" && len(part.Call.Arguments) > 0 {
-					var m map[string]string
-					if json.Unmarshal(part.Call.Arguments, &m) == nil {
-						part.Call.Input = m["input"]
+					var wrapped struct {
+						Input *string `json:"input"`
+					}
+					if jsonx.Kind(part.Call.Arguments) == '{' && json.Unmarshal(part.Call.Arguments, &wrapped) == nil && wrapped.Input != nil {
+						part.Call.Input = *wrapped.Input
+						part.Call.Arguments = nil
 					}
 				}
 			}

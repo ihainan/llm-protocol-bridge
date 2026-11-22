@@ -406,7 +406,19 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 						kept = append(kept, entry)
 					}
 				}
-				f.timeline[bc.candIdx] = kept
+				// Drain any leading non-call events now unblocked so subsequent
+				// events cannot overtake them if no pending calls remain ahead.
+				drain := 0
+				for drain < len(kept) && kept[drain].callKey == "" {
+					out = append(out, kept[drain].ev)
+					drain++
+				}
+				kept = kept[drain:]
+				if len(kept) == 0 {
+					delete(f.timeline, bc.candIdx)
+				} else {
+					f.timeline[bc.candIdx] = kept
+				}
 			}
 			return out
 		}
@@ -785,6 +797,16 @@ func validateToolCall(call *ir.ToolCall) string {
 		return "tool call missing name"
 	}
 	if call.Kind == ir.ToolCustom {
+		raw := strings.TrimSpace(string(call.Arguments))
+		if raw != "" {
+			b := []byte(raw)
+			var wrapped struct {
+				Input *string `json:"input"`
+			}
+			if jsonx.Kind(b) != '{' || !json.Valid(b) || json.Unmarshal(b, &wrapped) != nil || wrapped.Input == nil {
+				return "custom tool call arguments must be a valid {\"input\": string} JSON object"
+			}
+		}
 		return ""
 	}
 	raw := strings.TrimSpace(string(call.Arguments))

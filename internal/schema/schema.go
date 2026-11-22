@@ -4,6 +4,7 @@ package schema
 
 import (
 	"encoding/json"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -173,34 +174,21 @@ func toOpenAPI(v any, defs map[string]any, depth int, dropped map[string]bool) a
 			if d, ok := defs[ref]; ok {
 				resolved := toOpenAPI(d, defs, depth+1, dropped)
 				if len(x) > 1 {
-					// Record or preserve sibling keywords alongside $ref.
-					rm, isMap := resolved.(map[string]any)
-					sibKeys := make([]string, 0, len(x)-1)
-					for k := range x {
+					// Convert sibling keywords via the normal toOpenAPI pipeline and
+					// intersect them with the resolved target instead of overwriting.
+					sib := make(map[string]any, len(x)-1)
+					for k, val := range x {
 						if k != "$ref" {
-							sibKeys = append(sibKeys, k)
+							sib[k] = val
 						}
 					}
-					sort.Strings(sibKeys)
-					for _, k := range sibKeys {
-						if !openAPIKeys[k] {
-							if k == "oneOf" {
-								if dropped != nil {
-									dropped["oneOf"] = true
-								}
-								if isMap {
-									rm["anyOf"] = toOpenAPI(x[k], defs, depth+1, dropped)
-								}
-							} else if k == "const" {
-								if isMap {
-									rm["enum"] = []any{x[k]}
-								}
-							} else if dropped != nil && !nonConstraintMetaKeys[k] {
-								dropped[k] = true
-							}
-						} else if isMap {
-							rm[k] = toOpenAPI(x[k], defs, depth+1, dropped)
-						}
+					sibOut := toOpenAPI(sib, defs, depth+1, dropped)
+					rm, isMap := resolved.(map[string]any)
+					sm, sibIsMap := sibOut.(map[string]any)
+					if isMap && sibIsMap {
+						mergeRefOpenAPI(rm, sm, dropped)
+					} else if dropped != nil {
+						dropped["$ref"] = true
 					}
 				}
 				return resolved
@@ -275,6 +263,140 @@ func toOpenAPI(v any, defs map[string]any, depth int, dropped map[string]bool) a
 		return out
 	}
 	return v
+}
+
+// mergeRefOpenAPI intersects converted sibling OpenAPI keywords (src) into a
+// converted $ref target schema (dst). Compatible constraints are intersected
+// (e.g. stricter numeric bounds, merged properties, unioned required);
+// unmergeable conflicts are recorded in dropped so callers and Deny can see them.
+func mergeRefOpenAPI(dst, src map[string]any, dropped map[string]bool) {
+	keys := make([]string, 0, len(src))
+	for k := range src {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		sv := src[k]
+		switch k {
+		case "description", "example", "default", "propertyOrdering":
+			dst[k] = sv
+		case "nullable":
+			sNull, _ := sv.(bool)
+			if !sNull {
+				if dst["nullable"] == true {
+					dst["nullable"] = false
+				}
+				continue
+			}
+			// Intersection of a non-nullable typed target with nullable:true stays non-nullable.
+			_, hasType := dst["type"]
+			if (!hasType && dst["anyOf"] == nil && dst["enum"] == nil) || dst["nullable"] == true {
+				dst["nullable"] = true
+			}
+		case "properties":
+			sp, ok := sv.(map[string]any)
+			if !ok {
+				continue
+			}
+			dp, has := dst["properties"].(map[string]any)
+			if !has {
+				dst["properties"] = sp
+				continue
+			}
+			pkeys := make([]string, 0, len(sp))
+			for pk := range sp {
+				pkeys = append(pkeys, pk)
+			}
+			sort.Strings(pkeys)
+			for _, pk := range pkeys {
+				pv := sp[pk]
+				if existing, ok := dp[pk]; ok {
+					em, eOK := existing.(map[string]any)
+					pm, pOK := pv.(map[string]any)
+					if eOK && pOK {
+						mergeRefOpenAPI(em, pm, dropped)
+					} else if !reflect.DeepEqual(existing, pv) && dropped != nil {
+						dropped["properties"] = true
+					}
+				} else {
+					dp[pk] = pv
+				}
+			}
+		case "required":
+			sr, ok := sv.([]any)
+			if !ok {
+				continue
+			}
+			dr, has := dst["required"].([]any)
+			if !has {
+				dst["required"] = sr
+				continue
+			}
+			seen := make(map[string]bool, len(dr))
+			for _, item := range dr {
+				if s, ok := item.(string); ok {
+					seen[s] = true
+				}
+			}
+			for _, item := range sr {
+				if s, ok := item.(string); ok && !seen[s] {
+					seen[s] = true
+					dr = append(dr, s)
+				}
+			}
+			dst["required"] = dr
+		case "minimum", "minLength", "minItems", "minProperties":
+			rv, has := dst[k]
+			if !has {
+				dst[k] = sv
+				continue
+			}
+			rf, rOK := rv.(float64)
+			sf, sOK := sv.(float64)
+			if rOK && sOK {
+				if sf > rf {
+					dst[k] = sf
+				}
+			} else if !reflect.DeepEqual(rv, sv) && dropped != nil {
+				dropped[k] = true
+			}
+		case "maximum", "maxLength", "maxItems", "maxProperties":
+			rv, has := dst[k]
+			if !has {
+				dst[k] = sv
+				continue
+			}
+			rf, rOK := rv.(float64)
+			sf, sOK := sv.(float64)
+			if rOK && sOK {
+				if sf < rf {
+					dst[k] = sf
+				}
+			} else if !reflect.DeepEqual(rv, sv) && dropped != nil {
+				dropped[k] = true
+			}
+		case "items":
+			rv, has := dst[k]
+			if !has {
+				dst[k] = sv
+				continue
+			}
+			rm, rOK := rv.(map[string]any)
+			sm, sOK := sv.(map[string]any)
+			if rOK && sOK {
+				mergeRefOpenAPI(rm, sm, dropped)
+			} else if !reflect.DeepEqual(rv, sv) && dropped != nil {
+				dropped[k] = true
+			}
+		default:
+			rv, has := dst[k]
+			if !has {
+				dst[k] = sv
+			} else if !reflect.DeepEqual(rv, sv) && dropped != nil {
+				dropped[k] = true
+			}
+		}
+	}
 }
 
 // WithoutKeys returns the schema with the given top-level-and-nested keywords

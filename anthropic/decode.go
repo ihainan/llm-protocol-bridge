@@ -258,8 +258,14 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			d.pendingStop = nil
 			out = append(out, ir.Event{Type: ir.EvStop, Index: 0, Stop: &stop})
 		} else {
-			stop := ir.Stop{Reason: ir.StopEndTurn}
-			out = append(out, ir.Event{Type: ir.EvStop, Index: 0, Stop: &stop})
+			out = append(out, ir.Event{
+				Type: ir.EvError,
+				Err: &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "anthropic stream ended with message_stop without message_delta stop_reason",
+				},
+			})
 		}
 		d.terminal = true
 
