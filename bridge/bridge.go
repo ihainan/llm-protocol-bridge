@@ -34,11 +34,12 @@ type Options struct {
 	Gemini    gemini.Dialect
 	Responses responses.Dialect
 
-	Allow   ir.LossSet
-	Deny    ir.LossSet
-	OnLoss  func(ir.Loss)
-	Unknown ir.UnknownPolicy
-	Repair  ir.RepairSet
+	Allow     ir.LossSet
+	Deny      ir.LossSet
+	OnLoss    func(ir.Loss)
+	CheckLoss func(ir.Loss) error
+	Unknown   ir.UnknownPolicy
+	Repair    ir.RepairSet
 
 	ToolRelease ir.ToolRelease
 	Limits      ir.Limits
@@ -46,6 +47,20 @@ type Options struct {
 	Reasoning   ir.ReasoningOut
 	Seal        ir.SealCodec
 	Intercept   []string
+
+	// Gateway-policy switches (all default to backward-compatible false / nil).
+	// OmitUserID prevents forwarding client user / metadata.user_id upstream.
+	OmitUserID bool
+	// OmitHistoryReasoning prevents forwarding historical assistant thinking/reasoning
+	// blocks to Chat Completions upstreams.
+	OmitHistoryReasoning bool
+	// GenerateResponseID forces fresh client-format response IDs (msg_ for Anthropic,
+	// resp_ for Responses) instead of reusing upstream response IDs.
+	GenerateResponseID bool
+	// RawReasoningAsSummary controls whether raw upstream reasoning text is
+	// rendered as Responses summary_text when the client requested reasoning.summary.
+	// Nil defaults to true; ir.Ptr(false) always renders raw reasoning as reasoning_text.
+	RawReasoningAsSummary *bool
 
 	IDs            ir.IDSource
 	Clock          func() time.Time
@@ -132,6 +147,26 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported for Responses-to-Responses requests"))
 	}
 
+	// Optional stop sequence count and total byte length limits (e.g. under StopEmulate).
+	if len(req.Stop) > 0 {
+		stopKey := "stop"
+		if client == ir.FormatAnthropic {
+			stopKey = "stop_sequences"
+		}
+		if opts.Limits.MaxStopSequences > 0 && len(req.Stop) > opts.Limits.MaxStopSequences {
+			return nil, env.Err(ir.Invalid(ir.Root.Key(stopKey), "too many stop sequences"))
+		}
+		if opts.Limits.MaxStopSequenceBytes > 0 {
+			totalBytes := 0
+			for _, s := range req.Stop {
+				totalBytes += len(s)
+				if totalBytes > opts.Limits.MaxStopSequenceBytes {
+					return nil, env.Err(ir.Invalid(ir.Root.Key(stopKey), "stop sequences exceed maximum byte length"))
+				}
+			}
+		}
+	}
+
 	// Per design.md §9.6, StopEmulate does not send native stop sequences to the
 	// upstream (so the upstream cannot strip them before the local filter sees
 	// them) and streams from the upstream so non-streamed clients can be served
@@ -150,7 +185,12 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 
 	switch upstream {
 	case ir.FormatChat:
-		built, err := chat.BuildRequest(buildReq, chat.BuildOptions{Env: env, Dialect: opts.Chat})
+		built, err := chat.BuildRequest(buildReq, chat.BuildOptions{
+			Env:                  env,
+			Dialect:              opts.Chat,
+			OmitUserID:           opts.OmitUserID,
+			OmitHistoryReasoning: opts.OmitHistoryReasoning,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -233,33 +273,16 @@ func (p *Plan) ConvertResponse(body []byte) ([]byte, *ir.Response, error) {
 	var out []byte
 	switch p.Client {
 	case ir.FormatChat:
-		out, err = chat.BuildResponse(irResp, chat.EncodeOptions{
-			Env:     clientEnv,
-			Request: p.Request,
-			Model:   p.ClientModel,
-		})
+		out, err = chat.BuildResponse(irResp, encOpts.chat)
 	case ir.FormatResponses:
-		out, err = responses.BuildResponse(irResp, responses.EncodeOptions{
-			Env:     clientEnv,
-			Request: p.Request,
-			Model:   p.ClientModel,
-		})
+		out, err = responses.BuildResponse(irResp, encOpts.responses)
 	case ir.FormatAnthropic:
-		out, err = anthropic.BuildResponse(irResp, anthropic.EncodeOptions{
-			Env:     clientEnv,
-			Request: p.Request,
-			Model:   p.ClientModel,
-		})
+		out, err = anthropic.BuildResponse(irResp, encOpts.anthropic)
 	case ir.FormatGemini:
-		out, err = gemini.BuildResponse(irResp, gemini.EncodeOptions{
-			Env:     clientEnv,
-			Request: p.Request,
-			Model:   p.ClientModel,
-		})
+		out, err = gemini.BuildResponse(irResp, encOpts.gemini)
 	default:
 		return nil, nil, ir.Invalid(ir.Root, "unknown client format: "+string(p.Client))
 	}
-	_ = encOpts
 	if err == nil && irResp != nil {
 		var respLosses []ir.Loss
 		respLosses = append(respLosses, env.Losses()...)
@@ -638,11 +661,16 @@ func encodeOptions(p *Plan, env *ir.Env) encodeOpts {
 		},
 		responses: responses.EncodeOptions{
 			Env: env, Request: p.Request, Model: p.ClientModel,
-			PromptEstimate: p.opts.PromptEstimate,
+			PromptEstimate:        p.opts.PromptEstimate,
+			MaxBufferedBytes:      p.opts.Limits.MaxBufferedBytes,
+			GenerateResponseID:    p.opts.GenerateResponseID,
+			RawReasoningAsSummary: p.opts.RawReasoningAsSummary,
 		},
 		anthropic: anthropic.EncodeOptions{
 			Env: env, Request: p.Request, Model: p.ClientModel,
-			PromptEstimate: p.opts.PromptEstimate,
+			PromptEstimate:     p.opts.PromptEstimate,
+			MaxBufferedBytes:   p.opts.Limits.MaxBufferedBytes,
+			GenerateResponseID: p.opts.GenerateResponseID,
 		},
 		gemini: gemini.EncodeOptions{
 			Env: env, Request: p.Request, Model: p.ClientModel,
@@ -825,15 +853,16 @@ func (s *Stream) Result() ([]byte, *ir.Response, error) {
 	var out []byte
 	var err error
 	env := clientEnv(s.plan.opts, s.plan.Client)
+	encOpts := encodeOptions(s.plan, env)
 	switch s.plan.Client {
 	case ir.FormatChat:
-		out, err = chat.BuildResponse(resp, chat.EncodeOptions{Env: env, Request: s.plan.Request, Model: s.plan.ClientModel})
+		out, err = chat.BuildResponse(resp, encOpts.chat)
 	case ir.FormatResponses:
-		out, err = responses.BuildResponse(resp, responses.EncodeOptions{Env: env, Request: s.plan.Request, Model: s.plan.ClientModel})
+		out, err = responses.BuildResponse(resp, encOpts.responses)
 	case ir.FormatAnthropic:
-		out, err = anthropic.BuildResponse(resp, anthropic.EncodeOptions{Env: env, Request: s.plan.Request, Model: s.plan.ClientModel})
+		out, err = anthropic.BuildResponse(resp, encOpts.anthropic)
 	case ir.FormatGemini:
-		out, err = gemini.BuildResponse(resp, gemini.EncodeOptions{Env: env, Request: s.plan.Request, Model: s.plan.ClientModel})
+		out, err = gemini.BuildResponse(resp, encOpts.gemini)
 	}
 	if err == nil && resp != nil {
 		losses := s.Losses()
@@ -899,6 +928,7 @@ func clientEnv(opts Options, client ir.Format) *ir.Env {
 		Allow:      opts.Allow,
 		Deny:       opts.Deny,
 		OnLoss:     opts.OnLoss,
+		CheckLoss:  opts.CheckLoss,
 		Unknown:    opts.Unknown,
 		Repair:     opts.Repair,
 		Seal:       opts.Seal,
@@ -916,6 +946,7 @@ func upstreamEnv(opts Options, upstream ir.Format) *ir.Env {
 		Allow:      opts.Allow,
 		Deny:       opts.Deny,
 		OnLoss:     opts.OnLoss,
+		CheckLoss:  opts.CheckLoss,
 		Unknown:    opts.Unknown,
 		Repair:     opts.Repair,
 		Seal:       opts.Seal,

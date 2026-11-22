@@ -26,6 +26,16 @@ type EncodeOptions struct {
 	Request        *ir.Request
 	Model          string
 	PromptEstimate int
+	// MaxBufferedBytes caps deferred multi-candidate events and queued tool
+	// buffers inside StreamEncoder (0 = 8 MiB).
+	MaxBufferedBytes int
+	// GenerateResponseID forces a fresh resp_ response ID instead of reusing the
+	// upstream response ID.
+	GenerateResponseID bool
+	// RawReasoningAsSummary controls whether raw upstream reasoning text is
+	// emitted as summary_text when the client requested reasoning.summary.
+	// Nil defaults to true; false always emits reasoning_text for raw reasoning.
+	RawReasoningAsSummary *bool
 }
 
 // Built is the result of BuildRequest.

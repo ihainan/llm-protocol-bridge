@@ -34,6 +34,12 @@ type EncodeOptions struct {
 	Request        *ir.Request
 	Model          string
 	PromptEstimate int
+	// MaxBufferedBytes caps deferred multi-candidate events and queued tool
+	// buffers inside StreamEncoder (0 = 8 MiB).
+	MaxBufferedBytes int
+	// GenerateResponseID forces a fresh msg_ response ID instead of reusing the
+	// upstream response ID.
+	GenerateResponseID bool
 }
 
 // Built is the result of BuildRequest.

@@ -47,6 +47,10 @@ const (
 type Limits struct {
 	// MaxToolCalls is the maximum number of tool calls per response (0 = no limit).
 	MaxToolCalls int
-	// MaxBufferedBytes is the maximum bytes of buffered tool arguments (0 = 8 MiB).
+	// MaxBufferedBytes is the maximum bytes of buffered tool arguments and deferred stream events (0 = 8 MiB).
 	MaxBufferedBytes int
+	// MaxStopSequences, when > 0, caps the number of client stop sequences accepted by Build.
+	MaxStopSequences int
+	// MaxStopSequenceBytes, when > 0, caps the combined byte length of all client stop sequences.
+	MaxStopSequenceBytes int
 }

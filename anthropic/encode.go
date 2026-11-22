@@ -14,15 +14,18 @@ type toolCallKey struct {
 	id   string
 }
 
+const defaultMaxBufferedBytes = 8 * 1024 * 1024
+
 type pendingTool struct {
-	cand      int
-	id        string
-	name      string
-	sig       *ir.Signature
-	kind      ir.ToolKind
-	args      strings.Builder
-	finalArgs json.RawMessage
-	done      bool
+	cand         int
+	id           string
+	name         string
+	sig          *ir.Signature
+	kind         ir.ToolKind
+	args         strings.Builder
+	finalArgs    json.RawMessage
+	countedBytes int
+	done         bool
 }
 
 // StreamEncoder converts ir.Events into Anthropic Messages SSE chunks.
@@ -55,7 +58,9 @@ type StreamEncoder struct {
 	activeToolFinished bool
 	pendingTools       []*pendingTool
 	pendingByKey       map[toolCallKey]*pendingTool
+	pendingBytes       int
 	deferredOtherCand  []ir.Event
+	deferredBytes      int
 	stop               *ir.Stop
 	usage              *ir.Usage
 }
@@ -93,6 +98,18 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	if e.openBlock >= 0 && e.openBlockType == "tool_use" && ev.Index != e.activeCallCand {
 		switch ev.Type {
 		case ir.EvText, ir.EvRefusal, ir.EvCitation, ir.EvReasoningStart, ir.EvReasoning, ir.EvSignature, ir.EvSealed, ir.EvBuiltin:
+			sz := anthropicEventByteSize(ev)
+			if sz == 0 {
+				sz = 1
+			}
+			e.deferredBytes += sz
+			if e.deferredBytes+e.pendingBytes > e.maxBufferedBytes() {
+				return e.abortOpenTool(dst, &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "buffered stream byte limit exceeded",
+				}), nil
+			}
 			e.deferredOtherCand = append(e.deferredOtherCand, ev)
 			return dst, nil
 		}
@@ -270,6 +287,15 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			(ev.ID == "" || ev.ID == e.activeCallID)
 		if !isActive {
 			if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
+				e.pendingBytes += len(ev.Text)
+				pt.countedBytes += len(ev.Text)
+				if e.deferredBytes+e.pendingBytes > e.maxBufferedBytes() {
+					return e.abortOpenTool(dst, &ir.APIError{
+						Status:  502,
+						Type:    ir.ErrServer,
+						Message: "buffered stream byte limit exceeded",
+					}), nil
+				}
 				pt.args.WriteString(ev.Text)
 			}
 			break
@@ -297,6 +323,10 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if ev.Err != nil {
 			if !isActive {
 				if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
+					e.pendingBytes -= pt.countedBytes
+					if e.pendingBytes < 0 {
+						e.pendingBytes = 0
+					}
 					if pt.id != "" {
 						delete(e.pendingByKey, toolCallKey{cand: pt.cand, id: pt.id})
 					}
@@ -316,6 +346,17 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 		if !isActive {
 			if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
+				if extra := len(ev.Arguments) - pt.countedBytes; extra > 0 {
+					e.pendingBytes += extra
+					pt.countedBytes += extra
+					if e.deferredBytes+e.pendingBytes > e.maxBufferedBytes() {
+						return e.abortOpenTool(dst, &ir.APIError{
+							Status:  502,
+							Type:    ir.ErrServer,
+							Message: "buffered stream byte limit exceeded",
+						}), nil
+					}
+				}
 				pt.finalArgs = ev.Arguments
 				pt.done = true
 			}
@@ -636,6 +677,33 @@ func (e *StreamEncoder) lookupPendingTool(cand int, id string) *pendingTool {
 	return nil
 }
 
+func (e *StreamEncoder) maxBufferedBytes() int {
+	if e.opts.MaxBufferedBytes > 0 {
+		return e.opts.MaxBufferedBytes
+	}
+	return defaultMaxBufferedBytes
+}
+
+func anthropicEventByteSize(ev ir.Event) int {
+	n := len(ev.Text) + len(ev.Arguments)
+	if ev.Signature != nil {
+		n += len(ev.Signature.Value)
+	}
+	if ev.Sealed != nil {
+		n += len(ev.Sealed.Data)
+	}
+	if ev.Media != nil {
+		n += len(ev.Media.Data) + len(ev.Media.URL) + len(ev.Media.Text)
+	}
+	if ev.Builtin != nil {
+		n += len(ev.Builtin.Input) + len(ev.Builtin.Content) + len(ev.Builtin.Raw)
+	}
+	if ev.Citation != nil {
+		n += len(ev.Citation.URL) + len(ev.Citation.Title) + len(ev.Citation.CitedText) + len(ev.Citation.Raw)
+	}
+	return n
+}
+
 func (e *StreamEncoder) abortOpenTool(dst []byte, err *ir.APIError) []byte {
 	e.openBlock = -1
 	e.openBlockType = ""
@@ -649,7 +717,9 @@ func (e *StreamEncoder) abortOpenTool(dst []byte, err *ir.APIError) []byte {
 	e.activeToolFinished = false
 	e.pendingTools = nil
 	e.pendingByKey = map[toolCallKey]*pendingTool{}
+	e.pendingBytes = 0
 	e.deferredOtherCand = nil
+	e.deferredBytes = 0
 	e.errored = true
 	if err == nil {
 		err = &ir.APIError{Status: 502, Type: ir.ErrServer, Message: "tool call aborted"}
@@ -661,6 +731,10 @@ func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 	for len(e.pendingTools) > 0 {
 		pt := e.pendingTools[0]
 		e.pendingTools = e.pendingTools[1:]
+		e.pendingBytes -= pt.countedBytes
+		if e.pendingBytes < 0 {
+			e.pendingBytes = 0
+		}
 		if pt.id != "" {
 			delete(e.pendingByKey, toolCallKey{cand: pt.cand, id: pt.id})
 		}
@@ -791,6 +865,7 @@ func (e *StreamEncoder) finishCustomInput(dst []byte, final json.RawMessage) ([]
 func (e *StreamEncoder) replayDeferredOtherCand(dst []byte) ([]byte, error) {
 	evs := e.deferredOtherCand
 	e.deferredOtherCand = nil
+	e.deferredBytes = 0
 	for _, ev := range evs {
 		var err error
 		dst, err = e.Encode(dst, ev)

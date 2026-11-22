@@ -11,6 +11,12 @@ type ParseOptions struct {
 type BuildOptions struct {
 	Env     *ir.Env
 	Dialect Dialect
+	// OmitUserID prevents forwarding Request.User (e.g., Anthropic metadata.user_id)
+	// into the upstream Chat Completions "user" field.
+	OmitUserID bool
+	// OmitHistoryReasoning prevents forwarding historical assistant reasoning
+	// blocks into upstream reasoning_content / reasoning message fields.
+	OmitHistoryReasoning bool
 }
 
 // DecodeOptions controls how an upstream Chat Completions response is decoded.

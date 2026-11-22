@@ -17,19 +17,20 @@ const (
 )
 
 type bufferedToolCall struct {
-	id          string
-	name        string
-	ns          string
-	kind        ir.ToolKind
-	candIdx     int
-	sig         *ir.Signature
-	args        strings.Builder
-	finalArgs   json.RawMessage
-	live        bool
-	liveEnded   bool
-	intercepted bool
-	closed      bool
-	order       int
+	id           string
+	name         string
+	ns           string
+	kind         ir.ToolKind
+	candIdx      int
+	sig          *ir.Signature
+	args         strings.Builder
+	finalArgs    json.RawMessage
+	countedBytes int
+	live         bool
+	liveEnded    bool
+	intercepted  bool
+	closed       bool
+	order        int
 }
 
 type queuedEntry struct {
@@ -367,6 +368,7 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 			return nil
 		}
 		f.bufferedBytes += len(ev.Text)
+		bc.countedBytes += len(ev.Text)
 		if f.bufferedBytes > f.maxBytes {
 			return f.fail(ev.Index, "buffered tool call byte limit exceeded")
 		}
@@ -441,9 +443,12 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 			}
 		}
 		if len(ev.Arguments) > 0 {
-			f.bufferedBytes += len(ev.Arguments)
-			if f.bufferedBytes > f.maxBytes {
-				return f.fail(ev.Index, "buffered tool call byte limit exceeded")
+			if extra := len(ev.Arguments) - bc.countedBytes; extra > 0 {
+				f.bufferedBytes += extra
+				bc.countedBytes += extra
+				if f.bufferedBytes > f.maxBytes {
+					return f.fail(ev.Index, "buffered tool call byte limit exceeded")
+				}
 			}
 			bc.finalArgs = append(json.RawMessage(nil), ev.Arguments...)
 		}

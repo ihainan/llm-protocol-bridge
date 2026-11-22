@@ -142,8 +142,12 @@ type Env struct {
 	// Allow adds tolerated losses to DefaultAllowed; Deny removes them.
 	Allow, Deny LossSet
 	OnLoss      func(Loss)
-	Unknown     UnknownPolicy
-	Repair      RepairSet
+	// CheckLoss, when non-nil, inspects every loss before DefaultAllowed/Allow/Deny
+	// is applied. Returning a non-nil error rejects the conversion with that error
+	// (enabling path- and detail-based rejection without rejecting unrelated unknown fields).
+	CheckLoss func(Loss) error
+	Unknown   UnknownPolicy
+	Repair    RepairSet
 	// Seal encodes provenance into opaque client fields; nil uses DefaultSeal.
 	Seal SealCodec
 	// IDs and Clock are used on the response side only.
@@ -179,6 +183,15 @@ func (e *Env) Allowed(k LossKind) bool {
 // Lose records a lossy conversion. It returns nil when the loss is tolerated and
 // an unsupported error naming the path otherwise.
 func (e *Env) Lose(k LossKind, p Path, detail string) error {
+	l := Loss{Kind: k, Path: p, Detail: detail}
+	if e != nil && e.CheckLoss != nil {
+		if err := e.CheckLoss(l); err != nil {
+			if irErr, ok := err.(*Error); ok && irErr.Style == 0 {
+				irErr.Style = e.Style
+			}
+			return err
+		}
+	}
 	if !e.Allowed(k) {
 		err := Unsupported(p, string(k), detail)
 		if e != nil {
@@ -189,7 +202,6 @@ func (e *Env) Lose(k LossKind, p Path, detail string) error {
 	if e == nil {
 		return nil
 	}
-	l := Loss{Kind: k, Path: p, Detail: detail}
 	e.losses = append(e.losses, l)
 	if e.OnLoss != nil {
 		e.OnLoss(l)
