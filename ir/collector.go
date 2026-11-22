@@ -533,10 +533,14 @@ func appendPartEvents(evs []Event, idx int, p Part) []Event {
 			if c.Input != "" {
 				evs = append(evs, Event{Type: EvToolArgs, Index: idx, ID: c.ID, Text: c.Input})
 			}
-		} else if len(c.Arguments) > 0 {
-			evs = append(evs, Event{Type: EvToolArgs, Index: idx, ID: c.ID, Text: string(c.Arguments)})
+			raw, _ := json.Marshal(c.Input)
+			evs = append(evs, Event{Type: EvToolEnd, Index: idx, ID: c.ID, Arguments: raw})
+		} else {
+			if len(c.Arguments) > 0 {
+				evs = append(evs, Event{Type: EvToolArgs, Index: idx, ID: c.ID, Text: string(c.Arguments)})
+			}
+			evs = append(evs, Event{Type: EvToolEnd, Index: idx, ID: c.ID})
 		}
-		evs = append(evs, Event{Type: EvToolEnd, Index: idx, ID: c.ID})
 	case PartBuiltinCall, PartBuiltinResult:
 		if p.Builtin != nil {
 			b := *p.Builtin

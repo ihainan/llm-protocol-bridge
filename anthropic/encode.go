@@ -9,7 +9,13 @@ import (
 	"github.com/ihainan/llm-protocol-bridge/sse"
 )
 
+type toolCallKey struct {
+	cand int
+	id   string
+}
+
 type pendingTool struct {
+	cand      int
 	id        string
 	name      string
 	sig       *ir.Signature
@@ -32,17 +38,22 @@ type StreamEncoder struct {
 	openBlock int
 	// openBlockType is the type string of the open block.
 	openBlockType     string
+	openBlockCand     int
 	thinkingTextAccum strings.Builder
 	thinkingSigVal    strings.Builder
 	thinkingSigOrigin ir.Origin
+	activeCallCand    int
 	activeCallID      string
 	// activeKind is the kind of the open tool_use block's call. A custom tool's
 	// input arrives as raw text and is wrapped into {"input": "..."} here;
-	// activeCustomOpened records that the wrapper prefix was already written.
+	// activeCustomOpened records that the wrapper prefix was already written and
+	// activeCustomSent tracks the raw text already streamed for prefix validation.
 	activeKind         ir.ToolKind
 	activeCustomOpened bool
+	activeCustomSent   strings.Builder
+	activeToolFinished bool
 	pendingTools       []*pendingTool
-	pendingByID        map[string]*pendingTool
+	pendingByKey       map[toolCallKey]*pendingTool
 	stop               *ir.Stop
 	usage              *ir.Usage
 }
@@ -50,9 +61,9 @@ type StreamEncoder struct {
 // NewStreamEncoder returns an Anthropic stream encoder.
 func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
 	return &StreamEncoder{
-		opts:        opts,
-		openBlock:   -1,
-		pendingByID: map[string]*pendingTool{},
+		opts:         opts,
+		openBlock:    -1,
+		pendingByKey: map[toolCallKey]*pendingTool{},
 	}
 }
 
@@ -103,7 +114,10 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvText, ir.EvRefusal:
 		dst = e.ensureStarted(dst)
-		dst = e.ensureTextBlock(dst)
+		dst = e.ensureTextBlock(dst, ev.Index)
+		if e.errored {
+			break
+		}
 		dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 			"type":  "content_block_delta",
 			"index": e.openBlock,
@@ -144,10 +158,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	case ir.EvReasoningStart:
 		dst = e.ensureStarted(dst)
 		dst = e.closeBlock(dst)
+		if e.errored {
+			break
+		}
 		idx := e.blockIdx
 		e.blockIdx++
 		e.openBlock = idx
 		e.openBlockType = "thinking"
+		e.openBlockCand = ev.Index
 		dst = e.appendSSE(dst, "content_block_start", map[string]any{
 			"type":          "content_block_start",
 			"index":         idx,
@@ -156,12 +174,16 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvReasoning:
 		dst = e.ensureStarted(dst)
-		if e.openBlock < 0 || e.openBlockType != "thinking" {
+		if e.openBlock < 0 || e.openBlockType != "thinking" || e.openBlockCand != ev.Index {
 			dst = e.closeBlock(dst)
+			if e.errored {
+				break
+			}
 			idx := e.blockIdx
 			e.blockIdx++
 			e.openBlock = idx
 			e.openBlockType = "thinking"
+			e.openBlockCand = ev.Index
 			dst = e.appendSSE(dst, "content_block_start", map[string]any{
 				"type":          "content_block_start",
 				"index":         idx,
@@ -187,6 +209,9 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if ev.Sealed != nil {
 			dst = e.ensureStarted(dst)
 			dst = e.closeBlock(dst)
+			if e.errored {
+				break
+			}
 			idx := e.blockIdx
 			e.blockIdx++
 			var dataStr string
@@ -221,27 +246,31 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		dst = e.ensureStarted(dst)
 		if e.openBlock >= 0 && e.openBlockType == "tool_use" {
 			// Another tool call is already streaming; queue this one until the active block closes.
-			pt := &pendingTool{id: ev.ID, name: ev.Name, sig: ev.Signature, kind: ev.Kind}
+			pt := &pendingTool{cand: ev.Index, id: ev.ID, name: ev.Name, sig: ev.Signature, kind: ev.Kind}
 			e.pendingTools = append(e.pendingTools, pt)
 			if ev.ID != "" {
-				e.pendingByID[ev.ID] = pt
+				e.pendingByKey[toolCallKey{cand: ev.Index, id: ev.ID}] = pt
 			}
 			break
 		}
-		dst = e.openToolBlock(dst, ev.ID, ev.Name, ev.Signature, ev.Kind)
+		dst = e.openToolBlock(dst, ev.Index, ev.ID, ev.Name, ev.Signature, ev.Kind)
 
 	case ir.EvToolArgs:
-		if ev.ID != "" && ev.ID != e.activeCallID {
-			if pt := e.pendingByID[ev.ID]; pt != nil {
+		isActive := e.openBlock >= 0 && e.openBlockType == "tool_use" &&
+			ev.Index == e.activeCallCand &&
+			(ev.ID == "" || ev.ID == e.activeCallID)
+		if !isActive {
+			if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
 				pt.args.WriteString(ev.Text)
-				break
 			}
+			break
 		}
-		if e.openBlock >= 0 && e.openBlockType == "tool_use" && ev.Text != "" {
+		if ev.Text != "" {
 			partial := ev.Text
 			if e.activeKind == ir.ToolCustom {
 				partial = customInputDelta(ev.Text, !e.activeCustomOpened)
 				e.activeCustomOpened = true
+				e.activeCustomSent.WriteString(ev.Text)
 			}
 			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
@@ -251,46 +280,45 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvToolEnd:
+		isActive := e.openBlock >= 0 && e.openBlockType == "tool_use" &&
+			ev.Index == e.activeCallCand &&
+			(ev.ID == "" || ev.ID == e.activeCallID)
 		if ev.Err != nil {
-			if ev.ID != "" && ev.ID != e.activeCallID {
-				if pt := e.pendingByID[ev.ID]; pt != nil {
-					delete(e.pendingByID, ev.ID)
+			if !isActive {
+				if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
+					if pt.id != "" {
+						delete(e.pendingByKey, toolCallKey{cand: pt.cand, id: pt.id})
+					}
 					for i, item := range e.pendingTools {
 						if item == pt {
 							e.pendingTools = append(e.pendingTools[:i], e.pendingTools[i+1:]...)
 							break
 						}
 					}
-					break
 				}
+				break
 			}
 			// An already-opened tool_use block cannot be retracted in Anthropic SSE:
 			// abort the stream with an error event instead of emitting content_block_stop.
-			if e.openBlock >= 0 && e.openBlockType == "tool_use" {
-				e.openBlock = -1
-				e.openBlockType = ""
-				e.activeCallID = ""
-				e.activeKind = ""
-				e.activeCustomOpened = false
-				e.pendingTools = nil
-				e.pendingByID = map[string]*pendingTool{}
-				e.errored = true
-				dst = BuildStreamError(dst, ev.Err)
+			dst = e.abortOpenTool(dst, ev.Err)
+			break
+		}
+		if !isActive {
+			if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
+				pt.finalArgs = ev.Arguments
+				pt.done = true
 			}
 			break
 		}
-		if ev.ID != "" && ev.ID != e.activeCallID {
-			if pt := e.pendingByID[ev.ID]; pt != nil {
-				pt.finalArgs = ev.Arguments
-				pt.done = true
+		if e.activeKind == ir.ToolCustom {
+			var ok bool
+			dst, ok = e.finishCustomInput(dst, ev.Arguments)
+			if !ok {
 				break
 			}
 		}
-		if e.openBlock >= 0 && e.openBlockType == "tool_use" && e.activeKind == ir.ToolCustom {
-			dst = e.finishCustomInput(dst, ev.Arguments)
-		}
+		e.activeToolFinished = true
 		dst = e.closeBlock(dst)
-		e.activeCallID = ""
 		dst = e.drainPendingTools(dst)
 
 	case ir.EvBuiltin:
@@ -300,6 +328,9 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if ev.Builtin.Kind == ir.BuiltinWebSearch || ev.Builtin.Kind == ir.BuiltinWebFetch {
 			dst = e.ensureStarted(dst)
 			dst = e.closeBlock(dst)
+			if e.errored {
+				break
+			}
 			idx := e.blockIdx
 			e.blockIdx++
 			id := ev.Builtin.ID
@@ -379,15 +410,26 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvStop:
-		dst = e.closeBlock(dst)
-		e.activeCallID = ""
-		dst = e.flushAllPendingTools(dst)
-		if ev.Stop != nil {
-			st := *ev.Stop
-			e.stop = &st
-		} else {
-			st := ir.Stop{Reason: ir.StopEndTurn}
-			e.stop = &st
+		if e.openBlock >= 0 && e.openBlockCand == ev.Index {
+			dst = e.closeBlock(dst)
+			if e.errored {
+				break
+			}
+		}
+		if e.openBlock < 0 {
+			dst = e.drainPendingTools(dst)
+			if e.errored {
+				break
+			}
+		}
+		if ev.Index == 0 || e.stop == nil {
+			if ev.Stop != nil {
+				st := *ev.Stop
+				e.stop = &st
+			} else {
+				st := ir.Stop{Reason: ir.StopEndTurn}
+				e.stop = &st
+			}
 		}
 
 	case ir.EvUsage:
@@ -419,8 +461,13 @@ func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 	}
 	dst = e.ensureStarted(dst)
 	dst = e.closeBlock(dst)
-	e.activeCallID = ""
+	if e.errored {
+		return dst, nil
+	}
 	dst = e.flushAllPendingTools(dst)
+	if e.errored {
+		return dst, nil
+	}
 	reason := stopToAnthropic(e.stop)
 	seq := ""
 	if e.stop != nil {
@@ -489,15 +536,19 @@ func (e *StreamEncoder) emitPing(dst []byte) []byte {
 	return e.appendSSE(dst, "ping", map[string]any{"type": "ping"})
 }
 
-func (e *StreamEncoder) ensureTextBlock(dst []byte) []byte {
-	if e.openBlock >= 0 && e.openBlockType == "text" {
+func (e *StreamEncoder) ensureTextBlock(dst []byte, cand int) []byte {
+	if e.openBlock >= 0 && e.openBlockType == "text" && e.openBlockCand == cand {
 		return dst
 	}
 	dst = e.closeBlock(dst)
+	if e.errored {
+		return dst
+	}
 	idx := e.blockIdx
 	e.blockIdx++
 	e.openBlock = idx
 	e.openBlockType = "text"
+	e.openBlockCand = cand
 	return e.appendSSE(dst, "content_block_start", map[string]any{
 		"type":          "content_block_start",
 		"index":         idx,
@@ -505,15 +556,22 @@ func (e *StreamEncoder) ensureTextBlock(dst []byte) []byte {
 	})
 }
 
-func (e *StreamEncoder) openToolBlock(dst []byte, id, name string, sig *ir.Signature, kind ir.ToolKind) []byte {
+func (e *StreamEncoder) openToolBlock(dst []byte, cand int, id, name string, sig *ir.Signature, kind ir.ToolKind) []byte {
 	dst = e.closeBlock(dst)
+	if e.errored {
+		return dst
+	}
 	idx := e.blockIdx
 	e.blockIdx++
 	e.openBlock = idx
 	e.openBlockType = "tool_use"
+	e.openBlockCand = cand
+	e.activeCallCand = cand
 	e.activeCallID = id
 	e.activeKind = kind
 	e.activeCustomOpened = false
+	e.activeCustomSent.Reset()
+	e.activeToolFinished = false
 	wireID := ir.AnthropicSafeID(ir.EncodeCallSignatureID(e.opts.Env, id, sig))
 	return e.appendSSE(dst, "content_block_start", map[string]any{
 		"type":  "content_block_start",
@@ -527,14 +585,48 @@ func (e *StreamEncoder) openToolBlock(dst []byte, id, name string, sig *ir.Signa
 	})
 }
 
+func (e *StreamEncoder) lookupPendingTool(cand int, id string) *pendingTool {
+	if id != "" {
+		return e.pendingByKey[toolCallKey{cand: cand, id: id}]
+	}
+	for i := len(e.pendingTools) - 1; i >= 0; i-- {
+		if pt := e.pendingTools[i]; pt.cand == cand && !pt.done {
+			return pt
+		}
+	}
+	return nil
+}
+
+func (e *StreamEncoder) abortOpenTool(dst []byte, err *ir.APIError) []byte {
+	e.openBlock = -1
+	e.openBlockType = ""
+	e.openBlockCand = 0
+	e.activeCallCand = 0
+	e.activeCallID = ""
+	e.activeKind = ""
+	e.activeCustomOpened = false
+	e.activeCustomSent.Reset()
+	e.activeToolFinished = false
+	e.pendingTools = nil
+	e.pendingByKey = map[toolCallKey]*pendingTool{}
+	e.errored = true
+	if err == nil {
+		err = &ir.APIError{Status: 502, Type: ir.ErrServer, Message: "tool call aborted"}
+	}
+	return BuildStreamError(dst, err)
+}
+
 func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 	for len(e.pendingTools) > 0 {
 		pt := e.pendingTools[0]
 		e.pendingTools = e.pendingTools[1:]
 		if pt.id != "" {
-			delete(e.pendingByID, pt.id)
+			delete(e.pendingByKey, toolCallKey{cand: pt.cand, id: pt.id})
 		}
-		dst = e.openToolBlock(dst, pt.id, pt.name, pt.sig, pt.kind)
+		dst = e.openToolBlock(dst, pt.cand, pt.id, pt.name, pt.sig, pt.kind)
+		if e.errored {
+			return dst
+		}
 		if pt.kind == ir.ToolCustom {
 			if s := pt.args.String(); s != "" {
 				dst = e.appendSSE(dst, "content_block_delta", map[string]any{
@@ -543,9 +635,14 @@ func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 					"delta": map[string]any{"type": "input_json_delta", "partial_json": customInputDelta(s, true)},
 				})
 				e.activeCustomOpened = true
+				e.activeCustomSent.WriteString(s)
 			}
 			if pt.done {
-				dst = e.finishCustomInput(dst, pt.finalArgs)
+				var ok bool
+				dst, ok = e.finishCustomInput(dst, pt.finalArgs)
+				if !ok {
+					return dst
+				}
 			}
 		} else if s := pt.args.String(); s != "" {
 			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
@@ -561,8 +658,8 @@ func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 			})
 		}
 		if pt.done {
+			e.activeToolFinished = true
 			dst = e.closeBlock(dst)
-			e.activeCallID = ""
 			continue
 		}
 		// Keep this tool open to receive further live deltas.
@@ -585,34 +682,75 @@ func customInputDelta(text string, first bool) string {
 }
 
 // finishCustomInput completes the open custom tool block's input. When part of
-// the wrapper was already streamed it closes the string and object; otherwise
-// it writes the whole {"input": ...} object from the final input, which the
-// pipeline delivers as a JSON string.
-func (e *StreamEncoder) finishCustomInput(dst []byte, final json.RawMessage) []byte {
+// the wrapper was already streamed it verifies the streamed text is a prefix of
+// the final input (emitting any missing suffix before closing `"}`) and aborts
+// with a stream error if the streamed text is not a prefix. When nothing was
+// streamed it writes the whole {"input": ...} object from final.
+func (e *StreamEncoder) finishCustomInput(dst []byte, final json.RawMessage) ([]byte, bool) {
 	var tail string
 	if e.activeCustomOpened {
-		tail = `"}`
+		if len(final) > 0 {
+			var in string
+			if jsonx.Kind(final) != '"' || json.Unmarshal(final, &in) != nil {
+				return e.abortOpenTool(dst, &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "invalid final custom tool input",
+				}), false
+			}
+			sent := e.activeCustomSent.String()
+			if !strings.HasPrefix(in, sent) {
+				return e.abortOpenTool(dst, &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "streamed custom tool input does not match final input",
+				}), false
+			}
+			suffix := in[len(sent):]
+			tail = customInputDelta(suffix, false) + `"}`
+			e.activeCustomSent.WriteString(suffix)
+		} else {
+			tail = `"}`
+		}
 	} else {
 		var in string
 		if len(final) > 0 {
-			_ = json.Unmarshal(final, &in)
+			if jsonx.Kind(final) != '"' || json.Unmarshal(final, &in) != nil {
+				return e.abortOpenTool(dst, &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "invalid final custom tool input",
+				}), false
+			}
 		}
 		b, _ := jsonx.Marshal(map[string]string{"input": in})
 		tail = string(b)
+		e.activeCustomSent.WriteString(in)
 	}
 	e.activeCustomOpened = true
 	return e.appendSSE(dst, "content_block_delta", map[string]any{
 		"type":  "content_block_delta",
 		"index": e.openBlock,
 		"delta": map[string]any{"type": "input_json_delta", "partial_json": tail},
-	})
+	}), true
 }
 
 func (e *StreamEncoder) flushAllPendingTools(dst []byte) []byte {
 	for len(e.pendingTools) > 0 {
 		pt := e.pendingTools[0]
-		pt.done = true
+		if !pt.done {
+			// Uncompleted pending tool call at stream close: abort rather than
+			// fabricating completion of truncated arguments.
+			return e.abortOpenTool(dst, &ir.APIError{
+				Status:  502,
+				Type:    ir.ErrServer,
+				Message: "pending tool_use block never completed",
+			})
+		}
 		dst = e.drainPendingTools(dst)
+		if e.errored {
+			return dst
+		}
 	}
 	return dst
 }
@@ -620,6 +758,15 @@ func (e *StreamEncoder) flushAllPendingTools(dst []byte) []byte {
 func (e *StreamEncoder) closeBlock(dst []byte) []byte {
 	if e.openBlock < 0 {
 		return dst
+	}
+	if e.openBlockType == "tool_use" && !e.activeToolFinished {
+		// Never emit content_block_stop for an unfinished tool_use block (which
+		// could leave unclosed or truncated JSON on the wire); abort instead.
+		return e.abortOpenTool(dst, &ir.APIError{
+			Status:  502,
+			Type:    ir.ErrServer,
+			Message: "tool_use block closed before completion",
+		})
 	}
 	idx := e.openBlock
 	if e.openBlockType == "thinking" && e.thinkingSigVal.Len() > 0 {
@@ -643,6 +790,13 @@ func (e *StreamEncoder) closeBlock(dst []byte) []byte {
 	e.thinkingSigOrigin = ir.Origin{}
 	e.openBlock = -1
 	e.openBlockType = ""
+	e.openBlockCand = 0
+	e.activeCallCand = 0
+	e.activeCallID = ""
+	e.activeKind = ""
+	e.activeCustomOpened = false
+	e.activeCustomSent.Reset()
+	e.activeToolFinished = false
 	return e.appendSSE(dst, "content_block_stop", map[string]any{
 		"type":  "content_block_stop",
 		"index": idx,

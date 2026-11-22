@@ -18,6 +18,8 @@ type StreamDecoder struct {
 	// openBlocks maps block index -> type of the open block.
 	openBlocks          map[int]string
 	blockCallID         map[int]string
+	blockCallKind       map[int]ir.ToolKind
+	blockCustom         map[int]*jsonx.CustomInputDecoder
 	serverToolBlock     map[int]*ir.BuiltinActivity
 	serverToolArgs      map[int]*strings.Builder
 	serverToolInitBytes map[int]int
@@ -44,6 +46,8 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 		names:               opts.Names,
 		openBlocks:          map[int]string{},
 		blockCallID:         map[int]string{},
+		blockCallKind:       map[int]ir.ToolKind{},
+		blockCustom:         map[int]*jsonx.CustomInputDecoder{},
 		serverToolBlock:     map[int]*ir.BuiltinActivity{},
 		serverToolArgs:      map[int]*strings.Builder{},
 		serverToolInitBytes: map[int]int{},
@@ -117,6 +121,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				}
 			}
 			d.blockCallID[se.Index] = id
+			d.blockCallKind[se.Index] = kind
 			out = append(out, ir.Event{
 				Type:      ir.EvToolStart,
 				Index:     0,
@@ -126,7 +131,29 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				Namespace: ns,
 				Kind:      kind,
 			})
-			if len(se.ContentBlock.Input) > 0 && string(se.ContentBlock.Input) != "{}" && !jsonx.IsNull(se.ContentBlock.Input) {
+			if kind == ir.ToolCustom {
+				if len(se.ContentBlock.Input) > d.maxBuf {
+					d.terminal = true
+					out = append(out, ir.Event{
+						Type: ir.EvError,
+						Err:  &ir.APIError{Status: 502, Type: ir.ErrServer, Message: "buffered custom tool arguments exceeded max_buffered_bytes"},
+					})
+					return out, nil
+				}
+				cd := &jsonx.CustomInputDecoder{}
+				d.blockCustom[se.Index] = cd
+				if len(se.ContentBlock.Input) > 0 && string(se.ContentBlock.Input) != "{}" && !jsonx.IsNull(se.ContentBlock.Input) {
+					if delta := cd.Write(string(se.ContentBlock.Input)); delta != "" {
+						out = append(out, ir.Event{
+							Type:  ir.EvToolArgs,
+							Index: 0,
+							Part:  se.Index,
+							ID:    id,
+							Text:  delta,
+						})
+					}
+				}
+			} else if len(se.ContentBlock.Input) > 0 && string(se.ContentBlock.Input) != "{}" && !jsonx.IsNull(se.ContentBlock.Input) {
 				out = append(out, ir.Event{
 					Type:  ir.EvToolArgs,
 					Index: 0,
@@ -196,7 +223,27 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			out = append(out, ir.Event{Type: ir.EvSignature, Index: 0, Signature: sig})
 		case "input_json_delta":
 			if blockType == "tool_use" {
-				out = append(out, ir.Event{Type: ir.EvToolArgs, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index], Text: se.Delta.PartialJSON})
+				if d.blockCallKind[se.Index] == ir.ToolCustom {
+					cd := d.blockCustom[se.Index]
+					if cd == nil {
+						cd = &jsonx.CustomInputDecoder{}
+						d.blockCustom[se.Index] = cd
+					}
+					if cd.Len()+len(se.Delta.PartialJSON) > d.maxBuf {
+						delete(d.blockCustom, se.Index)
+						d.terminal = true
+						out = append(out, ir.Event{
+							Type: ir.EvError,
+							Err:  &ir.APIError{Status: 502, Type: ir.ErrServer, Message: "buffered custom tool arguments exceeded max_buffered_bytes"},
+						})
+						return out, nil
+					}
+					if delta := cd.Write(se.Delta.PartialJSON); delta != "" {
+						out = append(out, ir.Event{Type: ir.EvToolArgs, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index], Text: delta})
+					}
+				} else {
+					out = append(out, ir.Event{Type: ir.EvToolArgs, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index], Text: se.Delta.PartialJSON})
+				}
 			} else if blockType == "server_tool_use" {
 				if sb := d.serverToolArgs[se.Index]; sb != nil {
 					if d.serverToolBytes+len(se.Delta.PartialJSON) > d.maxBuf {
@@ -220,8 +267,18 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		blockType := d.openBlocks[se.Index]
 		switch blockType {
 		case "tool_use":
-			out = append(out, ir.Event{Type: ir.EvToolEnd, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index]})
+			evEnd := ir.Event{Type: ir.EvToolEnd, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index]}
+			if d.blockCallKind[se.Index] == ir.ToolCustom {
+				if cd := d.blockCustom[se.Index]; cd != nil {
+					evEnd.Arguments, _ = cd.Final()
+				} else {
+					evEnd.Arguments = json.RawMessage(`{}`)
+				}
+			}
+			out = append(out, evEnd)
 			delete(d.blockCallID, se.Index)
+			delete(d.blockCallKind, se.Index)
+			delete(d.blockCustom, se.Index)
 		case "server_tool_use":
 			if b := d.serverToolBlock[se.Index]; b != nil {
 				d.serverToolBytes -= d.serverToolInitBytes[se.Index]
@@ -480,15 +537,22 @@ func responseBlockToPart(block wireContentBlock, p ir.Path, names map[string]ir.
 				kind = ref.Kind
 			}
 		}
+		call := &ir.ToolCall{
+			ID:        ir.AnthropicRawID(block.ID),
+			Name:      name,
+			Namespace: ns,
+			Kind:      kind,
+			Arguments: args,
+		}
+		if kind == ir.ToolCustom {
+			if inp, ok := jsonx.UnwrapCustomInput(args); ok {
+				call.Input = inp
+				call.Arguments = nil
+			}
+		}
 		part := ir.Part{
 			Type: ir.PartToolCall,
-			Call: &ir.ToolCall{
-				ID:        ir.AnthropicRawID(block.ID),
-				Name:      name,
-				Namespace: ns,
-				Kind:      kind,
-				Arguments: args,
-			},
+			Call: call,
 		}
 		return &part, nil
 	}

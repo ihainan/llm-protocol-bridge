@@ -424,6 +424,12 @@ func wirePartToIR(part wirePart, p ir.Path, candIdx int, callIdx *int, names map
 			Kind:      kind,
 			Arguments: args,
 		}
+		if kind == ir.ToolCustom {
+			if inp, ok := jsonx.UnwrapCustomInput(args); ok {
+				call.Input = inp
+				call.Arguments = nil
+			}
+		}
 		if part.ThoughtSignature != "" {
 			call.Signature = &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
 		}
