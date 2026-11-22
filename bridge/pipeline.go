@@ -774,6 +774,9 @@ func (bc *bufferedToolCall) validate() (json.RawMessage, string, string) {
 			if jsonx.Kind(bc.finalArgs) == '"' {
 				var s string
 				if json.Unmarshal(bc.finalArgs, &s) == nil {
+					if bc.live && bc.args.Len() > 0 && !strings.HasPrefix(s, bc.args.String()) {
+						return nil, "", "streamed custom tool input does not match final input"
+					}
 					return bc.finalArgs, s, ""
 				}
 			}
@@ -782,6 +785,9 @@ func (bc *bufferedToolCall) validate() (json.RawMessage, string, string) {
 					Input *string `json:"input"`
 				}
 				if json.Unmarshal(bc.finalArgs, &wrapped) == nil && wrapped.Input != nil {
+					if bc.live && bc.args.Len() > 0 && !strings.HasPrefix(*wrapped.Input, bc.args.String()) {
+						return nil, "", "streamed custom tool input does not match final input"
+					}
 					raw, _ := jsonx.Marshal(*wrapped.Input)
 					return raw, *wrapped.Input, ""
 				}

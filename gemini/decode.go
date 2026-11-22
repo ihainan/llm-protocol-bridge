@@ -159,11 +159,30 @@ func (d *StreamDecoder) decodePart(out []ir.Event, part wirePart, idx int) []ir.
 		if part.ThoughtSignature != "" {
 			sig = &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: d.env.ProviderID}}
 		}
-		out = append(out,
-			ir.Event{Type: ir.EvToolStart, Index: idx, Part: callIdx, ID: id, Name: name, Namespace: ns, Kind: kind, Signature: sig},
-			ir.Event{Type: ir.EvToolArgs, Index: idx, Part: callIdx, ID: id, Text: string(args)},
-			ir.Event{Type: ir.EvToolEnd, Index: idx, Part: callIdx, ID: id, Arguments: args},
-		)
+		if kind == ir.ToolCustom {
+			var wrapped struct {
+				Input *string `json:"input"`
+			}
+			if jsonx.Kind(args) == '{' && json.Unmarshal(args, &wrapped) == nil && wrapped.Input != nil {
+				inputRaw, _ := jsonx.Marshal(*wrapped.Input)
+				out = append(out, ir.Event{Type: ir.EvToolStart, Index: idx, Part: callIdx, ID: id, Name: name, Namespace: ns, Kind: kind, Signature: sig})
+				if *wrapped.Input != "" {
+					out = append(out, ir.Event{Type: ir.EvToolArgs, Index: idx, Part: callIdx, ID: id, Text: *wrapped.Input})
+				}
+				out = append(out, ir.Event{Type: ir.EvToolEnd, Index: idx, Part: callIdx, ID: id, Arguments: inputRaw})
+			} else {
+				out = append(out,
+					ir.Event{Type: ir.EvToolStart, Index: idx, Part: callIdx, ID: id, Name: name, Namespace: ns, Kind: kind, Signature: sig},
+					ir.Event{Type: ir.EvToolEnd, Index: idx, Part: callIdx, ID: id, Arguments: json.RawMessage(`{}`)},
+				)
+			}
+		} else {
+			out = append(out,
+				ir.Event{Type: ir.EvToolStart, Index: idx, Part: callIdx, ID: id, Name: name, Namespace: ns, Kind: kind, Signature: sig},
+				ir.Event{Type: ir.EvToolArgs, Index: idx, Part: callIdx, ID: id, Text: string(args)},
+				ir.Event{Type: ir.EvToolEnd, Index: idx, Part: callIdx, ID: id, Arguments: args},
+			)
+		}
 
 	case part.FunctionResponse != nil:
 		// Function responses come from user turns; they don't appear in model output.

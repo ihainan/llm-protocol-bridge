@@ -437,10 +437,10 @@ func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []
 				}
 				if jsonx.Kind([]byte(argsStr)) == '{' && json.Unmarshal([]byte(argsStr), &obj) == nil && obj.Input != nil {
 					argsRaw, _ = jsonx.Marshal(*obj.Input)
-				} else if argsStr == "" {
-					argsRaw = json.RawMessage(`{}`)
 				} else {
-					argsRaw = json.RawMessage(argsStr)
+					// Invalid wrapper (including raw JSON strings like "\"hello\"" or empty):
+					// pass an invalid-wrapper sentinel object so downstream validation rejects it.
+					argsRaw = json.RawMessage(`{}`)
 				}
 			} else {
 				if argsStr == "" {
