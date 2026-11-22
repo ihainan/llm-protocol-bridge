@@ -139,6 +139,41 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			}
 		}
 
+	case ir.EvBuiltin:
+		if ev.Builtin == nil {
+			break
+		}
+		if ev.Builtin.Kind == ir.BuiltinCodeExecution {
+			if ev.Builtin.IsResult {
+				outcome := "OUTCOME_OK"
+				if ev.Builtin.Error != "" {
+					outcome = ev.Builtin.Error
+				}
+				dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{
+					CodeExecutionResult: &wireCodeExecutionResult{
+						Outcome: outcome,
+						Output:  ev.Builtin.Content,
+					},
+				}}, "")
+				break
+			}
+			var payload struct {
+				Language string `json:"language"`
+				Code     string `json:"code"`
+			}
+			_ = json.Unmarshal(ev.Builtin.Input, &payload)
+			dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{
+				ExecutableCode: &wireExecutableCode{
+					Language: payload.Language,
+					Code:     payload.Code,
+				},
+			}}, "")
+			break
+		}
+		if err := e.opts.Env.Lose(ir.LossBuiltinActivity, ir.Root.Key("candidates"), "builtin activity not supported by Gemini"); err != nil {
+			return dst, err
+		}
+
 	case ir.EvStop:
 		c := e.cand(ev.Index)
 		dst = e.flushPendingCalls(dst, ev.Index, c)

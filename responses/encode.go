@@ -197,8 +197,10 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 				Value:  string(ev.Sealed.Data),
 			})
 		}
-		// Attach to the currently open reasoning item rather than splitting into two items.
-		if e.openItemType == "reasoning" {
+		// Only attach to an open reasoning item when it belongs to the same Responses
+		// reasoning item (not when the open item already has a signature/ciphertext or
+		// when receiving distinct Anthropic redacted_thinking blocks).
+		if e.openItemType == "reasoning" && e.reasonEnc == "" && e.reasonSig == nil && ev.Sealed.Kind == ir.SealedResponsesEncrypted {
 			e.reasonEnc = encStr
 			break
 		}
@@ -279,6 +281,45 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 		dst = e.finishToolItem(dst, ev.Arguments)
 		dst = e.drainPendingTools(dst)
+
+	case ir.EvBuiltin:
+		if ev.Builtin == nil {
+			break
+		}
+		if ev.Builtin.Kind == ir.BuiltinWebSearch {
+			dst = e.ensureStarted(dst)
+			dst = e.closeItem(dst)
+			e.outputIndex++
+			itemID := ev.Builtin.ID
+			if itemID == "" {
+				itemID = "ws_" + e.opts.Env.NewID("", 16)
+			}
+			added := map[string]any{
+				"type":   "web_search_call",
+				"id":     itemID,
+				"status": "in_progress",
+			}
+			dst = e.appendEvent(dst, "response.output_item.added", map[string]any{
+				"sequence_number": e.nextSeq(),
+				"output_index":    e.outputIndex,
+				"item":            added,
+			})
+			doneItem := map[string]any{
+				"type":   "web_search_call",
+				"id":     itemID,
+				"status": "completed",
+			}
+			e.outputs = append(e.outputs, doneItem)
+			dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
+				"sequence_number": e.nextSeq(),
+				"output_index":    e.outputIndex,
+				"item":            doneItem,
+			})
+			break
+		}
+		if err := e.opts.Env.Lose(ir.LossBuiltinActivity, ir.Root.Key("output"), "builtin activity not supported by Responses"); err != nil {
+			return dst, err
+		}
 
 	case ir.EvStop:
 		e.stop = ir.Stop{}
@@ -844,6 +885,16 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 		}
 
 	case ir.PartBuiltinCall, ir.PartBuiltinResult:
+		if p.Builtin != nil && p.Builtin.Kind == ir.BuiltinWebSearch {
+			id := p.Builtin.ID
+			if id == "" {
+				id = "ws_" + env.NewID("", 16)
+			}
+			return []wireOutputItem{{Type: "web_search_call", ID: id, Status: "completed"}}, nil
+		}
+		if err := env.Lose(ir.LossBuiltinActivity, fp, "builtin activity not supported in Responses output"); err != nil {
+			return nil, err
+		}
 		return nil, nil
 
 	default:

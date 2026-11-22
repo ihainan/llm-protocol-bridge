@@ -139,6 +139,13 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}}
 		dst = e.appendChunk(dst, chunk)
 
+	case ir.EvBuiltin:
+		if ev.Builtin != nil {
+			if err := e.opts.Env.Lose(ir.LossBuiltinActivity, ir.Root.Key("choices"), "builtin activity not supported by Chat Completions"); err != nil {
+				return dst, err
+			}
+		}
+
 	case ir.EvToolEnd:
 		idx, key := e.resolveCallSlot(ev.Index, ev.ID)
 		if e.callHasArgs[ev.Index] == nil || !e.callHasArgs[ev.Index][key] {
@@ -264,7 +271,10 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 
 	choices := make([]wireChoice, 0, len(resp.Outputs))
 	for _, out := range resp.Outputs {
-		wm := buildAssistantMessage(out.Parts, env)
+		wm, err := buildAssistantMessage(out.Parts, env)
+		if err != nil {
+			return nil, err
+		}
 		choices = append(choices, wireChoice{
 			Index:        out.Index,
 			Message:      wm,
@@ -299,13 +309,13 @@ func encodeChatCallID(env *ir.Env, id string, sig *ir.Signature) string {
 }
 
 // buildAssistantMessage converts output parts to a wireMessage.
-func buildAssistantMessage(parts []ir.Part, env *ir.Env) wireMessage {
+func buildAssistantMessage(parts []ir.Part, env *ir.Env) (wireMessage, error) {
 	wm := wireMessage{Role: "assistant"}
 	var textParts []wireContentPart
 	var toolCalls []wireToolCall
 	var reasoning string
 
-	for _, p := range parts {
+	for i, p := range parts {
 		switch p.Type {
 		case ir.PartText:
 			textParts = append(textParts, wireContentPart{Type: "text", Text: p.Text})
@@ -314,6 +324,10 @@ func buildAssistantMessage(parts []ir.Part, env *ir.Env) wireMessage {
 		case ir.PartReasoning:
 			if p.Reasoning != nil {
 				reasoning += p.Reasoning.Text
+			}
+		case ir.PartBuiltinCall, ir.PartBuiltinResult:
+			if err := env.Lose(ir.LossBuiltinActivity, ir.Root.Key("choices").At(0).Key("message").At(i), "builtin activity not supported by Chat Completions"); err != nil {
+				return wireMessage{}, err
 			}
 		case ir.PartToolCall:
 			if p.Call != nil {
@@ -359,7 +373,7 @@ func buildAssistantMessage(parts []ir.Part, env *ir.Env) wireMessage {
 		}
 		wm.Content = jsonRawString(sb.String())
 	}
-	return wm
+	return wm, nil
 }
 
 // finishFromStop maps ir.Stop to a Chat finish_reason string.

@@ -165,12 +165,17 @@ func (d *StreamDecoder) decodePart(out []ir.Event, part wirePart, idx int) []ir.
 
 	case part.ExecutableCode != nil:
 		d.inThought[idx] = false
+		inMap := map[string]any{"code": part.ExecutableCode.Code}
+		if part.ExecutableCode.Language != "" {
+			inMap["language"] = part.ExecutableCode.Language
+		}
+		inRaw, _ := jsonx.Marshal(inMap)
 		out = append(out, ir.Event{
 			Type:  ir.EvBuiltin,
 			Index: idx,
 			Builtin: &ir.BuiltinActivity{
 				Kind:   ir.BuiltinCodeExecution,
-				Input:  json.RawMessage(`{"code":` + jsonQuote(part.ExecutableCode.Code) + `}`),
+				Input:  inRaw,
 				Origin: ir.FormatGemini,
 			},
 		})
@@ -302,18 +307,31 @@ func wirePartToIR(part wirePart, p ir.Path, candIdx int, callIdx *int, names map
 		return &ir.Part{Type: ir.PartToolCall, Call: call}, nil
 
 	case part.ExecutableCode != nil:
-		call := &ir.ToolCall{
-			Name:      "code_execution",
-			Arguments: json.RawMessage(`{"code":` + jsonQuote(part.ExecutableCode.Code) + `}`),
+		inMap := map[string]any{"code": part.ExecutableCode.Code}
+		if part.ExecutableCode.Language != "" {
+			inMap["language"] = part.ExecutableCode.Language
 		}
-		return &ir.Part{Type: ir.PartBuiltinCall, Call: call}, nil
+		inRaw, _ := jsonx.Marshal(inMap)
+		return &ir.Part{
+			Type: ir.PartBuiltinCall,
+			Builtin: &ir.BuiltinActivity{
+				Kind:   ir.BuiltinCodeExecution,
+				Input:  inRaw,
+				Origin: ir.FormatGemini,
+			},
+		}, nil
 
 	case part.CodeExecutionResult != nil:
-		result := &ir.ToolResult{
-			Name:    "code_execution",
-			Content: []ir.Part{ir.TextPart(part.CodeExecutionResult.Output)},
+		b := &ir.BuiltinActivity{
+			Kind:     ir.BuiltinCodeExecution,
+			IsResult: true,
+			Content:  part.CodeExecutionResult.Output,
+			Origin:   ir.FormatGemini,
 		}
-		return &ir.Part{Type: ir.PartBuiltinResult, Result: result}, nil
+		if part.CodeExecutionResult.Outcome != "" && part.CodeExecutionResult.Outcome != "OUTCOME_OK" {
+			b.Error = part.CodeExecutionResult.Outcome
+		}
+		return &ir.Part{Type: ir.PartBuiltinResult, Builtin: b}, nil
 
 	case part.Thought:
 		r := &ir.Reasoning{Text: part.Text}
@@ -399,10 +417,4 @@ func isGeminiError(data []byte) bool {
 		}
 	}
 	return false
-}
-
-// jsonQuote returns a JSON-encoded string.
-func jsonQuote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
 }

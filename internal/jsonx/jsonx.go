@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"strconv"
 	"unicode/utf8"
 )
@@ -119,7 +120,8 @@ func Float(raw []byte) (float64, bool) {
 	return f, err == nil
 }
 
-// Int decodes a JSON integer (a number with an integral value), preserving int64 precision.
+// Int decodes a JSON integer (a number with an integral value), preserving int64 precision
+// even for exact integer scientific notation such as 9007199254740993e0.
 func Int(raw []byte) (int64, bool) {
 	b := bytes.TrimSpace(raw)
 	if len(b) == 0 {
@@ -128,11 +130,29 @@ func Int(raw []byte) (int64, bool) {
 	if n, err := strconv.ParseInt(string(b), 10, 64); err == nil {
 		return n, true
 	}
-	f, ok := Float(b)
-	if !ok || f != float64(int64(f)) {
+	k := Kind(b)
+	if k != '-' && (k < '0' || k > '9') {
 		return 0, false
 	}
-	return int64(f), true
+	if bytes.IndexByte(b, '/') >= 0 {
+		return 0, false
+	}
+	// Guard against absurd exponents before exact rational parsing.
+	if idx := bytes.IndexAny(b, "eE"); idx >= 0 {
+		exp, err := strconv.ParseInt(string(b[idx+1:]), 10, 64)
+		if err != nil || exp > 1000 || exp < -1000 {
+			return 0, false
+		}
+	}
+	r, ok := new(big.Rat).SetString(string(b))
+	if !ok || !r.IsInt() {
+		return 0, false
+	}
+	num := r.Num()
+	if !num.IsInt64() {
+		return 0, false
+	}
+	return num.Int64(), true
 }
 
 // Array splits a JSON array into its elements.

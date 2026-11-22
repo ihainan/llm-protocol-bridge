@@ -114,14 +114,14 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			apiErr = &ir.APIError{
 				Code:    se.Response.Error.Code,
 				Message: se.Response.Error.Message,
-				Type:    mapErrorType(se.Response.Error.Type),
+				Type:    refineType(mapErrorType(se.Response.Error.Type), se.Response.Error.Code, se.Response.Error.Message),
 				Raw:     append([]byte(nil), ev.Data...),
 			}
 		} else if se.Error != nil {
 			apiErr = &ir.APIError{
 				Code:    se.Error.Code,
 				Message: se.Error.Message,
-				Type:    mapErrorType(se.Error.Type),
+				Type:    refineType(mapErrorType(se.Error.Type), se.Error.Code, se.Error.Message),
 				Raw:     append([]byte(nil), ev.Data...),
 			}
 		} else {
@@ -137,7 +137,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				Code:    se.Error.Code,
 				Message: se.Error.Message,
 				Param:   se.Error.Param,
-				Type:    mapErrorType(se.Error.Type),
+				Type:    refineType(mapErrorType(se.Error.Type), se.Error.Code, se.Error.Message),
 				Raw:     append([]byte(nil), ev.Data...),
 			}
 		} else if se.Message != "" || se.Code != "" {
@@ -378,7 +378,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 		}
 		return nil, &ir.APIError{Type: ir.ErrServer, Message: "response failed", Raw: append([]byte(nil), body...)}
 	}
-	if wr.ID == "" && wr.Object == "" && len(wr.Output) == 0 {
+	if (wr.Object != "" && wr.Object != "response") || (wr.Object == "" && wr.Status == "" && len(wr.Output) == 0) {
 		return nil, ir.Protocol("responses: response missing required fields")
 	}
 

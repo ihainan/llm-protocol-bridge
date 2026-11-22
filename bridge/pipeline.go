@@ -172,13 +172,17 @@ func (f *streamFilter) resetRoundForPlan(p *Plan) {
 	f.intercept = ic
 }
 
-func (f *streamFilter) anyStopTriggered() bool {
+func (f *streamFilter) allStopsTriggered(expected int) bool {
+	if expected <= 0 {
+		expected = 1
+	}
+	count := 0
 	for _, v := range f.stopTriggered {
 		if v {
-			return true
+			count++
 		}
 	}
-	return false
+	return count >= expected
 }
 
 func (f *streamFilter) isIntercepted(name string) bool {
@@ -228,15 +232,22 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		return []ir.Event{ev}
 
 	case ir.EvReasoningStart, ir.EvReasoning, ir.EvSignature, ir.EvSealed:
+		var out []ir.Event
+		if ev.Type == ir.EvReasoningStart || ev.Type == ir.EvReasoning {
+			out = append(out, f.flushStopBuf(ev.Index)...)
+		}
 		if f.reasoning == ir.ReasoningOutHidden {
+			if len(out) > 0 {
+				if f.hasPendingCalls(ev.Index) {
+					f.postCallEvs[ev.Index] = append(f.postCallEvs[ev.Index], out...)
+					return nil
+				}
+				return out
+			}
 			return nil
 		}
 		if f.reasoning == ir.ReasoningOutSummary && ev.Type == ir.EvReasoning {
 			ev.Summary = true
-		}
-		var out []ir.Event
-		if ev.Type == ir.EvReasoningStart || ev.Type == ir.EvReasoning {
-			out = append(out, f.flushStopBuf(ev.Index)...)
 		}
 		out = append(out, ev)
 		if f.hasPendingCalls(ev.Index) {

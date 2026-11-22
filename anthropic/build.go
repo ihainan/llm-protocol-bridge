@@ -37,7 +37,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	// System prompt.
 	var sysRaw json.RawMessage
 	if len(req.Instructions) > 0 {
-		sysRaw = buildContentBlocks(req.Instructions, env)
+		var sysErr error
+		sysRaw, sysErr = buildContentBlocks(req.Instructions, env)
+		if sysErr != nil {
+			return nil, sysErr
+		}
 	}
 
 	// Messages.
@@ -541,23 +545,23 @@ func buildImageSource(m *ir.Media, p ir.Path, env *ir.Env) (*wireImageSource, er
 	return nil, env.Err(ir.Invalid(p, "media has no source (url, data, or file_id)"))
 }
 
-func buildContentBlocks(parts []ir.Part, env *ir.Env) json.RawMessage {
+func buildContentBlocks(parts []ir.Part, env *ir.Env) (json.RawMessage, error) {
 	var blocks []wireContentBlock
 	for i, p := range parts {
 		fp := ir.Root.Key("system").At(i)
 		bs, err := partToBlocks(p, fp, env)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		blocks = append(blocks, bs...)
 	}
 	// If a single text block, use plain string.
 	if len(blocks) == 1 && blocks[0].Type == "text" && blocks[0].CacheControl == nil {
-		b, _ := jsonx.Marshal(blocks[0].Text)
-		return b
+		b, err := jsonx.Marshal(blocks[0].Text)
+		return b, err
 	}
-	b, _ := jsonx.Marshal(blocks)
-	return b
+	b, err := jsonx.Marshal(blocks)
+	return b, err
 }
 
 func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env) (wireTool, error) {

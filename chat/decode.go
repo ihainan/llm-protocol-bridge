@@ -26,9 +26,11 @@ type StreamDecoder struct {
 	// Names we've seen, for dedup of call IDs within one response.
 	seenCallIDs map[string]bool
 
-	done      bool
-	sawFinish bool
-	terminal  bool
+	done            bool
+	sawFinish       bool
+	terminal        bool
+	seenChoices     map[int]bool
+	finishedChoices map[int]bool
 }
 
 // openCall tracks one tool call in flight within a candidate.
@@ -59,11 +61,13 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 	}
 	env.Style = ir.StyleBracket
 	return &StreamDecoder{
-		env:         env,
-		dia:         opts.Dialect,
-		names:       opts.Names,
-		candidates:  map[int]*chatCandidate{},
-		seenCallIDs: map[string]bool{},
+		env:             env,
+		dia:             opts.Dialect,
+		names:           opts.Names,
+		candidates:      map[int]*chatCandidate{},
+		seenCallIDs:     map[string]bool{},
+		seenChoices:     map[int]bool{},
+		finishedChoices: map[int]bool{},
 	}
 }
 
@@ -144,6 +148,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 }
 
 func (d *StreamDecoder) decodeChoice(out []ir.Event, ci int, ch wireStreamChoice) []ir.Event {
+	d.seenChoices[ci] = true
 	delta := ch.Delta
 
 	// Role chunk (only on the first delta of a choice).
@@ -333,6 +338,7 @@ func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []
 	stop := stopFromFinish(finish)
 	out = append(out, ir.Event{Type: ir.EvStop, Index: ci, Stop: &stop})
 	d.sawFinish = true
+	d.finishedChoices[ci] = true
 	return out
 }
 
@@ -351,11 +357,14 @@ func stopFromFinish(finish string) ir.Stop {
 	return ir.Stop{Reason: ir.StopEndTurn, Raw: finish}
 }
 
-// End finalises the stream. A stream is complete only if a valid finish_reason
-// or terminal error was received; [DONE] without a finish_reason still reports
-// truncation on EOF/timeout/error.
+// End finalises the stream. A stream is complete only if every seen choice received
+// a valid finish_reason (or a terminal error was received); [DONE] without finish_reason
+// still reports truncation on EOF/timeout/error.
 func (d *StreamDecoder) End(how ir.EndKind) *ir.Event {
-	if d.terminal || d.sawFinish {
+	if d.terminal {
+		return nil
+	}
+	if d.sawFinish && len(d.finishedChoices) >= len(d.seenChoices) {
 		return nil
 	}
 	return ir.EndErrorEvent(how)

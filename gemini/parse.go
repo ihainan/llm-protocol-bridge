@@ -517,6 +517,13 @@ func parseFunctionCallingConfig(raw json.RawMessage, p ir.Path, env *ir.Env) (ir
 	}
 	switch mode {
 	case "AUTO", "":
+		if len(allowed) > 0 {
+			refs := make([]ir.ToolRef, len(allowed))
+			for i, n := range allowed {
+				refs[i] = ir.ToolRef{Name: n}
+			}
+			return ir.ToolChoice{Mode: ir.ToolChoiceAllowed, Allowed: refs, AllowedMode: ir.ToolChoiceAuto}, nil
+		}
 		return ir.ToolChoice{Mode: ir.ToolChoiceAuto}, nil
 	case "NONE":
 		return ir.ToolChoice{Mode: ir.ToolChoiceNone}, nil

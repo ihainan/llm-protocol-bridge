@@ -2,6 +2,7 @@
 package bridge
 
 import (
+	"strings"
 	"time"
 
 	"github.com/ihainan/llm-protocol-bridge/anthropic"
@@ -288,7 +289,15 @@ func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
 		return nil
 	}
 	ro := effectiveReasoningOut(p)
-	if ro == ir.ReasoningOutNative {
+	var stops []string
+	if p != nil && p.opts.StopMode == ir.StopEmulate && p.Request != nil {
+		for _, s := range p.Request.Stop {
+			if s != "" {
+				stops = append(stops, s)
+			}
+		}
+	}
+	if ro == ir.ReasoningOutNative && len(stops) == 0 {
 		return resp
 	}
 	cp := *resp
@@ -296,7 +305,11 @@ func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
 	for i, o := range resp.Outputs {
 		oc := o
 		var parts []ir.Part
+		stopped := false
 		for _, pt := range o.Parts {
+			if stopped {
+				break
+			}
 			if pt.Type == ir.PartReasoning {
 				if ro == ir.ReasoningOutHidden {
 					continue
@@ -308,6 +321,26 @@ func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
 						rc.Text = ""
 					}
 					pt.Reasoning = &rc
+				}
+			}
+			if pt.Type == ir.PartText && len(stops) > 0 {
+				bestPos, bestEnd, bestSeq := -1, -1, ""
+				for _, seq := range stops {
+					if idx := strings.Index(pt.Text, seq); idx >= 0 {
+						end := idx + len(seq)
+						if bestEnd < 0 || end < bestEnd || (end == bestEnd && idx < bestPos) {
+							bestPos, bestEnd, bestSeq = idx, end, seq
+						}
+					}
+				}
+				if bestPos >= 0 {
+					if bestPos > 0 {
+						pt.Text = pt.Text[:bestPos]
+						parts = append(parts, pt)
+					}
+					oc.Stop = ir.Stop{Reason: ir.StopSequence, Sequence: bestSeq}
+					stopped = true
+					break
 				}
 			}
 			parts = append(parts, pt)
@@ -383,14 +416,16 @@ type decoder interface {
 
 // Stream is a live stream converter (decoder + filter pipeline + encoder).
 type Stream struct {
-	plan       *Plan
-	dec        decoder
-	enc        encoder
-	filter     *streamFilter
-	collector  *ir.Collector
-	prevUsage  ir.Usage
-	roundUsage ir.Usage
-	done       bool
+	plan          *Plan
+	dec           decoder
+	enc           encoder
+	filter        *streamFilter
+	collector     *ir.Collector
+	prevUsage     ir.Usage
+	roundUsage    ir.Usage
+	expectedCands int
+	finishedCands map[int]bool
+	done          bool
 }
 
 func newStream(p *Plan, collect bool) *Stream {
@@ -462,7 +497,18 @@ func newStreamWithEncoder(p *Plan, eo encodeOpts) *Stream {
 		dec = chat.NewStreamDecoder(chat.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Chat, Names: p.names})
 	}
 
-	return &Stream{plan: p, dec: dec, enc: enc, filter: newStreamFilter(p)}
+	expected := 1
+	if p != nil && p.Request != nil && p.Request.Candidates != nil && *p.Request.Candidates > 1 {
+		expected = *p.Request.Candidates
+	}
+	return &Stream{
+		plan:          p,
+		dec:           dec,
+		enc:           enc,
+		filter:        newStreamFilter(p),
+		expectedCands: expected,
+		finishedCands: map[int]bool{},
+	}
 }
 
 // Feed processes one upstream SSE event and appends any client bytes to dst.
@@ -483,7 +529,10 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 				s.done = true
 			}
 			if e.Type == ir.EvStop {
-				s.done = true
+				s.finishedCands[e.Index] = true
+				if len(s.finishedCands) >= s.expectedCands {
+					s.done = true
+				}
 			}
 			if e.Type == ir.EvUsage && s.prevUsage.Any() {
 				tot := s.Usage()
@@ -504,11 +553,21 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 
 // End signals how the upstream ended and flushes any final client bytes.
 func (s *Stream) End(dst []byte, how ir.EndKind) ([]byte, error) {
-	if !s.filter.anyStopTriggered() {
-		if ev := s.dec.End(how); ev != nil {
+	if !s.filter.allStopsTriggered(s.expectedCands) {
+		ev := s.dec.End(how)
+		if ev == nil && !s.done && len(s.finishedCands) < s.expectedCands && len(s.filter.intercepted) == 0 {
+			ev = ir.EndErrorEvent(how)
+		}
+		if ev != nil {
 			for _, e := range s.filter.process(*ev) {
-				if e.Type == ir.EvError || e.Type == ir.EvStop {
+				if e.Type == ir.EvError {
 					s.done = true
+				}
+				if e.Type == ir.EvStop {
+					s.finishedCands[e.Index] = true
+					if len(s.finishedCands) >= s.expectedCands {
+						s.done = true
+					}
 				}
 				if s.collector != nil {
 					s.collector.Add(e)
@@ -601,6 +660,12 @@ func (s *Stream) NextRound(p *Plan) {
 	if s.filter != nil {
 		s.filter.resetRoundForPlan(p)
 	}
+	expected := 1
+	if p != nil && p.Request != nil && p.Request.Candidates != nil && *p.Request.Candidates > 1 {
+		expected = *p.Request.Candidates
+	}
+	s.expectedCands = expected
+	s.finishedCands = map[int]bool{}
 	s.done = false
 }
 

@@ -273,7 +273,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 		e := ParseError(0, body)
 		return nil, e
 	}
-	if wr.Type == "" && wr.ID == "" && len(wr.Content) == 0 {
+	if (wr.Type != "" && wr.Type != "message") || (wr.Type == "" && wr.Role == "" && len(wr.Content) == 0 && wr.StopReason == "") {
 		return nil, ir.Protocol("anthropic: response missing required fields")
 	}
 

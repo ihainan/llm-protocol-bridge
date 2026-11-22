@@ -217,6 +217,75 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.activeCallID = ""
 		dst = e.drainPendingTools(dst)
 
+	case ir.EvBuiltin:
+		if ev.Builtin == nil {
+			break
+		}
+		if ev.Builtin.Kind == ir.BuiltinWebSearch || ev.Builtin.Kind == ir.BuiltinWebFetch {
+			dst = e.ensureStarted(dst)
+			dst = e.closeBlock(dst)
+			idx := e.blockIdx
+			e.blockIdx++
+			id := ev.Builtin.ID
+			if id == "" {
+				id = "srvtoolu_" + e.opts.Env.NewID("", 16)
+			}
+			var cb map[string]any
+			if !ev.Builtin.IsResult {
+				var inObj any = map[string]any{}
+				if len(ev.Builtin.Input) > 0 {
+					inObj = json.RawMessage(ev.Builtin.Input)
+				} else if ev.Builtin.Query != "" {
+					inObj = map[string]any{"query": ev.Builtin.Query}
+				} else if ev.Builtin.URL != "" {
+					inObj = map[string]any{"url": ev.Builtin.URL}
+				}
+				cb = map[string]any{
+					"type":  "server_tool_use",
+					"id":    id,
+					"name":  string(ev.Builtin.Kind),
+					"input": inObj,
+				}
+			} else {
+				resType := "web_search_tool_result"
+				if ev.Builtin.Kind == ir.BuiltinWebFetch {
+					resType = "web_fetch_tool_result"
+				}
+				var content any = []any{}
+				if len(ev.Builtin.Hits) > 0 {
+					hits := make([]map[string]any, 0, len(ev.Builtin.Hits))
+					for _, h := range ev.Builtin.Hits {
+						hits = append(hits, map[string]any{
+							"type":  "web_search_result",
+							"url":   h.URL,
+							"title": h.Title,
+						})
+					}
+					content = hits
+				} else if ev.Builtin.Content != "" {
+					content = ev.Builtin.Content
+				}
+				cb = map[string]any{
+					"type":        resType,
+					"tool_use_id": id,
+					"content":     content,
+				}
+			}
+			dst = e.appendSSE(dst, "content_block_start", map[string]any{
+				"type":          "content_block_start",
+				"index":         idx,
+				"content_block": cb,
+			})
+			dst = e.appendSSE(dst, "content_block_stop", map[string]any{
+				"type":  "content_block_stop",
+				"index": idx,
+			})
+			break
+		}
+		if err := e.opts.Env.Lose(ir.LossBuiltinActivity, ir.Root.Key("content"), "builtin activity not supported by Anthropic"); err != nil {
+			return dst, err
+		}
+
 	case ir.EvStop:
 		dst = e.closeBlock(dst)
 		e.activeCallID = ""
@@ -549,6 +618,40 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 			out = append(out, wireContentBlock{Type: "redacted_thinking", Data: dataStr})
 		}
 		return out, nil
+	}
+	if part.Type == ir.PartBuiltinCall || part.Type == ir.PartBuiltinResult {
+		if part.Builtin != nil && (part.Builtin.Kind == ir.BuiltinWebSearch || part.Builtin.Kind == ir.BuiltinWebFetch) {
+			id := part.Builtin.ID
+			if id == "" {
+				id = "srvtoolu_" + env.NewID("", 16)
+			}
+			if !part.Builtin.IsResult {
+				inRaw := part.Builtin.Input
+				if len(inRaw) == 0 {
+					inRaw = json.RawMessage(`{}`)
+				}
+				return []wireContentBlock{{Type: "server_tool_use", ID: id, Name: string(part.Builtin.Kind), Input: inRaw}}, nil
+			}
+			resType := "web_search_tool_result"
+			if part.Builtin.Kind == ir.BuiltinWebFetch {
+				resType = "web_fetch_tool_result"
+			}
+			var content json.RawMessage
+			if len(part.Builtin.Hits) > 0 {
+				hits := make([]map[string]any, 0, len(part.Builtin.Hits))
+				for _, h := range part.Builtin.Hits {
+					hits = append(hits, map[string]any{"type": "web_search_result", "url": h.URL, "title": h.Title})
+				}
+				content, _ = jsonx.Marshal(hits)
+			} else {
+				content, _ = jsonx.Marshal(part.Builtin.Content)
+			}
+			return []wireContentBlock{{Type: resType, ToolUseID: id, Content: content}}, nil
+		}
+		if err := env.Lose(ir.LossBuiltinActivity, p, "builtin activity not supported by Anthropic"); err != nil {
+			return nil, err
+		}
+		return nil, nil
 	}
 	return partToBlocks(part, p, env)
 }

@@ -336,20 +336,39 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 		return []wirePart{{Text: part.Text}}, nil
 
 	case ir.PartBuiltinCall:
-		// Pass through raw if available; otherwise skip.
+		if part.Builtin != nil && part.Builtin.Kind == ir.BuiltinCodeExecution {
+			var payload struct {
+				Language string `json:"language"`
+				Code     string `json:"code"`
+			}
+			_ = json.Unmarshal(part.Builtin.Input, &payload)
+			return []wirePart{{ExecutableCode: &wireExecutableCode{Language: payload.Language, Code: payload.Code}}}, nil
+		}
 		if part.Call != nil && len(part.Call.Arguments) > 0 {
-			// Represent as executable code for code execution results.
 			return []wirePart{{ExecutableCode: &wireExecutableCode{Code: string(part.Call.Arguments)}}}, nil
+		}
+		if err := env.Lose(ir.LossBuiltinActivity, p, "builtin call not supported by Gemini"); err != nil {
+			return nil, err
 		}
 		return nil, nil
 
 	case ir.PartBuiltinResult:
+		if part.Builtin != nil && part.Builtin.Kind == ir.BuiltinCodeExecution {
+			outcome := "OUTCOME_OK"
+			if part.Builtin.Error != "" {
+				outcome = part.Builtin.Error
+			}
+			return []wirePart{{CodeExecutionResult: &wireCodeExecutionResult{Outcome: outcome, Output: part.Builtin.Content}}}, nil
+		}
 		if part.Result != nil {
 			text := toolResultText(part.Result.Content)
 			return []wirePart{{CodeExecutionResult: &wireCodeExecutionResult{
 				Outcome: "OUTCOME_OK",
 				Output:  text,
 			}}}, nil
+		}
+		if err := env.Lose(ir.LossBuiltinActivity, p, "builtin result not supported by Gemini"); err != nil {
+			return nil, err
 		}
 		return nil, nil
 
