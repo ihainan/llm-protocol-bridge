@@ -793,3 +793,137 @@ func TestCodexReviewFixes_CrossFormatTamperNilEnvNextRoundDoneRepairMultiCandCus
 		}
 	})
 }
+
+func TestCodexReviewR2P2Fixes(t *testing.T) {
+	// P2 #1: Explicit empty custom_tool_call_input.done clears previous delta in Collector and Stats.
+	t.Run("empty_custom_input_done_clears_old_delta", func(t *testing.T) {
+		req := []byte(`{"model":"m1","stream":true,"input":"hi"}`)
+		p, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, req, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		col := p.NewCollector()
+		evs := []sse.Event{
+			{Name: "response.created", Data: []byte(`{"type":"response.created","response":{"id":"r1","model":"m1","status":"in_progress"}}`)},
+			{Name: "response.output_item.added", Data: []byte(`{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_c","name":"run"}}`)},
+			{Name: "response.custom_tool_call_input.delta", Data: []byte(`{"type":"response.custom_tool_call_input.delta","output_index":0,"delta":"old"}`)},
+			{Name: "response.custom_tool_call_input.done", Data: []byte(`{"type":"response.custom_tool_call_input.done","output_index":0,"input":""}`)},
+			{Name: "response.output_item.done", Data: []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_c","name":"run","status":"completed"}}`)},
+			{Name: "response.completed", Data: []byte(`{"type":"response.completed","response":{"id":"r1","model":"m1","status":"completed"}}`)},
+		}
+		var out []byte
+		for _, ev := range evs {
+			out, err = col.Feed(out, ev)
+			if err != nil {
+				t.Fatalf("Feed %s: %v", ev.Name, err)
+			}
+		}
+		if _, err = col.End(out, ir.EndDone); err != nil {
+			t.Fatalf("End: %v", err)
+		}
+		_, irResp, err := col.Result()
+		if err != nil {
+			t.Fatalf("Result: %v", err)
+		}
+		if len(irResp.Outputs) == 0 || len(irResp.Outputs[0].Parts) == 0 || irResp.Outputs[0].Parts[0].Call == nil {
+			t.Fatalf("missing custom tool call in collected response: %+v", irResp)
+		}
+		if got := irResp.Outputs[0].Parts[0].Call.Input; got != "" {
+			t.Fatalf("expected empty custom tool input after empty input.done, got %q", got)
+		}
+		if col.Stats().Text != "run" {
+			t.Fatalf("expected Stats().Text == \"run\" after empty input.done, got %q", col.Stats().Text)
+		}
+	})
+
+	// P2 #2: Stats handles whitespace-normalized final arguments without mangling the string.
+	t.Run("stats_whitespace_normalized_arguments_done", func(t *testing.T) {
+		req := []byte(`{"model":"m1","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		p, err := bridge.Convert(ir.FormatAnthropic, ir.FormatResponses, req, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		st := p.NewStream()
+		evs := []sse.Event{
+			{Name: "response.created", Data: []byte(`{"type":"response.created","response":{"id":"r1","model":"m1","status":"in_progress"}}`)},
+			{Name: "response.output_item.added", Data: []byte(`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f"}}`)},
+			{Name: "response.function_call_arguments.delta", Data: []byte(`{"type":"response.function_call_arguments.delta","output_index":0,"delta":" {\"x\":"}`)},
+			{Name: "response.function_call_arguments.done", Data: []byte(`{"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"x\":1}"}`)},
+			{Name: "response.output_item.done", Data: []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f","status":"completed"}}`)},
+			{Name: "response.completed", Data: []byte(`{"type":"response.completed","response":{"id":"r1","model":"m1","status":"completed"}}`)},
+		}
+		var out []byte
+		for _, ev := range evs {
+			out, err = st.Feed(out, ev)
+			if err != nil {
+				t.Fatalf("Feed %s: %v", ev.Name, err)
+			}
+		}
+		if _, err = st.End(out, ir.EndDone); err != nil {
+			t.Fatalf("End: %v", err)
+		}
+		if got := st.Stats().Text; got != `f{"x":1}` {
+			t.Fatalf("expected Stats().Text == %q, got %q", `f{"x":1}`, got)
+		}
+	})
+
+	// P2 #3: Stats includes final reconciled tool name when Chat splits name across deltas.
+	t.Run("stats_includes_split_chat_tool_name", func(t *testing.T) {
+		req := []byte(`{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		p, err := bridge.Convert(ir.FormatChat, ir.FormatChat, req, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		st := p.NewStream()
+		chunks := []string{
+			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_","arguments":"{"}}]}}]}`,
+			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"weather","arguments":"}"}}]}}]}`,
+			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		}
+		var out []byte
+		for _, ch := range chunks {
+			out, err = st.Feed(out, sse.Event{Data: []byte(ch)})
+			if err != nil {
+				t.Fatalf("Feed: %v", err)
+			}
+		}
+		if _, err = st.End(out, ir.EndDone); err != nil {
+			t.Fatalf("End: %v", err)
+		}
+		if got := st.Stats().Text; got != `get_weather{}` {
+			t.Fatalf("expected Stats().Text == %q, got %q", `get_weather{}`, got)
+		}
+	})
+
+	// P2 #4: Unsigned bridge seal with FormatAnthropic origin is never forwarded as a native Anthropic wire signature.
+	t.Run("unsigned_seal_never_forwarded_as_native_anthropic_signature", func(t *testing.T) {
+		keyed := ir.NewSealCodec([]byte("anth-key"))
+		env := &ir.Env{ProviderID: "provA", Seal: keyed}
+		sealed := ir.SealUnsignedReasoning(env, ir.FormatAnthropic, ir.Origin{Format: ir.FormatAnthropic, Provider: "provA"}, "draft thought")
+		if !ir.IsSealed(sealed) {
+			t.Fatalf("expected lpb1 seal, got %q", sealed)
+		}
+		nextReq := []byte(`{
+			"model":"claude-test",
+			"max_tokens":128,
+			"messages":[
+				{"role":"user","content":"q1"},
+				{"role":"assistant","content":[
+					{"type":"thinking","thinking":"draft thought","signature":"` + sealed + `"},
+					{"type":"text","text":"a1"}
+				]},
+				{"role":"user","content":"q2"}
+			]
+		}`)
+		p, err := bridge.Convert(ir.FormatAnthropic, ir.FormatAnthropic, nextReq, bridge.Options{
+			ProviderID: "provA",
+			Seal:       keyed,
+		})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if strings.Contains(string(p.Body), sealed) || strings.Contains(string(p.Body), `"type":"thinking"`) {
+			t.Fatalf("unsigned bridge seal must NOT be forwarded as native Anthropic thinking signature: %s", p.Body)
+		}
+	})
+}

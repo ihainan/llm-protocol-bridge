@@ -19,12 +19,13 @@ type StreamDecoder struct {
 	hasToolCalls bool
 
 	// per-item state keyed by output_index
-	itemType    map[int]string // "message" | "function_call" | "custom_tool_call" | "reasoning"
-	callID      map[int]string
-	callName    map[int]string
-	callKind    map[int]ir.ToolKind
-	callArgs    map[int]*strings.Builder
-	toolStarted map[int]bool
+	itemType       map[int]string // "message" | "function_call" | "custom_tool_call" | "reasoning"
+	callID         map[int]string
+	callName       map[int]string
+	callKind       map[int]ir.ToolKind
+	callArgs       map[int]*strings.Builder
+	callFinalInput map[int]bool
+	toolStarted    map[int]bool
 }
 
 // NewStreamDecoder returns a Responses stream decoder.
@@ -35,15 +36,16 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 	}
 	env.Style = ir.StyleBracket
 	return &StreamDecoder{
-		env:         env,
-		dia:         opts.Dialect,
-		names:       opts.Names,
-		itemType:    map[int]string{},
-		callID:      map[int]string{},
-		callName:    map[int]string{},
-		callKind:    map[int]ir.ToolKind{},
-		callArgs:    map[int]*strings.Builder{},
-		toolStarted: map[int]bool{},
+		env:            env,
+		dia:            opts.Dialect,
+		names:          opts.Names,
+		itemType:       map[int]string{},
+		callID:         map[int]string{},
+		callName:       map[int]string{},
+		callKind:       map[int]ir.ToolKind{},
+		callArgs:       map[int]*strings.Builder{},
+		callFinalInput: map[int]bool{},
+		toolStarted:    map[int]bool{},
 	}
 }
 
@@ -255,6 +257,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 						})
 					}
 					delete(d.callArgs, idx)
+					delete(d.callFinalInput, idx)
 					break
 				}
 				if !d.toolStarted[idx] {
@@ -264,14 +267,22 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				}
 				var raw json.RawMessage
 				inp := se.Item.Input
-				if inp == "" && d.callArgs[idx] != nil {
+				hasFinal := se.Item.Input != ""
+				if !hasFinal && d.callFinalInput[idx] {
+					hasFinal = true
+					if d.callArgs[idx] != nil {
+						inp = d.callArgs[idx].String()
+					}
+				} else if !hasFinal && d.callArgs[idx] != nil && d.callArgs[idx].Len() > 0 {
 					inp = d.callArgs[idx].String()
+					hasFinal = true
 				}
-				if inp != "" {
+				if hasFinal {
 					raw, _ = jsonx.Marshal(inp)
 				}
 				out = append(out, ir.Event{Type: ir.EvToolEnd, Part: idx, ID: id, Arguments: raw})
 				delete(d.callArgs, idx)
+				delete(d.callFinalInput, idx)
 			case "reasoning":
 				if se.Item.EncryptedContent != "" {
 					data, _ := jsonx.Marshal(se.Item.EncryptedContent)
@@ -363,16 +374,17 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		}
 
 	case "response.custom_tool_call_input.done":
-		// Replace accumulated deltas with authoritative final input so
-		// output_item.done gets the complete input even if deltas were partial or
-		// output_item.done omits item.input.
+		// Replace accumulated deltas with authoritative final input (including
+		// explicit empty "") so output_item.done gets the exact final value even
+		// if deltas were partial or output_item.done omits item.input.
 		idx := se.OutputIndex
-		if se.Input != "" {
+		if se.Input != nil {
 			if d.callArgs[idx] == nil {
 				d.callArgs[idx] = &strings.Builder{}
 			}
 			d.callArgs[idx].Reset()
-			d.callArgs[idx].WriteString(se.Input)
+			d.callArgs[idx].WriteString(*se.Input)
+			d.callFinalInput[idx] = true
 		}
 
 	case "response.reasoning_summary_text.delta":

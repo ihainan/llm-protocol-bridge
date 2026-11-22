@@ -302,7 +302,7 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, nameMap
 		if sig == nil {
 			sig = part.Signature
 		}
-		if sig != nil && sig.Value != "" {
+		if sig != nil && !sig.Unsigned && sig.Value != "" {
 			if sig.Origin.Matches(ir.FormatGemini, env.ProviderID) {
 				wp.ThoughtSignature = sig.Value
 			} else if err := env.Lose(ir.LossReasoningSignature, p, "foreign reasoning signature dropped for Gemini"); err != nil {

@@ -226,6 +226,11 @@ type Reasoning struct {
 type Signature struct {
 	Value  string `json:"value"`
 	Origin Origin `json:"origin"`
+	// Unsigned marks a bridge-verified provenance envelope over originally
+	// unsigned reasoning (SealUnsigned), rather than a native issuer signature.
+	// Native upstreams (such as Anthropic or Gemini) must never receive it as a
+	// wire signature.
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // SealedKind names the kind of an opaque reasoning block.

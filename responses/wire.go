@@ -176,8 +176,8 @@ type wireStreamEvent struct {
 	Annotation *wireAnnotation `json:"annotation,omitempty"`
 	// function_call_arguments.delta / function_call_arguments.done
 	Arguments string `json:"arguments,omitempty"`
-	// custom_tool_call_input.delta
-	Input string `json:"input,omitempty"`
+	// custom_tool_call_input.delta / custom_tool_call_input.done
+	Input *string `json:"input,omitempty"`
 	// response.failed / error (top-level or nested)
 	Error   *wireError `json:"error,omitempty"`
 	Code    string     `json:"code,omitempty"`

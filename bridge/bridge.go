@@ -655,6 +655,14 @@ type streamToolKey struct {
 	id   string
 }
 
+type streamToolStat struct {
+	kind      ir.ToolKind
+	name      string
+	args      strings.Builder
+	finalArgs string
+	hasFinal  bool
+}
+
 // Stream is a live stream converter (decoder + filter pipeline + encoder).
 type Stream struct {
 	plan          *Plan
@@ -670,9 +678,9 @@ type Stream struct {
 	outText       strings.Builder
 	outToolCalls  int
 	outImages     int
-	toolCallsSeen map[streamToolKey]bool
-	toolArgsSeen  map[streamToolKey]int
-	toolKinds     map[streamToolKey]ir.ToolKind
+	toolStats     []*streamToolStat
+	toolStatMap   map[streamToolKey]*streamToolStat
+	lastToolStat  map[int]*streamToolStat
 	expectedCands int
 	finishedCands map[int]bool
 	done          bool
@@ -886,11 +894,33 @@ func (s *Stream) Usage() ir.Usage {
 // Stats returns the cumulative output text, tool-call count, and image count
 // observed from decoded upstream events across all rounds so far.
 func (s *Stream) Stats() StreamStats {
+	var sb strings.Builder
+	sb.WriteString(s.outText.String())
+	for _, ts := range s.toolStats {
+		sb.WriteString(ts.name)
+		if ts.hasFinal {
+			sb.WriteString(ts.finalArgs)
+		} else {
+			sb.WriteString(ts.args.String())
+		}
+	}
 	return StreamStats{
-		Text:      s.outText.String(),
+		Text:      sb.String(),
 		ToolCalls: s.outToolCalls,
 		Images:    s.outImages,
 	}
+}
+
+func (s *Stream) lookupToolStat(ev ir.Event) *streamToolStat {
+	if ev.ID != "" && s.toolStatMap != nil {
+		if ts := s.toolStatMap[streamToolKey{cand: ev.Index, id: ev.ID}]; ts != nil {
+			return ts
+		}
+	}
+	if s.lastToolStat != nil {
+		return s.lastToolStat[ev.Index]
+	}
+	return nil
 }
 
 func (s *Stream) recordOutputEvent(ev ir.Event) {
@@ -900,45 +930,57 @@ func (s *Stream) recordOutputEvent(ev ir.Event) {
 		s.outText.WriteString(ev.Text)
 	case ir.EvToolStart:
 		if ev.ID != "" {
-			if s.toolCallsSeen == nil {
-				s.toolCallsSeen = map[streamToolKey]bool{}
+			if s.toolStatMap == nil {
+				s.toolStatMap = map[streamToolKey]*streamToolStat{}
 			}
-			if s.toolCallsSeen[key] {
+			if existing := s.toolStatMap[key]; existing != nil {
+				if ev.Name != "" {
+					existing.name = ev.Name
+				}
+				if ev.Kind != "" {
+					existing.kind = ev.Kind
+				}
 				return
 			}
-			s.toolCallsSeen[key] = true
 		}
-		if s.toolKinds == nil {
-			s.toolKinds = map[streamToolKey]ir.ToolKind{}
+		ts := &streamToolStat{kind: ev.Kind, name: ev.Name}
+		s.toolStats = append(s.toolStats, ts)
+		if ev.ID != "" {
+			s.toolStatMap[key] = ts
 		}
-		s.toolKinds[key] = ev.Kind
+		if s.lastToolStat == nil {
+			s.lastToolStat = map[int]*streamToolStat{}
+		}
+		s.lastToolStat[ev.Index] = ts
 		s.outToolCalls++
-		s.outText.WriteString(ev.Name)
 	case ir.EvToolArgs:
 		if ev.Text != "" {
-			if s.toolArgsSeen == nil {
-				s.toolArgsSeen = map[streamToolKey]int{}
+			if ts := s.lookupToolStat(ev); ts != nil {
+				ts.args.WriteString(ev.Text)
+			} else {
+				s.outText.WriteString(ev.Text)
 			}
-			s.toolArgsSeen[key] += len(ev.Text)
-			s.outText.WriteString(ev.Text)
 		}
 	case ir.EvToolEnd:
+		ts := s.lookupToolStat(ev)
+		if ts == nil {
+			return
+		}
+		if ev.Name != "" {
+			ts.name = ev.Name
+		}
 		if len(ev.Arguments) == 0 {
 			return
 		}
 		finalText := string(ev.Arguments)
-		if s.toolKinds[key] == ir.ToolCustom {
+		if ts.kind == ir.ToolCustom {
 			var raw string
 			if json.Unmarshal(ev.Arguments, &raw) == nil {
 				finalText = raw
 			}
 		}
-		streamed := s.toolArgsSeen[key]
-		if streamed == 0 {
-			s.outText.WriteString(finalText)
-		} else if len(finalText) > streamed {
-			s.outText.WriteString(finalText[streamed:])
-		}
+		ts.finalArgs = finalText
+		ts.hasFinal = true
 	case ir.EvImage:
 		s.outImages++
 	}
@@ -1034,9 +1076,8 @@ func (s *Stream) NextRound(p *Plan) {
 	}
 	s.expectedCands = expected
 	s.finishedCands = map[int]bool{}
-	s.toolCallsSeen = nil
-	s.toolArgsSeen = nil
-	s.toolKinds = nil
+	s.toolStatMap = nil
+	s.lastToolStat = nil
 	s.done = false
 }
 

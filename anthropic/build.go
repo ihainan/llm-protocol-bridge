@@ -508,7 +508,7 @@ func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.Too
 			return nil, nil
 		}
 		if r.Text != "" {
-			if r.Signature != nil && r.Signature.Value != "" && r.Signature.Origin.Matches(ir.FormatAnthropic, env.ProviderID) {
+			if r.Signature != nil && !r.Signature.Unsigned && r.Signature.Value != "" && r.Signature.Origin.Matches(ir.FormatAnthropic, env.ProviderID) {
 				sig := r.Signature.Value
 				return []wireContentBlock{{Type: "thinking", Thinking: r.Text, Signature: &sig}}, nil
 			}

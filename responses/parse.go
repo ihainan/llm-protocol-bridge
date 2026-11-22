@@ -645,7 +645,7 @@ func parseReasoningItem(fields map[string]json.RawMessage, p ir.Path, env *ir.En
 				Reasoning: &ir.Reasoning{
 					ID:        id,
 					Text:      text,
-					Signature: &ir.Signature{Value: enc, Origin: origin},
+					Signature: &ir.Signature{Value: enc, Origin: origin, Unsigned: true},
 				},
 			}, nil
 		}
