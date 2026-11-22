@@ -29,8 +29,14 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// 1. Tools (filter when ToolChoiceAllowed is set)
-	if len(req.Builtins) > 0 {
-		return nil, b.env.Err(ir.Unsupported(ir.Root.Key("tools"), string(req.Builtins[0].Kind), "hosted builtin tools not supported by Chat Completions"))
+	for _, bt := range req.Builtins {
+		if bt.IsCachedWebSearch() {
+			if err := b.env.Lose(ir.LossCachedWebSearch, ir.Root.Key("tools"), "cached web_search (external_web_access: false) dropped for Chat Completions"); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		return nil, b.env.Err(ir.Unsupported(ir.Root.Key("tools"), string(bt.Kind), "hosted builtin tools not supported by Chat Completions"))
 	}
 	var allowedSet map[string]bool
 	if req.ToolChoice.Mode == ir.ToolChoiceAllowed {

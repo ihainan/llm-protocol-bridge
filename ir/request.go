@@ -332,6 +332,27 @@ type BuiltinTool struct {
 	Origin Format          `json:"origin,omitempty"`
 }
 
+// IsCachedWebSearch reports whether this hosted tool is a Responses cached
+// web_search hint (external_web_access: false), which design.md §9.8 marks as
+// droppable under LossCachedWebSearch.
+func (bt BuiltinTool) IsCachedWebSearch() bool {
+	if bt.Kind != BuiltinWebSearch {
+		return false
+	}
+	for _, src := range []json.RawMessage{bt.Raw, bt.Config} {
+		if len(src) == 0 {
+			continue
+		}
+		var obj struct {
+			ExternalWebAccess *bool `json:"external_web_access"`
+		}
+		if json.Unmarshal(src, &obj) == nil && obj.ExternalWebAccess != nil && !*obj.ExternalWebAccess {
+			return true
+		}
+	}
+	return false
+}
+
 // BuiltinActivity is a hosted tool call or its result in a conversation or reply.
 type BuiltinActivity struct {
 	Kind  BuiltinKind     `json:"kind"`

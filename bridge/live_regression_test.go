@@ -423,3 +423,53 @@ func extractWireToolCallID(t *testing.T, fmt ir.Format, stream bool, raw []byte)
 	}
 	return ""
 }
+
+// TestLiveRegression_CachedWebSearchDroppedForChat verifies design.md §9.8:
+// Responses web_search with external_web_access: false (sent by Codex CLI by
+// default) is droppable towards Chat Completions via ir.LossCachedWebSearch,
+// while active web_search (without external_web_access: false) remains unsupported.
+func TestLiveRegression_CachedWebSearchDroppedForChat(t *testing.T) {
+	cachedReq := []byte(`{
+		"model":"gpt-4.1-mini",
+		"input":"Reply with pong",
+		"tools":[{"type":"web_search","external_web_access":false}]
+	}`)
+
+	var losses []ir.Loss
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, cachedReq, bridge.Options{
+		OnLoss: func(l ir.Loss) { losses = append(losses, l) },
+	})
+	if err != nil {
+		t.Fatalf("Convert cached web_search -> chat failed: %v", err)
+	}
+	foundLoss := false
+	for _, l := range losses {
+		if l.Kind == ir.LossCachedWebSearch {
+			foundLoss = true
+		}
+	}
+	if !foundLoss {
+		t.Fatalf("expected LossCachedWebSearch, got losses=%v", losses)
+	}
+	if strings.Contains(string(plan.Body), "web_search") {
+		t.Fatalf("expected cached web_search to be omitted from chat body, got: %s", string(plan.Body))
+	}
+
+	// Explicitly denying LossCachedWebSearch must reject the request.
+	_, err = bridge.Convert(ir.FormatResponses, ir.FormatChat, cachedReq, bridge.Options{
+		Deny: ir.LossSet{ir.LossCachedWebSearch: true},
+	})
+	if err == nil {
+		t.Fatalf("expected error when LossCachedWebSearch is denied")
+	}
+
+	// Active web_search (external_web_access not false) must still be unsupported.
+	activeReq := []byte(`{
+		"model":"gpt-4.1-mini",
+		"input":"Reply with pong",
+		"tools":[{"type":"web_search"}]
+	}`)
+	if _, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, activeReq, bridge.Options{}); err == nil {
+		t.Fatalf("expected error for active web_search towards Chat Completions")
+	}
+}
