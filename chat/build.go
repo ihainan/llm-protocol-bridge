@@ -25,11 +25,25 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		losses: nil,
 	}
 
-	// 1. Tools
+	// 1. Tools (filter when ToolChoiceAllowed is set)
+	if len(req.Builtins) > 0 {
+		return nil, b.env.Err(ir.Unsupported(ir.Root.Key("tools"), string(req.Builtins[0].Kind), "hosted builtin tools not supported by Chat Completions"))
+	}
+	var allowedSet map[string]bool
+	if req.ToolChoice.Mode == ir.ToolChoiceAllowed {
+		allowedSet = map[string]bool{}
+		for _, ref := range req.ToolChoice.Allowed {
+			allowedSet[flattenToolName(ref.Namespace, ref.Name)] = true
+			allowedSet[ref.Name] = true
+		}
+	}
 	var wireTools []wireTool
 	if len(req.Tools) > 0 {
 		wireTools = make([]wireTool, 0, len(req.Tools))
 		for i, t := range req.Tools {
+			if allowedSet != nil && !allowedSet[flattenToolName(t.Namespace, t.Name)] && !allowedSet[t.Name] {
+				continue
+			}
 			fp := ir.Root.Key("tools").At(i)
 			wt, err := b.buildTool(t, fp)
 			if err != nil {
@@ -42,6 +56,13 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	// 2. Messages: instructions first, then the conversation.
 	var messages []wireMessage
 	if len(req.Instructions) > 0 {
+		for i, pt := range req.Instructions {
+			if pt.Cache != nil {
+				if err := b.env.Lose(ir.LossCacheMarker, ir.Root.Key("system").At(i).Key("cache_control"), "prompt cache markers not supported by Chat Completions"); err != nil {
+					return nil, err
+				}
+			}
+		}
 		role := "system"
 		if b.dia.DeveloperRole {
 			role = "developer"
@@ -192,7 +213,16 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if req.PromptCacheKey != "" {
 		out.Str("prompt_cache_key", req.PromptCacheKey)
 	}
-	// store is a Responses-API-only field; never emit it in Chat format.
+	if req.Store != nil {
+		if err := b.env.Lose(ir.LossRequestStore, ir.Root.Key("store"), "not supported by Chat Completions"); err != nil {
+			return nil, err
+		}
+	}
+	if len(req.Include) > 0 {
+		if err := b.env.Lose(ir.LossRequestInclude, ir.Root.Key("include"), "not supported by Chat Completions"); err != nil {
+			return nil, err
+		}
+	}
 
 	// passthrough (identity builds only, deterministic key order)
 	if req.Source == ir.FormatChat && len(req.Passthrough) > 0 {
@@ -249,6 +279,11 @@ func (b *built) buildTool(t ir.Tool, p ir.Path) (wireTool, error) {
 	ref := ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: kind}
 	b.names[wireName] = ref
 
+	if t.Cache != nil {
+		if err := b.env.Lose(ir.LossCacheMarker, p.Key("cache_control"), "tool cache markers not supported by Chat Completions"); err != nil {
+			return wireTool{}, err
+		}
+	}
 	params := t.Schema
 	if kind == ir.ToolCustom {
 		params = customToolSchema
@@ -301,6 +336,11 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 
 	for i, part := range m.Parts {
 		fp := p.Key("parts").At(i)
+		if part.Cache != nil {
+			if err := b.env.Lose(ir.LossCacheMarker, fp.Key("cache_control"), "prompt cache markers not supported by Chat Completions"); err != nil {
+				return nil, err
+			}
+		}
 		switch part.Type {
 		case ir.PartText:
 			contentParts = append(contentParts, wireContentPart{Type: "text", Text: part.Text})
@@ -547,7 +587,9 @@ func buildToolChoice(tc ir.ToolChoice, b *built) ([]byte, error) {
 		}
 		return jsonx.Marshal(wtc)
 	case ir.ToolChoiceAllowed:
-		// Chat does not have an allowed-only mode; fall back to auto.
+		if tc.AllowedMode == ir.ToolChoiceRequired {
+			return jsonRaw(`"required"`), nil
+		}
 		return jsonRaw(`"auto"`), nil
 	}
 	return nil, nil

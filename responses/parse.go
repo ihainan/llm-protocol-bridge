@@ -53,13 +53,29 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 		}
 	}
 
+	// Reject stateful/asynchronous Responses features that cannot be converted statelessly.
+	if v, ok := fields["conversation"]; ok && !jsonx.IsNull(v) {
+		return nil, env.Err(ir.Unsupported(p.Key("conversation"), "conversation", "stateful conversation is not supported"))
+	}
+	if v, ok := fields["background"]; ok && !jsonx.IsNull(v) {
+		if b, ok2 := jsonx.Bool(v); ok2 && b {
+			return nil, env.Err(ir.Unsupported(p.Key("background"), "background", "background execution is not supported"))
+		}
+	}
+
 	// input: string or array
 	if v, ok := fields["input"]; ok && !jsonx.IsNull(v) {
 		msgs, err := parseInput(v, p.Key("input"), env)
 		if err != nil {
 			return nil, err
 		}
-		req.Messages = msgs
+		// Extract leading system/developer messages into Instructions.
+		i := 0
+		for i < len(msgs) && (msgs[i].Role == ir.RoleSystem || msgs[i].Role == ir.RoleDeveloper) {
+			req.Instructions = append(req.Instructions, msgs[i].Parts...)
+			i++
+		}
+		req.Messages = msgs[i:]
 	}
 
 	// tools
@@ -268,6 +284,9 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message,
 			fields[kv.Key] = kv.Value
 		}
 		itemType, _ := jsonx.String(fields["type"])
+		if itemType == "" && fields["role"] != nil {
+			itemType = "message"
+		}
 
 		switch itemType {
 		case "message":
@@ -318,10 +337,11 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message,
 			}
 			c.parts = append(c.parts, part)
 
+		case "item_reference":
+			return nil, env.Err(ir.Unsupported(fp.Key("type"), "item_reference", "item_reference is not supported"))
+
 		default:
-			if err := env.UnknownParam(fp.Key("type")); err != nil {
-				return nil, err
-			}
+			return nil, env.Err(ir.Invalid(fp.Key("type"), "unknown input item type: "+itemType))
 		}
 	}
 	flush()
@@ -423,10 +443,7 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 		return ir.Part{Type: ir.PartFile, Media: media}, nil
 
 	default:
-		if err := env.UnknownParam(p.Key("type")); err != nil {
-			return ir.Part{}, err
-		}
-		return ir.TextPart(""), nil
+		return ir.Part{}, env.Err(ir.Invalid(p.Key("type"), "unknown content part type: "+partType))
 	}
 }
 
@@ -610,23 +627,73 @@ func parseTools(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Tool, []ir.Bu
 				return nil, nil, err
 			}
 			tools = append(tools, t)
-		case "web_search":
+		case "custom":
+			t, err := parseCustomTool(fields, fp, env)
+			if err != nil {
+				return nil, nil, err
+			}
+			tools = append(tools, t)
+		case "namespace":
+			nsName, _ := jsonx.String(fields["name"])
+			if nsName == "" {
+				return nil, nil, env.Err(ir.Invalid(fp.Key("name"), "namespace name is required"))
+			}
+			subRaw, ok := fields["tools"]
+			if !ok || jsonx.IsNull(subRaw) {
+				break
+			}
+			subTools, subBuiltins, err := parseTools(subRaw, fp.Key("tools"), env)
+			if err != nil {
+				return nil, nil, err
+			}
+			for j := range subTools {
+				subTools[j].Namespace = nsName
+			}
+			tools = append(tools, subTools...)
+			builtins = append(builtins, subBuiltins...)
+		case "web_search", "web_search_preview":
 			builtins = append(builtins, ir.BuiltinTool{
 				Kind:   ir.BuiltinWebSearch,
 				Origin: ir.FormatResponses,
 				Raw:    append(json.RawMessage(nil), elem...),
 			})
 		case "computer_use":
-			if err := env.Err(ir.Unsupported(fp.Key("type"), toolType, "computer_use tool")); err != nil {
-				return nil, nil, err
-			}
+			return nil, nil, env.Err(ir.Unsupported(fp.Key("type"), toolType, "computer_use tool"))
 		default:
-			if err := env.UnknownParam(fp.Key("type")); err != nil {
-				return nil, nil, err
-			}
+			return nil, nil, env.Err(ir.Unsupported(fp.Key("type"), toolType, "unsupported tool type: "+toolType))
 		}
 	}
 	return tools, builtins, nil
+}
+
+func parseCustomTool(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, error) {
+	name, _ := jsonx.String(fields["name"])
+	if name == "" {
+		return ir.Tool{}, env.Err(ir.Invalid(p.Key("name"), "custom tool name is required"))
+	}
+	desc, _ := jsonx.String(fields["description"])
+	t := ir.Tool{
+		Kind:        ir.ToolCustom,
+		Name:        name,
+		Description: desc,
+	}
+	if fv, ok := fields["format"]; ok && !jsonx.IsNull(fv) {
+		if kvs, err := jsonx.Object(fv); err == nil {
+			g := &ir.Grammar{}
+			for _, kv := range kvs {
+				switch kv.Key {
+				case "type":
+					g.Type, _ = jsonx.String(kv.Value)
+				case "syntax":
+					g.Syntax, _ = jsonx.String(kv.Value)
+				case "definition":
+					g.Definition, _ = jsonx.String(kv.Value)
+				}
+			}
+			t.Grammar = g
+		}
+	}
+	return t, nil
 }
 
 func parseFunctionTool(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, error) {
@@ -686,7 +753,39 @@ func parseToolChoice(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.ToolChoice
 			return ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: name}, nil
 		case "allowed_tools":
 			var allowed []ir.ToolRef
-			if v, ok := fields["allowed_tools"]; ok {
+			var allowedMode ir.ToolChoiceMode
+			if mv, ok := fields["mode"]; ok {
+				ms, _ := jsonx.String(mv)
+				switch ms {
+				case "auto":
+					allowedMode = ir.ToolChoiceAuto
+				case "required":
+					allowedMode = ir.ToolChoiceRequired
+				}
+			}
+			// Official schema: "tools": [{"type":"function","name":"..."}]
+			if v, ok := fields["tools"]; ok && !jsonx.IsNull(v) {
+				elems, ok2 := jsonx.Array(v)
+				if !ok2 {
+					return ir.ToolChoice{}, env.Err(ir.Invalid(p.Key("tools"), "must be an array"))
+				}
+				for _, e := range elems {
+					if kvs2, err := jsonx.Object(e); err == nil {
+						var ref ir.ToolRef
+						for _, kv2 := range kvs2 {
+							switch kv2.Key {
+							case "name":
+								ref.Name, _ = jsonx.String(kv2.Value)
+							case "namespace":
+								ref.Namespace, _ = jsonx.String(kv2.Value)
+							}
+						}
+						if ref.Name != "" {
+							allowed = append(allowed, ref)
+						}
+					}
+				}
+			} else if v, ok := fields["allowed_tools"]; ok {
 				elems, ok2 := jsonx.Array(v)
 				if !ok2 {
 					return ir.ToolChoice{}, env.Err(ir.Invalid(p.Key("allowed_tools"), "must be an array"))
@@ -698,7 +797,7 @@ func parseToolChoice(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.ToolChoice
 					}
 				}
 			}
-			return ir.ToolChoice{Mode: ir.ToolChoiceAllowed, Allowed: allowed}, nil
+			return ir.ToolChoice{Mode: ir.ToolChoiceAllowed, Allowed: allowed, AllowedMode: allowedMode}, nil
 		}
 		return ir.ToolChoice{}, env.Err(ir.Invalid(p.Key("type"), "unknown tool_choice type: "+tcType))
 	}

@@ -48,16 +48,74 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		return nil, err
 	}
 
-	// Tools.
-	var wireTools []wireTool
+	// Reject multiple candidates (Anthropic only produces 1 candidate).
+	if req.Candidates != nil && *req.Candidates > 1 {
+		return nil, env.Err(ir.Unsupported(ir.Root.Key("n"), "candidates", "Anthropic supports only a single candidate"))
+	}
+
+	// Tools (filtering by ToolChoiceAllowed if set) + Builtins.
+	var allowedSet map[string]bool
+	if req.ToolChoice.Mode == ir.ToolChoiceAllowed {
+		allowedSet = map[string]bool{}
+		for _, ref := range req.ToolChoice.Allowed {
+			allowedSet[ref.Name] = true
+		}
+	}
+	var rawTools []json.RawMessage
 	for i, t := range req.Tools {
+		if allowedSet != nil && !allowedSet[t.Name] {
+			continue
+		}
 		fp := ir.Root.Key("tools").At(i)
 		wt, err := buildTool(t, fp, dia, env)
 		if err != nil {
 			return nil, err
 		}
 		names[t.Name] = ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: t.Kind}
-		wireTools = append(wireTools, wt)
+		tb, err := jsonx.Marshal(wt)
+		if err != nil {
+			return nil, err
+		}
+		rawTools = append(rawTools, tb)
+	}
+	for i, bt := range req.Builtins {
+		fp := ir.Root.Key("tools").At(len(req.Tools) + i)
+		switch bt.Kind {
+		case ir.BuiltinWebSearch:
+			if bt.Origin == ir.FormatAnthropic && len(bt.Raw) > 0 {
+				rawTools = append(rawTools, bt.Raw)
+			} else {
+				tb, _ := jsonx.Marshal(map[string]any{"type": "web_search_20250305", "name": "web_search"})
+				rawTools = append(rawTools, tb)
+			}
+		case ir.BuiltinWebFetch:
+			if bt.Origin == ir.FormatAnthropic && len(bt.Raw) > 0 {
+				rawTools = append(rawTools, bt.Raw)
+			} else {
+				tb, _ := jsonx.Marshal(map[string]any{"type": "web_fetch_20250910", "name": "web_fetch"})
+				rawTools = append(rawTools, tb)
+			}
+		default:
+			return nil, env.Err(ir.Unsupported(fp, string(bt.Kind), "builtin tool not supported by Anthropic"))
+		}
+	}
+
+	// Structured output format.
+	var outputFormat map[string]any
+	if req.Output != nil {
+		switch req.Output.Type {
+		case ir.OutputJSONSchema:
+			outputFormat = map[string]any{
+				"type":   "json_schema",
+				"schema": json.RawMessage(req.Output.Schema),
+			}
+		case ir.OutputJSONObject:
+			return nil, env.Err(ir.Unsupported(ir.Root.Key("response_format"), "json_object", "Anthropic requires json_schema rather than json_object"))
+		case ir.OutputText, "":
+			// default text output
+		default:
+			return nil, env.Err(ir.Unsupported(ir.Root.Key("response_format"), string(req.Output.Type), "unsupported output format for Anthropic"))
+		}
 	}
 
 	// Tool choice. Emitted when ToolChoice.Mode is set, or when
@@ -108,8 +166,8 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	out.Raw("messages", msgsBytes)
 	out.Int("max_tokens", int64(maxTok))
 
-	if len(wireTools) > 0 {
-		tb, err := jsonx.Marshal(wireTools)
+	if len(rawTools) > 0 {
+		tb, err := jsonx.Marshal(rawTools)
 		if err != nil {
 			return nil, err
 		}
@@ -121,8 +179,15 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if thinkingRaw != nil {
 		out.Raw("thinking", thinkingRaw)
 	}
-	if adaptiveEffort != ir.EffortUnset {
-		ocBytes, _ := jsonx.Marshal(map[string]any{"effort": string(adaptiveEffort)})
+	if adaptiveEffort != ir.EffortUnset || outputFormat != nil {
+		oc := map[string]any{}
+		if adaptiveEffort != ir.EffortUnset {
+			oc["effort"] = string(adaptiveEffort)
+		}
+		if outputFormat != nil {
+			oc["format"] = outputFormat
+		}
+		ocBytes, _ := jsonx.Marshal(oc)
 		out.Raw("output_config", ocBytes)
 	}
 
@@ -197,6 +262,31 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if req.User != "" {
 		mb, _ := jsonx.Marshal(wireMetadata{UserID: req.User})
 		out.Raw("metadata", mb)
+	}
+	if len(req.Metadata) > 0 {
+		if err := env.Lose(ir.LossRequestMetadata, ir.Root.Key("metadata"), "arbitrary metadata map not supported by Anthropic"); err != nil {
+			return nil, err
+		}
+	}
+	if req.ServiceTier != "" {
+		if err := env.Lose(ir.LossRequestTier, ir.Root.Key("service_tier"), "not supported by Anthropic"); err != nil {
+			return nil, err
+		}
+	}
+	if req.PromptCacheKey != "" {
+		if err := env.Lose(ir.LossRequestCache, ir.Root.Key("prompt_cache_key"), "not supported by Anthropic"); err != nil {
+			return nil, err
+		}
+	}
+	if req.Store != nil {
+		if err := env.Lose(ir.LossRequestStore, ir.Root.Key("store"), "not supported by Anthropic"); err != nil {
+			return nil, err
+		}
+	}
+	if len(req.Include) > 0 {
+		if err := env.Lose(ir.LossRequestInclude, ir.Root.Key("include"), "not supported by Anthropic"); err != nil {
+			return nil, err
+		}
 	}
 
 	body := out.End()
@@ -305,6 +395,11 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 		if part.Media == nil {
 			return nil, nil
 		}
+		if part.Media.Detail != "" {
+			if err := env.Lose(ir.LossImageDetail, p.Key("detail"), "image detail not supported by Anthropic"); err != nil {
+				return nil, err
+			}
+		}
 		src, err := buildImageSource(part.Media, p, env)
 		if err != nil {
 			return nil, err
@@ -317,9 +412,19 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 		if part.Media == nil {
 			return nil, nil
 		}
-		src, err := buildImageSource(part.Media, p, env)
-		if err != nil {
-			return nil, err
+		var src *wireImageSource
+		var err error
+		if part.Media.Text != "" {
+			mt := part.Media.MediaType
+			if mt == "" {
+				mt = "text/plain"
+			}
+			src = &wireImageSource{Type: "text", MediaType: mt, Data: part.Media.Text}
+		} else {
+			src, err = buildImageSource(part.Media, p, env)
+			if err != nil {
+				return nil, err
+			}
 		}
 		b := wireContentBlock{
 			Type:    "document",
@@ -451,6 +556,11 @@ func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env) (wireTool, error)
 	if t.Name == "" {
 		return wireTool{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
+	if t.Strict != nil && *t.Strict && !dia.StrictTools {
+		if err := env.Lose(ir.LossToolStrict, p.Key("strict"), "strict tool schemas not supported by Anthropic dialect"); err != nil {
+			return wireTool{}, err
+		}
+	}
 	params := t.Schema
 	if jsonx.Absent(params) {
 		params = schema_emptyObj
@@ -475,6 +585,11 @@ func buildToolChoice(tc ir.ToolChoice, parallelToolCalls *bool, env *ir.Env) (js
 		return jsonx.Marshal(wireToolChoiceAny{Type: "any", DisableParallelToolUse: disableParallel})
 	case ir.ToolChoiceTool:
 		return jsonx.Marshal(wireToolChoiceTool{Type: "tool", Name: tc.Name, DisableParallelToolUse: disableParallel})
+	case ir.ToolChoiceAllowed:
+		if tc.AllowedMode == ir.ToolChoiceRequired {
+			return jsonx.Marshal(wireToolChoiceAny{Type: "any", DisableParallelToolUse: disableParallel})
+		}
+		return jsonx.Marshal(wireToolChoiceAuto{Type: "auto", DisableParallelToolUse: disableParallel})
 	case ir.ToolChoiceNone:
 		return jsonx.Marshal(map[string]any{"type": "none"})
 	}

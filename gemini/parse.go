@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
 	"github.com/ihainan/llm-protocol-bridge/internal/schema"
@@ -229,7 +230,17 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 				media.Data, _ = jsonx.String(kv.Value)
 			}
 		}
-		return ir.Part{Type: ir.PartImage, Media: media}, nil
+		pt := ir.PartFile
+		mt := strings.ToLower(media.MediaType)
+		switch {
+		case mt == "" || strings.HasPrefix(mt, "image/"):
+			pt = ir.PartImage
+		case strings.HasPrefix(mt, "audio/"):
+			pt = ir.PartAudio
+		case strings.HasPrefix(mt, "video/"):
+			pt = ir.PartVideo
+		}
+		return ir.Part{Type: pt, Media: media}, nil
 
 	case fields["fileData"] != nil:
 		kvs2, err := jsonx.Object(fields["fileData"])

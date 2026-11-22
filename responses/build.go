@@ -99,28 +99,31 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if req.MaxOutputTokens != nil {
 		out.Int("max_output_tokens", int64(*req.MaxOutputTokens))
 	}
+	// Responses API does not support seed, presence_penalty, frequency_penalty, logprobs, or stop.
 	if req.Seed != nil {
-		out.Int("seed", *req.Seed)
+		if err := env.Lose(ir.LossSamplingSeed, ir.Root.Key("seed"), "not supported by Responses API"); err != nil {
+			return nil, err
+		}
 	}
-	if req.PresencePenalty != nil {
-		out.Raw("presence_penalty", writeFloat(*req.PresencePenalty))
+	if req.PresencePenalty != nil && *req.PresencePenalty != 0 {
+		if err := env.Lose(ir.LossSamplingPenalty, ir.Root.Key("presence_penalty"), "not supported by Responses API"); err != nil {
+			return nil, err
+		}
 	}
-	if req.FrequencyPenalty != nil {
-		out.Raw("frequency_penalty", writeFloat(*req.FrequencyPenalty))
+	if req.FrequencyPenalty != nil && *req.FrequencyPenalty != 0 {
+		if err := env.Lose(ir.LossSamplingPenalty, ir.Root.Key("frequency_penalty"), "not supported by Responses API"); err != nil {
+			return nil, err
+		}
 	}
-	// logprobs is not supported by Responses API.
 	if req.Logprobs != nil && *req.Logprobs {
 		if err := env.Lose(ir.LossSamplingLogprobs, ir.Root.Key("logprobs"), "not supported by Responses API"); err != nil {
 			return nil, err
 		}
 	}
-
-	// stop.
-	if len(req.Stop) == 1 {
-		out.Str("stop", req.Stop[0])
-	} else if len(req.Stop) > 1 {
-		stopBytes, _ := jsonx.Marshal(req.Stop)
-		out.Raw("stop", stopBytes)
+	if len(req.Stop) > 0 {
+		if err := env.Lose(ir.LossStopLimit, ir.Root.Key("stop"), "not supported by Responses API"); err != nil {
+			return nil, err
+		}
 	}
 
 	// reasoning.
@@ -157,8 +160,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		out.Bool("store", *req.Store)
 	}
 
-	// previous_response_id.
+	// previous_response_id is valid only for Responses-to-Responses requests.
 	if req.PreviousResponseID != "" {
+		if req.Source != "" && req.Source != ir.FormatResponses {
+			return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id cannot be used across formats"))
+		}
 		out.Str("previous_response_id", req.PreviousResponseID)
 	}
 
@@ -200,11 +206,7 @@ func messageToItems(msg ir.Message, p ir.Path, env *ir.Env) ([]wireInputItem, er
 	case ir.RoleAssistant:
 		return assistantPartsToItems(msg.Parts, p, env)
 	case ir.RoleUser, ir.RoleSystem, ir.RoleDeveloper:
-		// System and developer mid-conversation become user messages.
-		role := "user"
-		if msg.Role == ir.RoleAssistant {
-			role = "assistant"
-		}
+		role := string(msg.Role)
 		contentParts, toolResults, err := userPartsToContent(msg.Parts, p, env)
 		if err != nil {
 			return nil, err
@@ -233,6 +235,11 @@ func userPartsToContent(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireContentP
 	var results []wireInputItem
 	for i, part := range parts {
 		fp := p.Key("parts").At(i)
+		if part.Cache != nil {
+			if err := env.Lose(ir.LossCacheMarker, fp.Key("cache_control"), "prompt cache markers not supported by Responses API"); err != nil {
+				return nil, nil, err
+			}
+		}
 		switch part.Type {
 		case ir.PartText:
 			content = append(content, wireContentPart{Type: "input_text", Text: part.Text})
@@ -318,6 +325,11 @@ func assistantPartsToItems(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireInput
 
 	for i, part := range parts {
 		fp := p.Key("parts").At(i)
+		if part.Cache != nil {
+			if err := env.Lose(ir.LossCacheMarker, fp.Key("cache_control"), "prompt cache markers not supported by Responses API"); err != nil {
+				return nil, err
+			}
+		}
 		switch part.Type {
 		case ir.PartText, ir.PartRefusal:
 			textParts = append(textParts, wireContentPart{Type: "output_text", Text: part.Text})
@@ -416,6 +428,18 @@ func buildTool(t ir.Tool, p ir.Path, env *ir.Env) (wireTool, error) {
 	if t.Name == "" {
 		return wireTool{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
+	if t.Cache != nil {
+		if err := env.Lose(ir.LossCacheMarker, p.Key("cache_control"), "tool cache markers not supported by Responses API"); err != nil {
+			return wireTool{}, err
+		}
+	}
+	if t.Kind == ir.ToolCustom {
+		return wireTool{
+			Type:        "custom",
+			Name:        t.Name,
+			Description: t.Description,
+		}, nil
+	}
 	wt := wireTool{
 		Type:        "function",
 		Name:        t.Name,
@@ -442,11 +466,19 @@ func buildToolChoice(tc ir.ToolChoice, env *ir.Env) (json.RawMessage, error) {
 		b, _ := jsonx.Marshal(map[string]any{"type": "function", "name": tc.Name})
 		return b, nil
 	case ir.ToolChoiceAllowed:
-		names := make([]string, len(tc.Allowed))
-		for i, ref := range tc.Allowed {
-			names[i] = ref.Name
+		mode := "auto"
+		if tc.AllowedMode == ir.ToolChoiceRequired {
+			mode = "required"
 		}
-		b, _ := jsonx.Marshal(map[string]any{"type": "allowed_tools", "allowed_tools": names})
+		tools := make([]map[string]any, 0, len(tc.Allowed))
+		for _, ref := range tc.Allowed {
+			entry := map[string]any{"type": "function", "name": ref.Name}
+			if ref.Namespace != "" {
+				entry["namespace"] = ref.Namespace
+			}
+			tools = append(tools, entry)
+		}
+		b, _ := jsonx.Marshal(map[string]any{"type": "allowed_tools", "mode": mode, "tools": tools})
 		return b, nil
 	}
 	return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), string(tc.Mode), "tool choice mode"))

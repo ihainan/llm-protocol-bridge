@@ -100,25 +100,37 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 			req.Stream = b
 
 		case "tools":
-			tools, err := parseTools(v, fp, env)
+			tools, builtins, err := parseTools(v, fp, env)
 			if err != nil {
 				return nil, err
 			}
 			req.Tools = tools
+			req.Builtins = builtins
 
 		case "tool_choice":
-			tc, err := parseToolChoice(v, fp, env)
+			tc, disableParallel, err := parseToolChoice(v, fp, env)
 			if err != nil {
 				return nil, err
 			}
 			req.ToolChoice = tc
+			if disableParallel != nil {
+				req.ParallelToolCalls = disableParallel
+			}
 
 		case "thinking":
 			rc, err := parseThinkingConfig(v, fp, env)
 			if err != nil {
 				return nil, err
 			}
+			if req.Reasoning != nil && req.Reasoning.Effort != ir.EffortUnset && rc.Effort == ir.EffortUnset {
+				rc.Effort = req.Reasoning.Effort
+			}
 			req.Reasoning = rc
+
+		case "output_config":
+			if err := parseOutputConfig(v, fp, req, env); err != nil {
+				return nil, err
+			}
 
 		case "metadata":
 			// Extract user_id.
@@ -431,6 +443,9 @@ func parseImageSource(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.Media, e
 		media.URL, _ = jsonx.String(fields["url"])
 	case "file":
 		media.FileID, _ = jsonx.String(fields["file_id"])
+	case "text":
+		media.MediaType, _ = jsonx.String(fields["media_type"])
+		media.Text, _ = jsonx.String(fields["data"])
 	default:
 		return nil, env.Err(ir.Invalid(p.Key("type"), "unknown source type: "+typ))
 	}
@@ -457,38 +472,60 @@ func parseCacheControl(raw json.RawMessage) *ir.CacheControl {
 	return cc
 }
 
-func parseTools(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Tool, error) {
+func parseTools(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Tool, []ir.BuiltinTool, error) {
 	if jsonx.IsNull(raw) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	elems, ok := jsonx.Array(raw)
 	if !ok {
-		return nil, env.Err(ir.Invalid(p, "must be an array"))
+		return nil, nil, env.Err(ir.Invalid(p, "must be an array"))
 	}
-	tools := make([]ir.Tool, 0, len(elems))
+	var tools []ir.Tool
+	var builtins []ir.BuiltinTool
 	for i, elem := range elems {
 		fp := p.At(i)
-		t, err := parseTool(elem, fp, env)
+		t, bt, err := parseTool(elem, fp, env)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		tools = append(tools, t)
+		if bt != nil {
+			builtins = append(builtins, *bt)
+		} else {
+			tools = append(tools, t)
+		}
 	}
-	return tools, nil
+	return tools, builtins, nil
 }
 
-func parseTool(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, error) {
+func parseTool(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, *ir.BuiltinTool, error) {
 	kvs, err := jsonx.Object(raw)
 	if err != nil {
-		return ir.Tool{}, env.Err(ir.Invalid(p, "must be an object"))
+		return ir.Tool{}, nil, env.Err(ir.Invalid(p, "must be an object"))
 	}
 	fields := map[string]json.RawMessage{}
 	for _, kv := range kvs {
 		fields[kv.Key] = kv.Value
 	}
+	typ, _ := jsonx.String(fields["type"])
+	switch {
+	case strings.HasPrefix(typ, "web_search"):
+		return ir.Tool{}, &ir.BuiltinTool{
+			Kind:   ir.BuiltinWebSearch,
+			Origin: ir.FormatAnthropic,
+			Raw:    append(json.RawMessage(nil), raw...),
+		}, nil
+	case strings.HasPrefix(typ, "web_fetch"):
+		return ir.Tool{}, &ir.BuiltinTool{
+			Kind:   ir.BuiltinWebFetch,
+			Origin: ir.FormatAnthropic,
+			Raw:    append(json.RawMessage(nil), raw...),
+		}, nil
+	case typ != "" && typ != "custom":
+		return ir.Tool{}, nil, env.Err(ir.Unsupported(p.Key("type"), typ, "unsupported Anthropic tool type"))
+	}
 	name, _ := jsonx.String(fields["name"])
 	if name == "" {
-		return ir.Tool{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
+		return ir.Tool{}, nil, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
 	desc, _ := jsonx.String(fields["description"])
 	inputSchema := fields["input_schema"]
@@ -502,35 +539,99 @@ func parseTool(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, error) {
 		Schema:      inputSchema,
 	}
 	t.Cache = parseCacheControl(fields["cache_control"])
-	return t, nil
+	if v, ok := fields["strict"]; ok {
+		if b, ok2 := jsonx.Bool(v); ok2 {
+			t.Strict = &b
+		}
+	}
+	return t, nil, nil
 }
 
-func parseToolChoice(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.ToolChoice, error) {
+func parseToolChoice(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.ToolChoice, *bool, error) {
 	if jsonx.IsNull(raw) {
-		return ir.ToolChoice{}, nil
+		return ir.ToolChoice{}, nil, nil
 	}
 	kvs, err := jsonx.Object(raw)
 	if err != nil {
-		return ir.ToolChoice{}, env.Err(ir.Invalid(p, "must be an object"))
+		return ir.ToolChoice{}, nil, env.Err(ir.Invalid(p, "must be an object"))
 	}
 	var typ, name string
+	var parallelPtr *bool
 	for _, kv := range kvs {
 		switch kv.Key {
 		case "type":
 			typ, _ = jsonx.String(kv.Value)
 		case "name":
 			name, _ = jsonx.String(kv.Value)
+		case "disable_parallel_tool_use":
+			if b, ok := jsonx.Bool(kv.Value); ok && b {
+				f := false
+				parallelPtr = &f
+			}
 		}
 	}
 	switch typ {
 	case "auto":
-		return ir.ToolChoice{Mode: ir.ToolChoiceAuto}, nil
+		return ir.ToolChoice{Mode: ir.ToolChoiceAuto}, parallelPtr, nil
 	case "any":
-		return ir.ToolChoice{Mode: ir.ToolChoiceRequired}, nil
+		return ir.ToolChoice{Mode: ir.ToolChoiceRequired}, parallelPtr, nil
 	case "tool":
-		return ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: name}, nil
+		return ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: name}, parallelPtr, nil
+	case "none":
+		return ir.ToolChoice{Mode: ir.ToolChoiceNone}, parallelPtr, nil
 	}
-	return ir.ToolChoice{}, env.Err(ir.Invalid(p.Key("type"), "unknown tool_choice type: "+typ))
+	return ir.ToolChoice{}, nil, env.Err(ir.Invalid(p.Key("type"), "unknown tool_choice type: "+typ))
+}
+
+func parseOutputConfig(raw json.RawMessage, p ir.Path, req *ir.Request, env *ir.Env) error {
+	if jsonx.IsNull(raw) {
+		return nil
+	}
+	kvs, err := jsonx.Object(raw)
+	if err != nil {
+		return env.Err(ir.Invalid(p, "must be an object"))
+	}
+	for _, kv := range kvs {
+		switch kv.Key {
+		case "effort":
+			s, ok := jsonx.String(kv.Value)
+			if !ok {
+				return env.Err(ir.Invalid(p.Key("effort"), "must be a string"))
+			}
+			eff, ok := ir.ParseEffort(s)
+			if !ok {
+				return env.Err(ir.Invalid(p.Key("effort"), "unrecognised effort: "+s))
+			}
+			if req.Reasoning == nil {
+				req.Reasoning = &ir.ReasoningConfig{}
+			}
+			req.Reasoning.Effort = eff
+		case "format":
+			fkvs, err := jsonx.Object(kv.Value)
+			if err != nil {
+				return env.Err(ir.Invalid(p.Key("format"), "must be an object"))
+			}
+			var ftype string
+			var fschema json.RawMessage
+			for _, fkv := range fkvs {
+				switch fkv.Key {
+				case "type":
+					ftype, _ = jsonx.String(fkv.Value)
+				case "schema":
+					fschema = append(json.RawMessage(nil), fkv.Value...)
+				}
+			}
+			switch ftype {
+			case "json_schema":
+				req.Output = &ir.OutputFormat{Type: ir.OutputJSONSchema, Schema: fschema}
+			case "text":
+				req.Output = &ir.OutputFormat{Type: ir.OutputText}
+			default:
+				return env.Err(ir.Invalid(p.Keys("format", "type"), "unknown output_config.format type: "+ftype))
+			}
+		}
+	}
+	return nil
 }
 
 func parseThinkingConfig(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.ReasoningConfig, error) {
@@ -548,6 +649,10 @@ func parseThinkingConfig(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.Reaso
 				rc.Mode = ir.ReasoningOn
 			case "disabled":
 				rc.Mode = ir.ReasoningOff
+			case "adaptive":
+				rc.Mode = ir.ReasoningAdaptive
+			default:
+				return nil, env.Err(ir.Invalid(p.Key("type"), "unknown thinking type: "+t))
 			}
 		case "budget_tokens":
 			n, ok := jsonx.Int(kv.Value)

@@ -110,6 +110,29 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if gc != nil {
 		wr.GenerationConfig = gc
 	}
+	if req.Source == ir.FormatGemini && req.Passthrough != nil {
+		if ss, ok := req.Passthrough["safetySettings"]; ok && !jsonx.IsNull(ss) {
+			var settings []wireSafetySetting
+			if json.Unmarshal(ss, &settings) == nil {
+				wr.SafetySettings = settings
+			}
+		}
+	}
+	if req.User != "" {
+		if err := env.Lose(ir.LossRequestUser, ir.Root.Key("user"), "not supported by Gemini"); err != nil {
+			return nil, err
+		}
+	}
+	if len(req.Metadata) > 0 {
+		if err := env.Lose(ir.LossRequestMetadata, ir.Root.Key("metadata"), "not supported by Gemini"); err != nil {
+			return nil, err
+		}
+	}
+	if req.ServiceTier != "" {
+		if err := env.Lose(ir.LossRequestTier, ir.Root.Key("service_tier"), "not supported by Gemini"); err != nil {
+			return nil, err
+		}
+	}
 
 	body, err := json.Marshal(wr)
 	if err != nil {
@@ -153,6 +176,11 @@ func irPartsToWireParts(parts []ir.Part, p ir.Path, env *ir.Env, dia Dialect, na
 }
 
 func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef, callNames map[string]string, inMessage bool) ([]wirePart, error) {
+	if part.Cache != nil {
+		if err := env.Lose(ir.LossCacheMarker, p.Key("cache_control"), "prompt cache markers not supported by Gemini"); err != nil {
+			return nil, err
+		}
+	}
 	switch part.Type {
 	case ir.PartText:
 		wp := wirePart{Text: part.Text}
@@ -198,6 +226,11 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 		if part.Media == nil {
 			return nil, nil
 		}
+		if part.Media.Detail != "" {
+			if err := env.Lose(ir.LossImageDetail, p.Key("detail"), "image detail not supported by Gemini"); err != nil {
+				return nil, err
+			}
+		}
 		if part.Media.URL != "" && dia.URLFileData {
 			return []wirePart{{FileData: &wireFileData{
 				MimeType: part.Media.MediaType,
@@ -218,9 +251,12 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 		}
 		return nil, env.Err(ir.Unsupported(p, "image", "image with no data or URL"))
 
-	case ir.PartFile:
+	case ir.PartFile, ir.PartAudio, ir.PartVideo:
 		if part.Media == nil {
 			return nil, nil
+		}
+		if part.Media.Text != "" {
+			return []wirePart{{Text: part.Media.Text}}, nil
 		}
 		if part.Media.URL != "" {
 			return []wirePart{{FileData: &wireFileData{
@@ -234,7 +270,7 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 				Data:     part.Media.Data,
 			}}}, nil
 		}
-		return nil, env.Err(ir.Unsupported(p, "file", "file with no data or URL"))
+		return nil, env.Err(ir.Unsupported(p, string(part.Type), "media with no data or URL"))
 
 	case ir.PartToolCall:
 		if part.Call == nil {
@@ -333,6 +369,16 @@ func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env) (wireFunctionDecl, err
 	if t.Name == "" {
 		return wireFunctionDecl{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
+	if t.Strict != nil && *t.Strict {
+		if err := env.Lose(ir.LossToolStrict, p.Key("strict"), "strict tool schemas not supported by Gemini"); err != nil {
+			return wireFunctionDecl{}, err
+		}
+	}
+	if t.Cache != nil {
+		if err := env.Lose(ir.LossCacheMarker, p.Key("cache_control"), "tool cache markers not supported by Gemini"); err != nil {
+			return wireFunctionDecl{}, err
+		}
+	}
 	d := wireFunctionDecl{
 		Name:        t.Name,
 		Description: t.Description,
@@ -393,8 +439,16 @@ func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGene
 		gc.CandidateCount = req.Candidates
 		any = true
 	}
+	const geminiMaxStop = 5
 	if len(req.Stop) > 0 {
-		gc.StopSequences = req.Stop
+		stops := req.Stop
+		if len(stops) > geminiMaxStop {
+			if err := env.Lose(ir.LossStopLimit, ir.Root.Key("stop"), "Gemini accepts at most 5 stop sequences; extras truncated"); err != nil {
+				return nil, err
+			}
+			stops = stops[:geminiMaxStop]
+		}
+		gc.StopSequences = stops
 		any = true
 	}
 	if req.Seed != nil {
