@@ -30,6 +30,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -80,6 +81,7 @@ type config struct {
 	upstreamKey    string
 	upstreamPath   string
 	extraHeaders   map[string]string
+	profile        *ir.ModelProfile
 }
 
 func configFromEnv() (*config, error) {
@@ -110,6 +112,15 @@ func configFromEnv() (*config, error) {
 		extra[name] = rest[idx+1:]
 	}
 
+	var profile *ir.ModelProfile
+	if rawProfile := strings.TrimSpace(os.Getenv("UPSTREAM_PROFILE_JSON")); rawProfile != "" {
+		var p ir.ModelProfile
+		if err := json.Unmarshal([]byte(rawProfile), &p); err != nil {
+			return nil, fmt.Errorf("UPSTREAM_PROFILE_JSON: %w", err)
+		}
+		profile = &p
+	}
+
 	return &config{
 		clientFormat:   clientFmt,
 		upstreamFormat: upstreamFmt,
@@ -117,6 +128,7 @@ func configFromEnv() (*config, error) {
 		upstreamKey:    os.Getenv("UPSTREAM_KEY"),
 		upstreamPath:   os.Getenv("UPSTREAM_PATH"),
 		extraHeaders:   extra,
+		profile:        profile,
 	}, nil
 }
 
@@ -150,7 +162,9 @@ func (cfg *config) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	convOpts := bridge.Options{}
+	convOpts := bridge.Options{
+		Profile: cfg.profile,
+	}
 	if cfg.clientFormat == ir.FormatGemini {
 		convOpts.Model, convOpts.Stream = parseGeminiRequestPath(r.URL.Path)
 		convOpts.AltSSE = r.URL.Query().Get("alt") == "sse"
