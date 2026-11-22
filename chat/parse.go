@@ -323,10 +323,11 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 				}
 			}
 		}
+		cleanID, _ := decodeChatCallID(env, toolCallID)
 		msg.Parts = []ir.Part{{
 			Type: ir.PartToolResult,
 			Result: &ir.ToolResult{
-				CallID:  toolCallID,
+				CallID:  cleanID,
 				IsError: false,
 				Content: parts,
 			},
@@ -508,6 +509,15 @@ func parseWireToolCalls(raw json.RawMessage, p ir.Path, env *ir.Env) ([]wireTool
 	return tcs, nil
 }
 
+func decodeChatCallID(env *ir.Env, id string) (string, *ir.Signature) {
+	if idx := strings.Index(id, "::"); idx >= 0 {
+		if rec, ok := env.Sealer().Unseal(id[idx+2:]); ok && rec.Kind == ir.SealSignature {
+			return id[:idx], &ir.Signature{Value: rec.Value, Origin: rec.Origin}
+		}
+	}
+	return id, nil
+}
+
 func wireToolCallToPart(tc wireToolCall, p ir.Path, env *ir.Env) (ir.Part, error) {
 	if tc.Function.Name == "" {
 		return ir.Part{}, env.Err(ir.Invalid(p, "tool_call missing function name"))
@@ -516,13 +526,15 @@ func wireToolCallToPart(tc wireToolCall, p ir.Path, env *ir.Env) (ir.Part, error
 	if s := strings.TrimSpace(tc.Function.Arguments); s != "" && s != "null" {
 		args = json.RawMessage(s)
 	}
+	cleanID, sig := decodeChatCallID(env, tc.ID)
 	return ir.Part{
 		Type: ir.PartToolCall,
 		Call: &ir.ToolCall{
-			ID:        tc.ID,
+			ID:        cleanID,
 			Name:      tc.Function.Name,
 			Kind:      ir.ToolFunction,
 			Arguments: args,
+			Signature: sig,
 		},
 	}, nil
 }

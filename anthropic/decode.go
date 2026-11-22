@@ -202,6 +202,10 @@ func stopFromAnthropic(reason, seq string) ir.Stop {
 		return ir.Stop{Reason: ir.StopToolUse, Raw: reason}
 	case "pause_turn":
 		return ir.Stop{Reason: ir.StopPauseTurn, Raw: reason}
+	case "refusal":
+		return ir.Stop{Reason: ir.StopRefusal, Raw: reason}
+	case "model_context_window_exceeded":
+		return ir.Stop{Reason: ir.StopContextWindow, Raw: reason}
 	}
 	return ir.Stop{Reason: ir.StopEndTurn, Raw: reason}
 }
@@ -268,6 +272,9 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 	if wr.Type == "error" {
 		e := ParseError(0, body)
 		return nil, e
+	}
+	if wr.Type == "" && wr.ID == "" && len(wr.Content) == 0 {
+		return nil, ir.Protocol("anthropic: response missing required fields")
 	}
 
 	resp := &ir.Response{ID: wr.ID, Model: wr.Model}

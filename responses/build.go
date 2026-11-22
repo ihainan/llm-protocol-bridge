@@ -83,6 +83,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		out.Bool("parallel_tool_calls", *req.ParallelToolCalls)
 	}
 
+	// Reject multiple candidates (Responses API supports a single candidate).
+	if req.Candidates != nil && *req.Candidates > 1 {
+		return nil, env.Err(ir.Unsupported(ir.Root.Key("n"), "candidates", "Responses API supports only a single candidate"))
+	}
+
 	// sampling.
 	if req.Temperature != nil {
 		out.Raw("temperature", writeFloat(*req.Temperature))
@@ -529,10 +534,11 @@ func buildTextFormat(of *ir.OutputFormat) (json.RawMessage, error) {
 	case ir.OutputJSONObject:
 		fmt = map[string]any{"type": "json_object"}
 	case ir.OutputJSONSchema:
-		m := map[string]any{"type": "json_schema"}
-		if of.Name != "" {
-			m["name"] = of.Name
+		name := of.Name
+		if name == "" {
+			name = "output"
 		}
+		m := map[string]any{"type": "json_schema", "name": name}
 		if len(of.Schema) > 0 {
 			m["schema"] = json.RawMessage(of.Schema)
 		}

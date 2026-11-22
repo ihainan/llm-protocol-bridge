@@ -48,6 +48,8 @@ type StreamEncoder struct {
 	textAccum   strings.Builder
 	argAccum    strings.Builder
 	reasonAccum strings.Builder
+	reasonEnc   string
+	reasonSig   *ir.Signature
 
 	outputs []map[string]any
 	stop    ir.Stop
@@ -162,18 +164,18 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		})
 
 	case ir.EvSignature:
-		// Responses reasoning signatures are carried via encrypted_content.
+		if ev.Signature != nil && e.openItemType == "reasoning" {
+			sig := *ev.Signature
+			e.reasonSig = &sig
+		}
 
 	case ir.EvSealed:
 		if ev.Sealed == nil {
 			break
 		}
 		dst = e.ensureStarted(dst)
-		dst = e.closeItem(dst)
-		e.outputIndex++
-		e.itemID = "rs_" + e.opts.Env.NewID("", 16)
 		var encStr string
-		if ev.Sealed.Kind == ir.SealedResponsesEncrypted {
+		if ev.Sealed.Kind == ir.SealedResponsesEncrypted && !needsResponsesSeal(ev.Sealed.Origin, e.opts.Env) {
 			_ = json.Unmarshal(ev.Sealed.Data, &encStr)
 		} else if ev.Sealed.Kind == ir.SealedAnthropicRedacted {
 			encStr = e.opts.Env.Sealer().Seal(ir.SealRecord{
@@ -188,6 +190,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 				Value:  string(ev.Sealed.Data),
 			})
 		}
+		// Attach to the currently open reasoning item rather than splitting into two items.
+		if e.openItemType == "reasoning" {
+			e.reasonEnc = encStr
+			break
+		}
+		dst = e.closeItem(dst)
+		e.outputIndex++
+		e.itemID = "rs_" + e.opts.Env.NewID("", 16)
 		item := map[string]any{
 			"type":              "reasoning",
 			"id":                e.itemID,
@@ -580,6 +590,20 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 			"summary": summary,
 			"status":  "completed",
 		}
+		enc := e.reasonEnc
+		if enc == "" && e.reasonSig != nil && e.reasonSig.Value != "" {
+			enc = e.opts.Env.Sealer().Seal(ir.SealRecord{
+				Origin: e.reasonSig.Origin,
+				Kind:   ir.SealSignature,
+				Value:  e.reasonSig.Value,
+				Text:   rtext,
+			})
+		}
+		if enc != "" {
+			doneItem["encrypted_content"] = enc
+		}
+		e.reasonEnc = ""
+		e.reasonSig = nil
 		e.outputs = append(e.outputs, doneItem)
 		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
 			"sequence_number": e.nextSeq(),
@@ -734,7 +758,7 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 			item.ID = "rs_" + env.NewID("", 16)
 		}
 		if p.Reasoning.Sealed != nil {
-			if p.Reasoning.Sealed.Kind == ir.SealedResponsesEncrypted {
+			if p.Reasoning.Sealed.Kind == ir.SealedResponsesEncrypted && !needsResponsesSeal(p.Reasoning.Sealed.Origin, env) {
 				var encStr string
 				_ = json.Unmarshal(p.Reasoning.Sealed.Data, &encStr)
 				item.EncryptedContent = encStr
@@ -744,8 +768,14 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 					Kind:   ir.SealRedacted,
 					Value:  string(p.Reasoning.Sealed.Data),
 				})
+			} else {
+				item.EncryptedContent = env.Sealer().Seal(ir.SealRecord{
+					Origin: p.Reasoning.Sealed.Origin,
+					Kind:   ir.SealEncrypted,
+					Value:  string(p.Reasoning.Sealed.Data),
+				})
 			}
-		} else if p.Reasoning.Signature != nil && p.Reasoning.Signature.Value != "" && !p.Reasoning.Signature.Origin.Matches(ir.FormatResponses, env.ProviderID) {
+		} else if p.Reasoning.Signature != nil && p.Reasoning.Signature.Value != "" && needsResponsesSeal(p.Reasoning.Signature.Origin, env) {
 			item.EncryptedContent = env.Sealer().Seal(ir.SealRecord{
 				Origin: p.Reasoning.Signature.Origin,
 				Kind:   ir.SealSignature,
@@ -804,6 +834,16 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 	default:
 		return nil, env.Err(ir.Unsupported(fp, string(p.Type), "part type not supported in Responses output"))
 	}
+}
+
+func needsResponsesSeal(origin ir.Origin, env *ir.Env) bool {
+	if origin.Format != ir.FormatResponses {
+		return true
+	}
+	if origin.Provider != "" {
+		return true
+	}
+	return env != nil && env.ProviderID != ""
 }
 
 func stopToResponsesStatus(s ir.Stop) string {

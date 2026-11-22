@@ -136,7 +136,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	case ir.EvSignature:
 		if ev.Signature != nil && e.openBlock >= 0 && e.openBlockType == "thinking" {
 			sigVal := ev.Signature.Value
-			if !ev.Signature.Origin.Matches(ir.FormatAnthropic, e.opts.Env.ProviderID) {
+			if needsAnthropicSeal(ev.Signature.Origin, e.opts.Env) {
 				sigVal = e.opts.Env.Sealer().Seal(ir.SealRecord{
 					Origin: ev.Signature.Origin,
 					Kind:   ir.SealSignature,
@@ -157,12 +157,16 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			idx := e.blockIdx
 			e.blockIdx++
 			var dataStr string
-			if ev.Sealed.Kind == ir.SealedAnthropicRedacted {
+			if ev.Sealed.Kind == ir.SealedAnthropicRedacted && !needsAnthropicSeal(ev.Sealed.Origin, e.opts.Env) {
 				_ = json.Unmarshal(ev.Sealed.Data, &dataStr)
 			} else {
+				sk := ir.SealEncrypted
+				if ev.Sealed.Kind == ir.SealedAnthropicRedacted {
+					sk = ir.SealRedacted
+				}
 				dataStr = e.opts.Env.Sealer().Seal(ir.SealRecord{
 					Origin: ev.Sealed.Origin,
-					Kind:   ir.SealEncrypted,
+					Kind:   sk,
 					Value:  string(ev.Sealed.Data),
 				})
 			}
@@ -487,6 +491,16 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 	return jsonx.Marshal(wr)
 }
 
+func needsAnthropicSeal(origin ir.Origin, env *ir.Env) bool {
+	if origin.Format != ir.FormatAnthropic {
+		return true
+	}
+	if origin.Provider != "" {
+		return true
+	}
+	return env != nil && env.ProviderID != ""
+}
+
 func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, error) {
 	if part.Type == ir.PartReasoning && part.Reasoning != nil {
 		r := part.Reasoning
@@ -494,7 +508,7 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 		if r.Text != "" {
 			sig := ""
 			if r.Signature != nil && r.Signature.Value != "" {
-				if r.Signature.Origin.Matches(ir.FormatAnthropic, env.ProviderID) {
+				if !needsAnthropicSeal(r.Signature.Origin, env) {
 					sig = r.Signature.Value
 				} else {
 					sig = env.Sealer().Seal(ir.SealRecord{
@@ -509,12 +523,16 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 		}
 		if r.Sealed != nil {
 			var dataStr string
-			if r.Sealed.Kind == ir.SealedAnthropicRedacted {
+			if r.Sealed.Kind == ir.SealedAnthropicRedacted && !needsAnthropicSeal(r.Sealed.Origin, env) {
 				_ = json.Unmarshal(r.Sealed.Data, &dataStr)
 			} else {
+				sk := ir.SealEncrypted
+				if r.Sealed.Kind == ir.SealedAnthropicRedacted {
+					sk = ir.SealRedacted
+				}
 				dataStr = env.Sealer().Seal(ir.SealRecord{
 					Origin: r.Sealed.Origin,
-					Kind:   ir.SealEncrypted,
+					Kind:   sk,
 					Value:  string(r.Sealed.Data),
 				})
 			}

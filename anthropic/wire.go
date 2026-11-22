@@ -84,6 +84,7 @@ type wireTool struct {
 	Name         string            `json:"name"`
 	Description  string            `json:"description,omitempty"`
 	InputSchema  json.RawMessage   `json:"input_schema"`
+	Strict       *bool             `json:"strict,omitempty"`
 	Type         string            `json:"type,omitempty"` // "custom" for custom tools
 	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
 }

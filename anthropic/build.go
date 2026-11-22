@@ -512,8 +512,13 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 			b.IsError = &isErr
 		}
 		return []wireContentBlock{b}, nil
+
+	case ir.PartBuiltinCall, ir.PartBuiltinResult:
+		return nil, nil
+
+	default:
+		return nil, env.Err(ir.Unsupported(p, string(part.Type), "part type not supported by Anthropic"))
 	}
-	return nil, nil
 }
 
 func buildImageSource(m *ir.Media, p ir.Path, env *ir.Env) (*wireImageSource, error) {
@@ -569,6 +574,9 @@ func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env) (wireTool, error)
 		Name:        t.Name,
 		Description: t.Description,
 		InputSchema: params,
+	}
+	if t.Strict != nil && dia.StrictTools {
+		wt.Strict = t.Strict
 	}
 	wt.CacheControl = irCacheToWire(t.Cache)
 	return wt, nil

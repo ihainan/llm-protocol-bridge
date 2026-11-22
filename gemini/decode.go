@@ -164,12 +164,16 @@ func (d *StreamDecoder) decodePart(out []ir.Event, part wirePart, idx int) []ir.
 		// Function responses come from user turns; they don't appear in model output.
 
 	case part.ExecutableCode != nil:
-		code := part.ExecutableCode.Code
-		out = append(out,
-			ir.Event{Type: ir.EvToolStart, Index: idx, Name: "code_execution", Kind: ir.ToolFunction},
-			ir.Event{Type: ir.EvToolArgs, Index: idx, Text: code},
-			ir.Event{Type: ir.EvToolEnd, Index: idx},
-		)
+		d.inThought[idx] = false
+		out = append(out, ir.Event{
+			Type:  ir.EvBuiltin,
+			Index: idx,
+			Builtin: &ir.BuiltinActivity{
+				Kind:   ir.BuiltinCodeExecution,
+				Input:  json.RawMessage(`{"code":` + jsonQuote(part.ExecutableCode.Code) + `}`),
+				Origin: ir.FormatGemini,
+			},
+		})
 
 	case part.CodeExecutionResult != nil:
 		// Code execution results show as text.
@@ -349,13 +353,11 @@ func geminiStop(reason string) ir.Stop {
 		return ir.Stop{Reason: ir.StopEndTurn, Raw: reason}
 	case "MAX_TOKENS":
 		return ir.Stop{Reason: ir.StopMaxTokens, Raw: reason}
-	case "SAFETY":
-		return ir.Stop{Reason: ir.StopContentFilter, Raw: reason}
-	case "RECITATION":
+	case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST", "IMAGE_SAFETY":
 		return ir.Stop{Reason: ir.StopContentFilter, Raw: reason}
 	case "TOOL_CALLS", "FUNCTION_CALL":
 		return ir.Stop{Reason: ir.StopToolUse, Raw: reason}
-	case "OTHER":
+	case "OTHER", "MALFORMED_FUNCTION_CALL":
 		return ir.Stop{Reason: ir.StopOther, Raw: reason}
 	}
 	return ir.Stop{Reason: ir.StopEndTurn, Raw: reason}

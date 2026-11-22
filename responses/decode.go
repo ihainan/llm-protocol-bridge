@@ -372,11 +372,14 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 			return nil, &ir.APIError{
 				Code:    wr.Error.Code,
 				Message: wr.Error.Message,
-				Type:    mapErrorType(wr.Error.Type),
+				Type:    refineType(mapErrorType(wr.Error.Type), wr.Error.Code, wr.Error.Message),
 				Raw:     append([]byte(nil), body...),
 			}
 		}
 		return nil, &ir.APIError{Type: ir.ErrServer, Message: "response failed", Raw: append([]byte(nil), body...)}
+	}
+	if wr.ID == "" && wr.Object == "" && len(wr.Output) == 0 {
+		return nil, ir.Protocol("responses: response missing required fields")
 	}
 
 	resp := &ir.Response{

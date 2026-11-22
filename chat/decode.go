@@ -95,17 +95,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 
 	// Error in the chunk body.
 	if chunk.Error != nil && chunk.Error.Message != "" {
-		e := &ir.APIError{
-			Status:  0,
-			Type:    ir.TypeForStatus(0),
-			Message: chunk.Error.Message,
-			Code:    stringOrEmpty(chunk.Error.Code),
-			Param:   chunk.Error.Param,
-			Raw:     append([]byte(nil), ev.Data...),
-		}
-		if chunk.Error.Type != "" {
-			e.Type = mapErrorType(chunk.Error.Type)
-		}
+		e := ParseError(0, ev.Data)
 		out = append(out, ir.Event{Type: ir.EvError, Err: e})
 		d.terminal = true
 		return out, nil
@@ -195,6 +185,38 @@ func (d *StreamDecoder) decodeChoice(out []ir.Event, ci int, ch wireStreamChoice
 	return out
 }
 
+func (d *StreamDecoder) emitOpenCallStart(out []ir.Event, ci, idx int, call *openCall) []ir.Event {
+	if call.started {
+		return out
+	}
+	call.started = true
+	if call.id == "" {
+		call.id = d.env.NewID("call_", 16)
+	}
+	name := call.nameBuilt.String()
+	ns := ""
+	kind := ir.ToolFunction
+	if ref, ok := d.names[name]; ok {
+		name = ref.Name
+		ns = ref.Namespace
+		if ref.Kind != "" {
+			kind = ref.Kind
+		}
+	}
+	call.name = name
+	call.namespace = ns
+	call.kind = kind
+	return append(out, ir.Event{
+		Type:      ir.EvToolStart,
+		Index:     ci,
+		Part:      idx,
+		ID:        call.id,
+		Name:      name,
+		Namespace: ns,
+		Kind:      kind,
+	})
+}
+
 func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolCall) []ir.Event {
 	cand := d.candidates[ci]
 	if cand == nil {
@@ -219,37 +241,12 @@ func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolC
 		call.nameBuilt.WriteString(tc.Function.Name)
 	}
 
-	if !call.started {
-		call.started = true
-		if call.id == "" {
-			call.id = d.env.NewID("call_", 16)
-		}
-		name := call.nameBuilt.String()
-		ns := ""
-		kind := ir.ToolFunction
-		if ref, ok := d.names[name]; ok {
-			name = ref.Name
-			ns = ref.Namespace
-			if ref.Kind != "" {
-				kind = ref.Kind
-			}
-		}
-		call.name = name
-		call.namespace = ns
-		call.kind = kind
-		out = append(out, ir.Event{
-			Type:      ir.EvToolStart,
-			Index:     ci,
-			Part:      idx,
-			ID:        call.id,
-			Name:      name,
-			Namespace: ns,
-			Kind:      kind,
-		})
-	}
-
-	// Accumulate argument fragments.
+	// Defer EvToolStart until arguments arrive (so multi-chunk names such as
+	// "" -> "web_" -> "search" are fully assembled before Intercept / encoders see it).
 	if tc.Function.Arguments != "" {
+		if !call.started {
+			out = d.emitOpenCallStart(out, ci, idx, call)
+		}
 		call.argsBuilt.WriteString(tc.Function.Arguments)
 		out = append(out, ir.Event{
 			Type:  ir.EvToolArgs,
@@ -274,7 +271,7 @@ func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []
 		for _, idx := range idxs {
 			call := cand.toolCalls[idx]
 			if !call.started {
-				continue
+				out = d.emitOpenCallStart(out, ci, idx, call)
 			}
 			argsStr := strings.TrimSpace(call.argsBuilt.String())
 			var argsRaw json.RawMessage

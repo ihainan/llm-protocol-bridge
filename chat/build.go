@@ -33,15 +33,14 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if req.ToolChoice.Mode == ir.ToolChoiceAllowed {
 		allowedSet = map[string]bool{}
 		for _, ref := range req.ToolChoice.Allowed {
-			allowedSet[flattenToolName(ref.Namespace, ref.Name)] = true
-			allowedSet[ref.Name] = true
+			allowedSet[ref.Namespace+"\x00"+ref.Name] = true
 		}
 	}
 	var wireTools []wireTool
 	if len(req.Tools) > 0 {
 		wireTools = make([]wireTool, 0, len(req.Tools))
 		for i, t := range req.Tools {
-			if allowedSet != nil && !allowedSet[flattenToolName(t.Namespace, t.Name)] && !allowedSet[t.Name] {
+			if allowedSet != nil && !allowedSet[t.Namespace+"\x00"+t.Name] {
 				continue
 			}
 			fp := ir.Root.Key("tools").At(i)

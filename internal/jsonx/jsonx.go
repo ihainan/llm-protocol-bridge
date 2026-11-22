@@ -119,9 +119,16 @@ func Float(raw []byte) (float64, bool) {
 	return f, err == nil
 }
 
-// Int decodes a JSON integer (a number with an integral value).
+// Int decodes a JSON integer (a number with an integral value), preserving int64 precision.
 func Int(raw []byte) (int64, bool) {
-	f, ok := Float(raw)
+	b := bytes.TrimSpace(raw)
+	if len(b) == 0 {
+		return 0, false
+	}
+	if n, err := strconv.ParseInt(string(b), 10, 64); err == nil {
+		return n, true
+	}
+	f, ok := Float(b)
 	if !ok || f != float64(int64(f)) {
 		return 0, false
 	}

@@ -90,11 +90,40 @@ func parseContents(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, e
 		return nil, env.Err(ir.Invalid(p, "must be an array"))
 	}
 	msgs := make([]ir.Message, 0, len(elems))
+	// Correlate ID-less functionCall / functionResponse pairs deterministically by name.
+	pendingByName := map[string][]string{}
 	for i, elem := range elems {
 		fp := p.At(i)
 		msg, err := parseContent(elem, fp, env)
 		if err != nil {
 			return nil, err
+		}
+		if msg.Role == ir.RoleAssistant {
+			callIdx := 0
+			for j := range msg.Parts {
+				if msg.Parts[j].Type == ir.PartToolCall && msg.Parts[j].Call != nil {
+					c := msg.Parts[j].Call
+					if c.ID == "" {
+						c.ID = ir.DeterministicCallID(i, callIdx, c.Name, c.Arguments)
+					}
+					callIdx++
+					if c.Name != "" {
+						pendingByName[c.Name] = append(pendingByName[c.Name], c.ID)
+					}
+				}
+			}
+		} else if msg.Role == ir.RoleUser {
+			for j := range msg.Parts {
+				if msg.Parts[j].Type == ir.PartToolResult && msg.Parts[j].Result != nil {
+					r := msg.Parts[j].Result
+					if r.CallID == "" && r.Name != "" {
+						if q := pendingByName[r.Name]; len(q) > 0 {
+							r.CallID = q[0]
+							pendingByName[r.Name] = q[1:]
+						}
+					}
+				}
+			}
 		}
 		msgs = append(msgs, msg)
 	}
@@ -458,7 +487,7 @@ func parseFunctionCallingConfig(raw json.RawMessage, p ir.Path, env *ir.Env) (ir
 			for i, n := range allowed {
 				refs[i] = ir.ToolRef{Name: n}
 			}
-			return ir.ToolChoice{Mode: ir.ToolChoiceAllowed, Allowed: refs}, nil
+			return ir.ToolChoice{Mode: ir.ToolChoiceAllowed, Allowed: refs, AllowedMode: ir.ToolChoiceRequired}, nil
 		}
 		return ir.ToolChoice{Mode: ir.ToolChoiceRequired}, nil
 	}

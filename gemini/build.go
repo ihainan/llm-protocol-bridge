@@ -399,7 +399,11 @@ func buildToolConfig(tc ir.ToolChoice, env *ir.Env) (*wireToolConfig, error) {
 	case ir.ToolChoiceRequired:
 		cfg.FunctionCallingConfig.Mode = "ANY"
 	case ir.ToolChoiceAllowed:
-		cfg.FunctionCallingConfig.Mode = "ANY"
+		if tc.AllowedMode == ir.ToolChoiceAuto {
+			cfg.FunctionCallingConfig.Mode = "AUTO"
+		} else {
+			cfg.FunctionCallingConfig.Mode = "ANY"
+		}
 		for _, ref := range tc.Allowed {
 			cfg.FunctionCallingConfig.AllowedFunctionNames = append(
 				cfg.FunctionCallingConfig.AllowedFunctionNames, ref.Name)

@@ -194,7 +194,7 @@ func (cfg *config) handleRequest(w http.ResponseWriter, r *http.Request) {
 		cfg.handleNonStream(w, resp, plan)
 		return
 	}
-	cfg.handleStream(w, resp, plan)
+	cfg.handleStream(w, resp, plan, convOpts.AltSSE)
 }
 
 func (cfg *config) handleNonStream(w http.ResponseWriter, resp *http.Response, plan *bridge.Plan) {
@@ -221,7 +221,7 @@ func (cfg *config) handleNonStream(w http.ResponseWriter, resp *http.Response, p
 	w.Write(out)
 }
 
-func (cfg *config) handleStream(w http.ResponseWriter, resp *http.Response, plan *bridge.Plan) {
+func (cfg *config) handleStream(w http.ResponseWriter, resp *http.Response, plan *bridge.Plan, altSSE bool) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		st, errBody := plan.ConvertError(resp.StatusCode, body)
@@ -231,7 +231,11 @@ func (cfg *config) handleStream(w http.ResponseWriter, resp *http.Response, plan
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
+	if cfg.clientFormat == ir.FormatGemini && !altSSE {
+		w.Header().Set("Content-Type", "application/json")
+	} else {
+		w.Header().Set("Content-Type", "text/event-stream")
+	}
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)

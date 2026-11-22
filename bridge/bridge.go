@@ -123,6 +123,23 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 		repairHistory(req, opts.Repair)
 	}
 	env := upstreamEnv(opts, upstream)
+	env.Style = ir.StyleFor(client)
+
+	// Reject stateful previous_response_id across non-Responses upstreams.
+	if req.PreviousResponseID != "" && upstream != ir.FormatResponses {
+		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported for Responses-to-Responses requests"))
+	}
+
+	// When StopEmulate is enabled against Responses (which has no native stop param),
+	// tolerate the stop.limit loss during request build so the local filter enforces stops.
+	if opts.StopMode == ir.StopEmulate && upstream == ir.FormatResponses {
+		allow := ir.LossSet{}
+		for k, v := range env.Allow {
+			allow[k] = v
+		}
+		allow[ir.LossStopLimit] = true
+		env.Allow = allow
+	}
 	var body []byte
 	var model string
 	var stream bool
@@ -203,6 +220,7 @@ func (p *Plan) ConvertResponse(body []byte) ([]byte, *ir.Response, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	irResp = applyResponseFilters(irResp, p)
 
 	clientEnv := clientEnv(p.opts, p.Client)
 	encOpts := encodeOptions(p, clientEnv)
@@ -241,25 +259,60 @@ func (p *Plan) ConvertResponse(body []byte) ([]byte, *ir.Response, error) {
 
 // StreamResponse converts a non-streaming upstream response body to a streaming client response.
 func (p *Plan) StreamResponse(dst, body []byte) ([]byte, error) {
-	out, irResp, err := p.ConvertResponse(body)
+	_, irResp, err := p.ConvertResponse(body)
 	if err != nil {
 		return nil, err
 	}
-	_ = irResp
-	// Re-encode as a stream using EventsOf.
+	// Re-encode as a stream using EventsOf (irResp already has response filters applied).
 	evs := ir.EventsOf(irResp)
 	env := clientEnv(p.opts, p.Client)
 	encOpts := encodeOptions(p, env)
 	s := newStreamWithEncoder(p, encOpts)
 	for _, ev := range evs {
-		dst, err = s.enc.Encode(dst, ev)
-		if err != nil {
-			return dst, err
+		for _, fe := range s.filter.process(ev) {
+			dst, err = s.enc.Encode(dst, fe)
+			if err != nil {
+				return dst, err
+			}
 		}
 	}
 	dst, err = s.enc.Close(dst)
-	_ = out
 	return dst, err
+}
+
+func applyResponseFilters(resp *ir.Response, p *Plan) *ir.Response {
+	if resp == nil {
+		return nil
+	}
+	ro := effectiveReasoningOut(p)
+	if ro == ir.ReasoningOutNative {
+		return resp
+	}
+	cp := *resp
+	cp.Outputs = make([]ir.Output, len(resp.Outputs))
+	for i, o := range resp.Outputs {
+		oc := o
+		var parts []ir.Part
+		for _, pt := range o.Parts {
+			if pt.Type == ir.PartReasoning {
+				if ro == ir.ReasoningOutHidden {
+					continue
+				}
+				if ro == ir.ReasoningOutSummary && pt.Reasoning != nil {
+					rc := *pt.Reasoning
+					if len(rc.Summary) == 0 && rc.Text != "" {
+						rc.Summary = []string{rc.Text}
+						rc.Text = ""
+					}
+					pt.Reasoning = &rc
+				}
+			}
+			parts = append(parts, pt)
+		}
+		oc.Parts = parts
+		cp.Outputs[i] = oc
+	}
+	return &cp
 }
 
 // ConvertError converts an upstream error to a client error response.
@@ -448,7 +501,7 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 
 // End signals how the upstream ended and flushes any final client bytes.
 func (s *Stream) End(dst []byte, how ir.EndKind) ([]byte, error) {
-	if !s.filter.stopTriggered {
+	if !s.filter.anyStopTriggered() {
 		if ev := s.dec.End(how); ev != nil {
 			for _, e := range s.filter.process(*ev) {
 				if e.Type == ir.EvError || e.Type == ir.EvStop {

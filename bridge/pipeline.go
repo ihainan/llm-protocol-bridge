@@ -42,9 +42,13 @@ type streamFilter struct {
 	reasoning  ir.ReasoningOut
 	intercept  map[string]bool
 
+	// Response-level state (persists across NextRound).
+	totalCalls    int
+	deliveredCall map[int]bool
+
 	// Per-round state (reset by NextRound).
 	stopBuf       map[int]string
-	stopTriggered bool
+	stopTriggered map[int]bool
 	errored       bool
 
 	calls         map[string]*bufferedToolCall
@@ -54,8 +58,23 @@ type streamFilter struct {
 	bufferedBytes int
 	liveUsed      bool
 	postCallEvs   map[int][]ir.Event
-	deliveredCall map[int]bool
 	intercepted   []ir.ToolCall
+}
+
+func effectiveReasoningOut(p *Plan) ir.ReasoningOut {
+	if p == nil {
+		return ir.ReasoningOutNative
+	}
+	if p.opts.Reasoning != ir.ReasoningOutNative {
+		return p.opts.Reasoning
+	}
+	if p.opts.Profile != nil && p.Request != nil {
+		res := p.opts.Profile.Resolve(p.Request.Reasoning)
+		if res.Off && (p.opts.Profile.Off.Mode == ir.OffLowestHidden || p.opts.Profile.Off.Mode == ir.OffPatch) {
+			return ir.ReasoningOutHidden
+		}
+	}
+	return ir.ReasoningOutNative
 }
 
 func newStreamFilter(p *Plan) *streamFilter {
@@ -97,15 +116,16 @@ func newStreamFilter(p *Plan) *streamFilter {
 		}
 	}
 	f := &streamFilter{
-		client:     p.Client,
-		release:    rel,
-		maxCalls:   maxCalls,
-		maxBytes:   maxBytes,
-		stopMode:   p.opts.StopMode,
-		stops:      stops,
-		maxStopLen: maxStopLen,
-		reasoning:  p.opts.Reasoning,
-		intercept:  ic,
+		client:        p.Client,
+		release:       rel,
+		maxCalls:      maxCalls,
+		maxBytes:      maxBytes,
+		stopMode:      p.opts.StopMode,
+		stops:         stops,
+		maxStopLen:    maxStopLen,
+		reasoning:     effectiveReasoningOut(p),
+		intercept:     ic,
+		deliveredCall: map[int]bool{},
 	}
 	f.resetRound()
 	return f
@@ -113,7 +133,7 @@ func newStreamFilter(p *Plan) *streamFilter {
 
 func (f *streamFilter) resetRound() {
 	f.stopBuf = map[int]string{}
-	f.stopTriggered = false
+	f.stopTriggered = map[int]bool{}
 	f.calls = map[string]*bufferedToolCall{}
 	f.callOrder = nil
 	f.lastCallKey = map[int]string{}
@@ -121,8 +141,16 @@ func (f *streamFilter) resetRound() {
 	f.bufferedBytes = 0
 	f.liveUsed = false
 	f.postCallEvs = map[int][]ir.Event{}
-	f.deliveredCall = map[int]bool{}
 	f.intercepted = nil
+}
+
+func (f *streamFilter) anyStopTriggered() bool {
+	for _, v := range f.stopTriggered {
+		if v {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *streamFilter) isIntercepted(name string) bool {
@@ -135,10 +163,7 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 	if f.errored {
 		return nil
 	}
-	if f.stopTriggered {
-		if ev.Type == ir.EvUsage {
-			return []ir.Event{ev}
-		}
+	if ev.Type != ir.EvStart && ev.Type != ir.EvUsage && ev.Type != ir.EvError && f.stopTriggered[ev.Index] {
 		return nil
 	}
 
@@ -163,7 +188,16 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		if f.reasoning == ir.ReasoningOutSummary && ev.Type == ir.EvReasoning {
 			ev.Summary = true
 		}
-		return []ir.Event{ev}
+		var out []ir.Event
+		if ev.Type == ir.EvReasoningStart || ev.Type == ir.EvReasoning {
+			out = append(out, f.flushStopBuf(ev.Index)...)
+		}
+		out = append(out, ev)
+		if f.hasPendingCalls(ev.Index) {
+			f.postCallEvs[ev.Index] = append(f.postCallEvs[ev.Index], out...)
+			return nil
+		}
+		return out
 
 	case ir.EvText:
 		var out []ir.Event
@@ -172,9 +206,9 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		} else {
 			out = []ir.Event{ev}
 		}
-		// If a call is currently buffered for this candidate and we didn't trigger stop,
-		// preserve text order relative to buffered calls.
-		if !f.stopTriggered && f.hasBufferedCalls(ev.Index) {
+		// Keep text/reasoning queued while buffered or unvalidated LiveFirst calls are pending
+		// so encoders never prematurely close/complete a live tool item before EvStop validation.
+		if !f.stopTriggered[ev.Index] && f.hasPendingCalls(ev.Index) {
 			f.postCallEvs[ev.Index] = append(f.postCallEvs[ev.Index], out...)
 			return nil
 		}
@@ -185,7 +219,8 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		out = append(out, f.flushStopBuf(ev.Index)...)
 
 		f.callSeq++
-		if f.callSeq > f.maxCalls {
+		f.totalCalls++
+		if f.totalCalls > f.maxCalls {
 			return f.fail(ev.Index, "tool call limit exceeded")
 		}
 		key := ev.ID
@@ -248,19 +283,20 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 			return nil
 		}
 		if len(ev.Arguments) > 0 {
-			if len(ev.Arguments) > f.maxBytes {
+			f.bufferedBytes += len(ev.Arguments)
+			if f.bufferedBytes > f.maxBytes {
 				return f.fail(ev.Index, "buffered tool call byte limit exceeded")
 			}
 			bc.finalArgs = append(json.RawMessage(nil), ev.Arguments...)
 		}
 		bc.closed = true
 		if bc.live && f.release == ir.ToolReleaseStream {
-			finalArgs, _, errMsg := bc.validate()
-			if errMsg != "" {
-				return f.fail(ev.Index, errMsg)
+			// Defer JSON error reporting until EvStop so max_tokens truncation is not turned into 502.
+			if finalArgs, _, errMsg := bc.validate(); errMsg == "" {
+				ev.Arguments = finalArgs
+				return []ir.Event{ev}
 			}
-			ev.Arguments = finalArgs
-			return []ir.Event{ev}
+			return nil
 		}
 		return nil
 
@@ -294,12 +330,12 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		}
 		var vals []validated
 		for _, bc := range candCalls {
-			if bc.live && bc.closed && f.release == ir.ToolReleaseStream {
-				continue
-			}
 			args, cin, errMsg := bc.validate()
 			if errMsg != "" {
 				return f.fail(ev.Index, errMsg)
+			}
+			if bc.live && bc.closed && f.release == ir.ToolReleaseStream {
+				continue
 			}
 			vals = append(vals, validated{bc: bc, finalArgs: args, customIn: cin})
 		}
@@ -381,11 +417,14 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 func (f *streamFilter) processStopText(ev ir.Event) []ir.Event {
 	buf := f.stopBuf[ev.Index] + ev.Text
 	bestPos := -1
+	bestEnd := -1
 	bestSeq := ""
 	for _, seq := range f.stops {
 		if idx := strings.Index(buf, seq); idx >= 0 {
-			if bestPos < 0 || idx < bestPos || (idx == bestPos && len(seq) > len(bestSeq)) {
+			end := idx + len(seq)
+			if bestEnd < 0 || end < bestEnd || (end == bestEnd && idx < bestPos) {
 				bestPos = idx
+				bestEnd = end
 				bestSeq = seq
 			}
 		}
@@ -398,7 +437,7 @@ func (f *streamFilter) processStopText(ev ir.Event) []ir.Event {
 		f.stopBuf[ev.Index] = ""
 		f.clearCandidateCalls(ev.Index)
 		delete(f.postCallEvs, ev.Index)
-		f.stopTriggered = true
+		f.stopTriggered[ev.Index] = true
 		st := ir.Stop{Reason: ir.StopSequence, Sequence: bestSeq}
 		out = append(out, ir.Event{Type: ir.EvStop, Index: ev.Index, Stop: &st})
 		return out
@@ -406,7 +445,14 @@ func (f *streamFilter) processStopText(ev ir.Event) []ir.Event {
 
 	// Keep at most maxStopLen - 1 trailing bytes, aligned to a valid UTF-8 rune boundary.
 	keep := f.maxStopLen - 1
-	if keep <= 0 || len(buf) <= keep {
+	if keep <= 0 {
+		f.stopBuf[ev.Index] = ""
+		if buf == "" {
+			return nil
+		}
+		return []ir.Event{{Type: ir.EvText, Index: ev.Index, Text: buf}}
+	}
+	if len(buf) <= keep {
 		f.stopBuf[ev.Index] = buf
 		return nil
 	}
@@ -431,9 +477,12 @@ func (f *streamFilter) flushStopBuf(candIdx int) []ir.Event {
 	return nil
 }
 
-func (f *streamFilter) hasBufferedCalls(candIdx int) bool {
+func (f *streamFilter) hasPendingCalls(candIdx int) bool {
+	if f.release == ir.ToolReleaseStream {
+		return false
+	}
 	for _, bc := range f.calls {
-		if bc.candIdx == candIdx && !bc.live && !bc.intercepted {
+		if bc.candIdx == candIdx && !bc.intercepted {
 			return true
 		}
 	}
@@ -583,6 +632,15 @@ func repairHistory(req *ir.Request, repair ir.RepairSet) {
 			}
 			msgs[i].Parts = parts
 		}
+		// Drop any user message that became empty after removing duplicate tool results.
+		nonEmpty := msgs[:0]
+		for _, m := range msgs {
+			if m.Role == ir.RoleUser && len(m.Parts) == 0 {
+				continue
+			}
+			nonEmpty = append(nonEmpty, m)
+		}
+		msgs = nonEmpty
 	}
 
 	// 4. synthesize_missing_results

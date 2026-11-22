@@ -43,23 +43,22 @@ func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
 func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	switch ev.Type {
 	case ir.EvStart:
-		e.id = ev.ID
-		if e.id == "" {
-			e.id = "chatcmpl-" + e.opts.Env.NewID("", 24)
-		}
-		e.model = e.opts.Model
-		if e.model == "" && ev.Model != "" {
-			e.model = ev.Model
-		}
-		e.created = e.opts.Env.Now().Unix()
-
 		if ev.Usage != nil {
 			e.usage.Merge(*ev.Usage)
 		}
-
-		// Emit the role chunk.
+		// Keep response identity stable across multi-round continuations (NextRound).
 		if !e.started {
 			e.started = true
+			e.id = ev.ID
+			if e.id == "" {
+				e.id = "chatcmpl-" + e.opts.Env.NewID("", 24)
+			}
+			e.model = e.opts.Model
+			if e.model == "" && ev.Model != "" {
+				e.model = ev.Model
+			}
+			e.created = e.opts.Env.Now().Unix()
+
 			chunk := e.baseChunk(0)
 			chunk["choices"] = []map[string]any{{
 				"index":         0,
@@ -100,10 +99,11 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.lastCallID[ev.Index] = ev.ID
 		e.lastCallSlot[ev.Index] = idx
 		wireName := flattenToolName(ev.Namespace, ev.Name)
+		wireID := encodeChatCallID(e.opts.Env, ev.ID, ev.Signature)
 		chunk := e.baseChunk(ev.Index)
 		tc := map[string]any{
 			"index": idx,
-			"id":    ev.ID,
+			"id":    wireID,
 			"type":  "function",
 			"function": map[string]any{
 				"name":      wireName,
@@ -264,7 +264,7 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 
 	choices := make([]wireChoice, 0, len(resp.Outputs))
 	for _, out := range resp.Outputs {
-		wm := buildAssistantMessage(out.Parts)
+		wm := buildAssistantMessage(out.Parts, env)
 		choices = append(choices, wireChoice{
 			Index:        out.Index,
 			Message:      wm,
@@ -286,8 +286,20 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 	return jsonx.Marshal(wr)
 }
 
+func encodeChatCallID(env *ir.Env, id string, sig *ir.Signature) string {
+	if sig != nil && sig.Value != "" && sig.Origin.Format == ir.FormatGemini {
+		sealed := env.Sealer().Seal(ir.SealRecord{
+			Origin: sig.Origin,
+			Kind:   ir.SealSignature,
+			Value:  sig.Value,
+		})
+		return id + "::" + sealed
+	}
+	return id
+}
+
 // buildAssistantMessage converts output parts to a wireMessage.
-func buildAssistantMessage(parts []ir.Part) wireMessage {
+func buildAssistantMessage(parts []ir.Part, env *ir.Env) wireMessage {
 	wm := wireMessage{Role: "assistant"}
 	var textParts []wireContentPart
 	var toolCalls []wireToolCall
@@ -314,7 +326,7 @@ func buildAssistantMessage(parts []ir.Part) wireMessage {
 					args = "{}"
 				}
 				tc := wireToolCall{
-					ID:   p.Call.ID,
+					ID:   encodeChatCallID(env, p.Call.ID, p.Call.Signature),
 					Type: "function",
 					Function: wireFunctionCall{
 						Name:      flattenToolName(p.Call.Namespace, p.Call.Name),
