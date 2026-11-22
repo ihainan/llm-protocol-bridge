@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -151,3 +152,36 @@ func TextSum(text string) string {
 
 // IsSealed reports whether s looks like an envelope of the default format.
 func IsSealed(s string) bool { return strings.HasPrefix(s, sealPrefix) }
+
+// CustomToolWrapperSchema is the standard JSON Schema used to expose a freeform
+// custom tool to formats that only support JSON-schema function tools (design.md §9.2.1).
+var CustomToolWrapperSchema = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string","description":"The raw input for this tool, exactly in the format the tool description requires."}},"required":["input"]}`)
+
+// AssignToolWireName flattens a tool's namespace/name, resolves collisions with
+// _2/_3 suffixes, records the reverse mapping in names, and returns the wire name
+// plus the updated description (with [<namespace>] prefix and optional grammar note).
+func AssignToolWireName(names map[string]ToolRef, t Tool) (wireName, desc string) {
+	base := t.Name
+	if t.Namespace != "" {
+		base = t.Namespace + "__" + t.Name
+	}
+	wireName = base
+	for n := 2; ; n++ {
+		if _, exists := names[wireName]; !exists {
+			break
+		}
+		wireName = base + "_" + strconv.Itoa(n)
+	}
+	if names != nil {
+		names[wireName] = ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: t.Kind}
+	}
+	desc = t.Description
+	if t.Namespace != "" && !strings.HasPrefix(desc, "["+t.Namespace+"] ") {
+		if desc == "" {
+			desc = "[" + t.Namespace + "]"
+		} else {
+			desc = "[" + t.Namespace + "] " + desc
+		}
+	}
+	return wireName, desc
+}

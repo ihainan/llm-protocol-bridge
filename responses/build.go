@@ -41,11 +41,10 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		var rawTools []json.RawMessage
 		for i, t := range req.Tools {
 			fp := ir.Root.Key("tools").At(i)
-			wt, err := buildTool(t, fp, env)
+			wt, err := buildTool(t, fp, env, names)
 			if err != nil {
 				return nil, err
 			}
-			names[t.Name] = ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: t.Kind}
 			tb, err := jsonx.Marshal(wt)
 			if err != nil {
 				return nil, err
@@ -440,7 +439,7 @@ func assistantPartsToItems(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireInput
 	return items, nil
 }
 
-func buildTool(t ir.Tool, p ir.Path, env *ir.Env) (wireTool, error) {
+func buildTool(t ir.Tool, p ir.Path, env *ir.Env, names map[string]ir.ToolRef) (wireTool, error) {
 	if t.Name == "" {
 		return wireTool{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
@@ -449,17 +448,30 @@ func buildTool(t ir.Tool, p ir.Path, env *ir.Env) (wireTool, error) {
 			return wireTool{}, err
 		}
 	}
+	wireName, desc := ir.AssignToolWireName(names, t)
 	if t.Kind == ir.ToolCustom {
-		return wireTool{
+		wt := wireTool{
 			Type:        "custom",
-			Name:        t.Name,
-			Description: t.Description,
-		}, nil
+			Name:        wireName,
+			Description: desc,
+		}
+		if t.Grammar != nil && (t.Grammar.Type != "" || t.Grammar.Syntax != "" || t.Grammar.Definition != "") {
+			gt := t.Grammar.Type
+			if gt == "" {
+				gt = "grammar"
+			}
+			wt.Format = &wireCustomFormat{
+				Type:       gt,
+				Syntax:     t.Grammar.Syntax,
+				Definition: t.Grammar.Definition,
+			}
+		}
+		return wt, nil
 	}
 	wt := wireTool{
 		Type:        "function",
-		Name:        t.Name,
-		Description: t.Description,
+		Name:        wireName,
+		Description: desc,
 	}
 	if len(t.Schema) > 0 {
 		wt.Parameters = t.Schema
@@ -488,7 +500,11 @@ func buildToolChoice(tc ir.ToolChoice, env *ir.Env) (json.RawMessage, error) {
 		}
 		tools := make([]map[string]any, 0, len(tc.Allowed))
 		for _, ref := range tc.Allowed {
-			entry := map[string]any{"type": "function", "name": ref.Name}
+			typ := "function"
+			if ref.Kind == ir.ToolCustom {
+				typ = "custom"
+			}
+			entry := map[string]any{"type": typ, "name": ref.Name}
 			if ref.Namespace != "" {
 				entry["namespace"] = ref.Namespace
 			}

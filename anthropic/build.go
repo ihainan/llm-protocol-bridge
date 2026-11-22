@@ -65,20 +65,19 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if req.ToolChoice.Mode == ir.ToolChoiceAllowed {
 		allowedSet = map[string]bool{}
 		for _, ref := range req.ToolChoice.Allowed {
-			allowedSet[ref.Name] = true
+			allowedSet[ref.Namespace+"\x00"+ref.Name] = true
 		}
 	}
 	var rawTools []json.RawMessage
 	for i, t := range req.Tools {
-		if allowedSet != nil && !allowedSet[t.Name] {
+		if allowedSet != nil && !allowedSet[t.Namespace+"\x00"+t.Name] {
 			continue
 		}
 		fp := ir.Root.Key("tools").At(i)
-		wt, err := buildTool(t, fp, dia, env)
+		wt, err := buildTool(t, fp, dia, env, names)
 		if err != nil {
 			return nil, err
 		}
-		names[t.Name] = ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: t.Kind}
 		tb, err := jsonx.Marshal(wt)
 		if err != nil {
 			return nil, err
@@ -568,7 +567,7 @@ func buildContentBlocks(parts []ir.Part, env *ir.Env) (json.RawMessage, error) {
 	return b, err
 }
 
-func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env) (wireTool, error) {
+func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env, names map[string]ir.ToolRef) (wireTool, error) {
 	if t.Name == "" {
 		return wireTool{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
@@ -577,13 +576,24 @@ func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env) (wireTool, error)
 			return wireTool{}, err
 		}
 	}
+	wireName, desc := ir.AssignToolWireName(names, t)
 	params := t.Schema
-	if jsonx.Absent(params) {
+	if t.Kind == ir.ToolCustom {
+		params = ir.CustomToolWrapperSchema
+		if t.Grammar != nil && t.Grammar.Definition != "" {
+			note := "Input grammar (" + t.Grammar.Syntax + "): " + t.Grammar.Definition
+			if desc == "" {
+				desc = note
+			} else {
+				desc += "\n" + note
+			}
+		}
+	} else if jsonx.Absent(params) {
 		params = schema_emptyObj
 	}
 	wt := wireTool{
-		Name:        t.Name,
-		Description: t.Description,
+		Name:        wireName,
+		Description: desc,
 		InputSchema: params,
 	}
 	if t.Strict != nil && dia.StrictTools {

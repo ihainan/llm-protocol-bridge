@@ -15,8 +15,7 @@ type wireInputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	// function_call_output fields
-	Output  json.RawMessage `json:"output,omitempty"`
-	IsError *bool           `json:"is_error,omitempty"`
+	Output json.RawMessage `json:"output,omitempty"`
 	// reasoning fields
 	ID               string          `json:"id,omitempty"`
 	Summary          json.RawMessage `json:"summary,omitempty"`
@@ -47,13 +46,18 @@ type wireContentPart struct {
 // wireTool is one tool definition.
 type wireTool struct {
 	Type string `json:"type"` // function | web_search | custom
-	// function fields
-	Name        string          `json:"name,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
-	Strict      *bool           `json:"strict,omitempty"`
-	// web_search fields
-	WebSearchOptions json.RawMessage `json:"web_search_options,omitempty"`
+	// function / custom fields
+	Name        string            `json:"name,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Parameters  json.RawMessage   `json:"parameters,omitempty"`
+	Strict      *bool             `json:"strict,omitempty"`
+	Format      *wireCustomFormat `json:"format,omitempty"`
+}
+
+type wireCustomFormat struct {
+	Type       string `json:"type,omitempty"`
+	Syntax     string `json:"syntax,omitempty"`
+	Definition string `json:"definition,omitempty"`
 }
 
 // wireResponse is the non-streaming response body.

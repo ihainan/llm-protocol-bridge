@@ -21,6 +21,8 @@ type StreamEncoder struct {
 	callIdxBy    map[int]int
 	callSlots    map[int]map[string]int
 	callHasArgs  map[int]map[string]bool
+	callKind     map[int]map[string]ir.ToolKind
+	customOpened map[int]map[string]bool
 	lastCallID   map[int]string
 	lastCallSlot map[int]int
 	usage        ir.Usage
@@ -33,6 +35,8 @@ func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
 		callIdxBy:    map[int]int{},
 		callSlots:    map[int]map[string]int{},
 		callHasArgs:  map[int]map[string]bool{},
+		callKind:     map[int]map[string]ir.ToolKind{},
+		customOpened: map[int]map[string]bool{},
 		lastCallID:   map[int]string{},
 		lastCallSlot: map[int]int{},
 	}
@@ -115,10 +119,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if e.callSlots[ev.Index] == nil {
 			e.callSlots[ev.Index] = map[string]int{}
 			e.callHasArgs[ev.Index] = map[string]bool{}
+			e.callKind[ev.Index] = map[string]ir.ToolKind{}
+			e.customOpened[ev.Index] = map[string]bool{}
 		}
+		key := ev.ID
 		if ev.ID != "" {
 			e.callSlots[ev.Index][ev.ID] = idx
 		}
+		e.callKind[ev.Index][key] = ev.Kind
 		e.lastCallID[ev.Index] = ev.ID
 		e.lastCallSlot[ev.Index] = idx
 		wireName := flattenToolName(ev.Namespace, ev.Name)
@@ -145,14 +153,29 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		if e.callHasArgs[ev.Index] == nil {
 			e.callHasArgs[ev.Index] = map[string]bool{}
 		}
-		if ev.Text != "" {
+		argDelta := ev.Text
+		if e.callKind[ev.Index] != nil && e.callKind[ev.Index][key] == ir.ToolCustom {
+			if e.customOpened[ev.Index] == nil {
+				e.customOpened[ev.Index] = map[string]bool{}
+			}
+			var sb strings.Builder
+			if !e.customOpened[ev.Index][key] {
+				e.customOpened[ev.Index][key] = true
+				sb.WriteString(`{"input":"`)
+			}
+			if b, err := jsonx.Marshal(ev.Text); err == nil && len(b) >= 2 {
+				sb.Write(b[1 : len(b)-1])
+			}
+			argDelta = sb.String()
+			e.callHasArgs[ev.Index][key] = true
+		} else if ev.Text != "" {
 			e.callHasArgs[ev.Index][key] = true
 		}
 		chunk := e.baseChunk(ev.Index)
 		tc := map[string]any{
 			"index": idx,
 			"function": map[string]any{
-				"arguments": ev.Text,
+				"arguments": argDelta,
 			},
 		}
 		chunk["choices"] = []map[string]any{{
@@ -171,6 +194,37 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvToolEnd:
 		idx, key := e.resolveCallSlot(ev.Index, ev.ID)
+		if e.callKind[ev.Index] != nil && e.callKind[ev.Index][key] == ir.ToolCustom {
+			var tail string
+			if e.customOpened[ev.Index] != nil && e.customOpened[ev.Index][key] {
+				tail = `"}`
+			} else {
+				var s string
+				if len(ev.Arguments) > 0 {
+					_ = json.Unmarshal(ev.Arguments, &s)
+				}
+				b, _ := jsonx.Marshal(map[string]string{"input": s})
+				tail = string(b)
+			}
+			if e.callHasArgs[ev.Index] == nil {
+				e.callHasArgs[ev.Index] = map[string]bool{}
+			}
+			e.callHasArgs[ev.Index][key] = true
+			chunk := e.baseChunk(ev.Index)
+			tc := map[string]any{
+				"index": idx,
+				"function": map[string]any{
+					"arguments": tail,
+				},
+			}
+			chunk["choices"] = []map[string]any{{
+				"index":         ev.Index,
+				"delta":         map[string]any{"tool_calls": []any{tc}},
+				"finish_reason": nil,
+			}}
+			dst = e.appendChunk(dst, chunk)
+			break
+		}
 		if e.callHasArgs[ev.Index] == nil || !e.callHasArgs[ev.Index][key] {
 			argsStr := strings.TrimSpace(string(ev.Arguments))
 			if argsStr == "" {

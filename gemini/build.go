@@ -59,11 +59,10 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		var decls []wireFunctionDecl
 		for i, t := range req.Tools {
 			fp := ir.Root.Key("tools").At(i)
-			d, err := buildFunctionDecl(t, fp, env)
+			d, err := buildFunctionDecl(t, fp, env, names)
 			if err != nil {
 				return nil, err
 			}
-			names[t.Name] = ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: t.Kind}
 			decls = append(decls, d)
 		}
 		if len(decls) > 0 {
@@ -397,7 +396,7 @@ func toolResultText(parts []ir.Part) string {
 	return sb.String()
 }
 
-func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env) (wireFunctionDecl, error) {
+func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env, names map[string]ir.ToolRef) (wireFunctionDecl, error) {
 	if t.Name == "" {
 		return wireFunctionDecl{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
@@ -411,12 +410,25 @@ func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env) (wireFunctionDecl, err
 			return wireFunctionDecl{}, err
 		}
 	}
-	d := wireFunctionDecl{
-		Name:        t.Name,
-		Description: t.Description,
+	wireName, desc := ir.AssignToolWireName(names, t)
+	params := t.Schema
+	if t.Kind == ir.ToolCustom {
+		params = ir.CustomToolWrapperSchema
+		if t.Grammar != nil && t.Grammar.Definition != "" {
+			note := "Input grammar (" + t.Grammar.Syntax + "): " + t.Grammar.Definition
+			if desc == "" {
+				desc = note
+			} else {
+				desc += "\n" + note
+			}
+		}
 	}
-	if len(t.Schema) > 0 {
-		d.Parameters = schema.ToOpenAPI(t.Schema)
+	d := wireFunctionDecl{
+		Name:        wireName,
+		Description: desc,
+	}
+	if len(params) > 0 {
+		d.Parameters = schema.ToOpenAPI(params)
 	}
 	return d, nil
 }

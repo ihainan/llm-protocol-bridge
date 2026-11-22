@@ -45,6 +45,9 @@ type openCall struct {
 	argsBuilt strings.Builder
 	// started is whether EvToolStart has been emitted for this call.
 	started bool
+	// custom input incremental JSON string decoder state (for ToolCustom).
+	customState int // 0=seeking "input" value quote, 1=inside string, 2=done
+	customPos   int // bytes consumed from argsBuilt
 }
 
 // chatCandidate is per-choice state in the stream.
@@ -278,16 +281,112 @@ func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolC
 			out = d.emitOpenCallStart(out, ci, idx, call)
 		}
 		call.argsBuilt.WriteString(tc.Function.Arguments)
+		argText := tc.Function.Arguments
+		if call.kind == ir.ToolCustom {
+			argText = call.drainCustomInputDelta()
+			if argText == "" {
+				return out
+			}
+		}
 		out = append(out, ir.Event{
 			Type:  ir.EvToolArgs,
 			Index: ci,
 			Part:  idx,
 			ID:    call.id,
-			Text:  tc.Function.Arguments,
+			Text:  argText,
 		})
 	}
 
 	return out
+}
+
+// drainCustomInputDelta incrementally decodes newly arrived characters from the
+// JSON string value of {"input": "..."} in call.argsBuilt, holding back incomplete
+// escape sequences or UTF-16 surrogate pairs until the next fragment arrives.
+func (c *openCall) drainCustomInputDelta() string {
+	s := c.argsBuilt.String()
+	if c.customState == 2 {
+		return ""
+	}
+	if c.customState == 0 {
+		// Find `"input"` followed by `:` and opening `"`.
+		idx := strings.Index(s[c.customPos:], `"input"`)
+		if idx < 0 {
+			return ""
+		}
+		i := c.customPos + idx + len(`"input"`)
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+			i++
+		}
+		if i >= len(s) || s[i] != ':' {
+			return ""
+		}
+		i++
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+			i++
+		}
+		if i >= len(s) || s[i] != '"' {
+			return ""
+		}
+		c.customPos = i + 1
+		c.customState = 1
+	}
+
+	var out strings.Builder
+	i := c.customPos
+	for i < len(s) {
+		ch := s[i]
+		if ch == '"' {
+			c.customPos = i + 1
+			c.customState = 2
+			break
+		}
+		if ch == '\\' {
+			if i+1 >= len(s) {
+				break // incomplete escape
+			}
+			esc := s[i+1]
+			if esc == 'u' {
+				if i+6 > len(s) {
+					break // incomplete \uXXXX
+				}
+				// Detect high surrogate hex range D800-DBFF requiring a following \uXXXX low surrogate.
+				hexStr := strings.ToUpper(s[i+2 : i+6])
+				if len(hexStr) == 4 && hexStr[0] == 'D' && hexStr[1] >= '8' && hexStr[1] <= 'B' {
+					if i+12 > len(s) {
+						break // wait for low surrogate pair
+					}
+					if s[i+6] == '\\' && s[i+7] == 'u' {
+						var dec string
+						if json.Unmarshal([]byte(`"`+s[i:i+12]+`"`), &dec) == nil {
+							out.WriteString(dec)
+							i += 12
+							c.customPos = i
+							continue
+						}
+					}
+				}
+				var dec string
+				if json.Unmarshal([]byte(`"`+s[i:i+6]+`"`), &dec) == nil {
+					out.WriteString(dec)
+				}
+				i += 6
+				c.customPos = i
+				continue
+			}
+			var dec string
+			if json.Unmarshal([]byte(`"`+s[i:i+2]+`"`), &dec) == nil {
+				out.WriteString(dec)
+			}
+			i += 2
+			c.customPos = i
+			continue
+		}
+		out.WriteByte(ch)
+		i++
+		c.customPos = i
+	}
+	return out.String()
 }
 
 func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []ir.Event {

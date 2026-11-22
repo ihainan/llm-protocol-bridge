@@ -803,6 +803,14 @@ func parseToolChoice(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.ToolChoice
 						var ref ir.ToolRef
 						for _, kv2 := range kvs2 {
 							switch kv2.Key {
+							case "type":
+								if s, ok := jsonx.String(kv2.Value); ok {
+									if s == "custom" {
+										ref.Kind = ir.ToolCustom
+									} else if s == "function" {
+										ref.Kind = ir.ToolFunction
+									}
+								}
 							case "name":
 								ref.Name, _ = jsonx.String(kv2.Value)
 							case "namespace":
