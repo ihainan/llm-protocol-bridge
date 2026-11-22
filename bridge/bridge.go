@@ -151,6 +151,15 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported for Responses-to-Responses requests"))
 	}
 
+	// Report loss when Anthropic context_management cannot be forwarded to a non-Anthropic upstream.
+	if upstream != ir.FormatAnthropic && req.Passthrough != nil {
+		if cm, ok := req.Passthrough["context_management"]; ok && len(cm) > 0 && string(cm) != "null" {
+			if err := env.Lose(ir.LossUnknownField, ir.Root.Key("context_management"), "context_management is not supported by target format"); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	// Optional stop sequence count and total byte length limits (e.g. under StopEmulate).
 	if len(req.Stop) > 0 {
 		stopKey := "stop"

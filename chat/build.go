@@ -107,6 +107,24 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			Content: jsonRawString(note),
 		})
 	}
+	// Determine which assistant turns keep historical reasoning when KeepTurns is set.
+	keepFromAssistantIdx := -1
+	if !b.omitHistoryReasoning && req.Reasoning != nil && req.Reasoning.KeepTurns != nil {
+		keep := *req.Reasoning.KeepTurns
+		if keep <= 0 {
+			keepFromAssistantIdx = len(req.Messages)
+		} else {
+			var asstIndices []int
+			for i, m := range req.Messages {
+				if m.Role == ir.RoleAssistant {
+					asstIndices = append(asstIndices, i)
+				}
+			}
+			if len(asstIndices) > keep {
+				keepFromAssistantIdx = asstIndices[len(asstIndices)-keep]
+			}
+		}
+	}
 	for i, m := range req.Messages {
 		fp := ir.Root.Key("messages").At(i)
 		if foldMid && (m.Role == ir.RoleSystem || m.Role == ir.RoleDeveloper) {
@@ -130,7 +148,8 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			prefixNote = formatSystemNote(pendingSystem)
 			pendingSystem = nil
 		}
-		wms, err := b.buildMessage(m, fp, prefixNote)
+		omitReasoning := b.omitHistoryReasoning || (keepFromAssistantIdx >= 0 && i < keepFromAssistantIdx)
+		wms, err := b.buildMessage(m, fp, prefixNote, omitReasoning)
 		if err != nil {
 			return nil, err
 		}
@@ -389,7 +408,7 @@ func (b *built) buildTool(t ir.Tool, p ir.Path) (wireTool, error) {
 // buildMessage converts an ir.Message to one or more wireMessages.
 // A user message that mixes tool results with other content is split into
 // separate tool-role messages followed by a user-role message.
-func (b *built) buildMessage(m ir.Message, p ir.Path, prefixSystemNote string) ([]wireMessage, error) {
+func (b *built) buildMessage(m ir.Message, p ir.Path, prefixSystemNote string, omitReasoning bool) ([]wireMessage, error) {
 	wm := wireMessage{Role: string(m.Role), Name: m.Name}
 	// Map IR roles back to Chat roles.
 	switch m.Role {
@@ -494,11 +513,11 @@ func (b *built) buildMessage(m ir.Message, p ir.Path, prefixSystemNote string) (
 						return nil, err
 					}
 				}
-				if !b.omitHistoryReasoning {
+				if !omitReasoning {
 					reasoningText += part.Reasoning.Text
 				}
 			}
-			if part.Signature != nil && !b.omitHistoryReasoning {
+			if part.Signature != nil && !omitReasoning {
 				reasoningSignature = part.Signature.Value
 			}
 

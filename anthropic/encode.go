@@ -25,6 +25,7 @@ type pendingTool struct {
 	args         strings.Builder
 	finalArgs    json.RawMessage
 	countedBytes int
+	argCounted   int
 	done         bool
 }
 
@@ -276,7 +277,22 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		dst = e.ensureStarted(dst)
 		if e.openBlock >= 0 && e.openBlockType == "tool_use" {
 			// Another tool call is already streaming; queue this one until the active block closes.
-			pt := &pendingTool{cand: ev.Index, id: ev.ID, name: ev.Name, sig: ev.Signature, kind: ev.Kind}
+			hdrBytes := len(ev.ID) + len(ev.Name)
+			if ev.Signature != nil {
+				hdrBytes += len(ev.Signature.Value)
+			}
+			if hdrBytes == 0 {
+				hdrBytes = 1
+			}
+			e.pendingBytes += hdrBytes
+			if e.deferredBytes+e.pendingBytes > e.maxBufferedBytes() {
+				return e.abortOpenTool(dst, &ir.APIError{
+					Status:  502,
+					Type:    ir.ErrServer,
+					Message: "buffered stream byte limit exceeded",
+				}), nil
+			}
+			pt := &pendingTool{cand: ev.Index, id: ev.ID, name: ev.Name, sig: ev.Signature, kind: ev.Kind, countedBytes: hdrBytes}
 			e.pendingTools = append(e.pendingTools, pt)
 			if ev.ID != "" {
 				e.pendingByKey[toolCallKey{cand: ev.Index, id: ev.ID}] = pt
@@ -293,6 +309,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
 				e.pendingBytes += len(ev.Text)
 				pt.countedBytes += len(ev.Text)
+				pt.argCounted += len(ev.Text)
 				if e.deferredBytes+e.pendingBytes > e.maxBufferedBytes() {
 					return e.abortOpenTool(dst, &ir.APIError{
 						Status:  502,
@@ -350,9 +367,10 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 		if !isActive {
 			if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
-				if extra := len(ev.Arguments) - pt.countedBytes; extra > 0 {
+				if extra := len(ev.Arguments) - pt.argCounted; extra > 0 {
 					e.pendingBytes += extra
 					pt.countedBytes += extra
+					pt.argCounted += extra
 					if e.deferredBytes+e.pendingBytes > e.maxBufferedBytes() {
 						return e.abortOpenTool(dst, &ir.APIError{
 							Status:  502,

@@ -235,12 +235,22 @@ func (d *StreamDecoder) flushUnstartedToolCalls(out []ir.Event, ci int) []ir.Eve
 	return out
 }
 
-func mergeToolNameFragment(current, fragment string) string {
-	if fragment == "" || fragment == current {
+func mergeToolNameFragment(current, fragment string, known map[string]ir.ToolRef) string {
+	if fragment == "" {
 		return current
 	}
 	if current == "" {
 		return fragment
+	}
+	if known != nil {
+		_, curKnown := known[current]
+		_, concatKnown := known[current+fragment]
+		if concatKnown && !curKnown {
+			return current + fragment
+		}
+	}
+	if fragment == current {
+		return current
 	}
 	if strings.HasPrefix(fragment, current) {
 		return fragment
@@ -309,7 +319,7 @@ func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolC
 		call.id = tc.ID
 	}
 	if tc.Function.Name != "" {
-		call.rawName = mergeToolNameFragment(call.rawName, tc.Function.Name)
+		call.rawName = mergeToolNameFragment(call.rawName, tc.Function.Name, d.names)
 	}
 
 	// Defer EvToolStart until arguments arrive (so multi-chunk names such as

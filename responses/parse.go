@@ -63,9 +63,15 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 		}
 	}
 
+	// previous_response_id (read before input so stateful continuations allow outputs
+	// referencing tool calls from the previous response).
+	if v, ok := fields["previous_response_id"]; ok && !jsonx.IsNull(v) {
+		req.PreviousResponseID, _ = jsonx.String(v)
+	}
+
 	// input: string or array
 	if v, ok := fields["input"]; ok && !jsonx.IsNull(v) {
-		msgs, err := parseInput(v, p.Key("input"), env)
+		msgs, err := parseInput(v, p.Key("input"), env, req.PreviousResponseID != "")
 		if err != nil {
 			return nil, err
 		}
@@ -363,13 +369,13 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 }
 
 // parseInput handles the input field (string or array).
-func parseInput(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, error) {
+func parseInput(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool) ([]ir.Message, error) {
 	switch jsonx.Kind(raw) {
 	case '"':
 		s, _ := jsonx.String(raw)
 		return []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart(s)}}}, nil
 	case '[':
-		return parseInputItems(raw, p, env)
+		return parseInputItems(raw, p, env, hasPrevRespID)
 	}
 	return nil, env.Err(ir.Invalid(p, "must be a string or array"))
 }
@@ -377,7 +383,7 @@ func parseInput(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, erro
 // parseInputItems parses a Responses input array into ir.Messages.
 // It groups consecutive function_call and reasoning items into one assistant
 // message, and groups consecutive function_call_output items into one user message.
-func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, error) {
+func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool) ([]ir.Message, error) {
 	elems, ok := jsonx.Array(raw)
 	if !ok {
 		return nil, env.Err(ir.Invalid(p, "must be an array"))
@@ -460,7 +466,7 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message,
 			callID := part.Result.CallID
 			callKind, known := knownCalls[callID]
 			if !known {
-				if !env.Repairs(ir.RepairOrphanResults) {
+				if !hasPrevRespID && !env.Repairs(ir.RepairOrphanResults) {
 					return nil, env.Err(ir.Invalid(fp.Key("call_id"), "no tool call found for call_id: "+callID))
 				}
 			} else if callKind != ir.ToolFunction {
@@ -493,7 +499,7 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message,
 			callID := part.Result.CallID
 			callKind, known := knownCalls[callID]
 			if !known {
-				if !env.Repairs(ir.RepairOrphanResults) {
+				if !hasPrevRespID && !env.Repairs(ir.RepairOrphanResults) {
 					return nil, env.Err(ir.Invalid(fp.Key("call_id"), "no tool call found for call_id: "+callID))
 				}
 			} else if callKind != ir.ToolCustom {
@@ -687,6 +693,7 @@ func parseReasoningItem(fields map[string]json.RawMessage, p ir.Path, env *ir.En
 
 	// Summary parts.
 	var summaryText strings.Builder
+	var summaryList []string
 	if sv, ok := fields["summary"]; ok {
 		elems, _ := jsonx.Array(sv)
 		for _, e := range elems {
@@ -697,15 +704,47 @@ func parseReasoningItem(fields map[string]json.RawMessage, p ir.Path, env *ir.En
 			for _, kv := range kvs2 {
 				if kv.Key == "text" {
 					s, _ := jsonx.String(kv.Value)
-					summaryText.WriteString(s)
+					if s != "" {
+						summaryList = append(summaryList, s)
+						summaryText.WriteString(s)
+					}
 				}
 			}
 		}
 	}
 
+	// Raw reasoning content parts (e.g. reasoning_text when summary was not requested).
+	var contentText strings.Builder
+	if cv, ok := fields["content"]; ok {
+		elems, _ := jsonx.Array(cv)
+		for _, e := range elems {
+			kvs2, err := jsonx.Object(e)
+			if err != nil {
+				continue
+			}
+			var ptype, ptext string
+			for _, kv := range kvs2 {
+				switch kv.Key {
+				case "type":
+					ptype, _ = jsonx.String(kv.Value)
+				case "text":
+					ptext, _ = jsonx.String(kv.Value)
+				}
+			}
+			if (ptype == "" || ptype == "reasoning_text") && ptext != "" {
+				contentText.WriteString(ptext)
+			}
+		}
+	}
+
+	rtext := summaryText.String()
+	if rtext == "" {
+		rtext = contentText.String()
+	}
+
 	return ir.Part{
 		Type:      ir.PartReasoning,
-		Reasoning: &ir.Reasoning{ID: id, Text: summaryText.String()},
+		Reasoning: &ir.Reasoning{ID: id, Text: rtext, Summary: summaryList},
 	}, nil
 }
 

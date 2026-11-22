@@ -307,6 +307,7 @@ func parseMessages(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, e
 	}
 	msgs := make([]ir.Message, 0, len(elems))
 	var lastToolUses map[string]bool
+	var prevNonSystem ir.Role
 	for i, elem := range elems {
 		fp := p.At(i)
 		isLast := i == len(elems)-1
@@ -316,13 +317,15 @@ func parseMessages(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, e
 		}
 		switch msg.Role {
 		case ir.RoleAssistant:
-			turnUses := map[string]bool{}
+			if prevNonSystem != ir.RoleAssistant || lastToolUses == nil {
+				lastToolUses = map[string]bool{}
+			}
 			for _, pt := range msg.Parts {
 				if pt.Type == ir.PartToolCall && pt.Call != nil && pt.Call.ID != "" {
-					turnUses[pt.Call.ID] = true
+					lastToolUses[pt.Call.ID] = true
 				}
 			}
-			lastToolUses = turnUses
+			prevNonSystem = ir.RoleAssistant
 		case ir.RoleUser:
 			if !env.Repairs(ir.RepairOrphanResults) {
 				for j, pt := range msg.Parts {
@@ -333,8 +336,9 @@ func parseMessages(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Message, e
 					}
 				}
 			}
+			prevNonSystem = ir.RoleUser
 		case ir.RoleSystem:
-			// Mid-conversation system messages do not reset lastToolUses.
+			// Mid-conversation system messages do not reset lastToolUses or turn state.
 		}
 		msgs = append(msgs, msg)
 	}

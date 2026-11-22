@@ -3,6 +3,7 @@ package responses
 import (
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
 	"github.com/ihainan/llm-protocol-bridge/ir"
@@ -26,6 +27,7 @@ type pendingRespTool struct {
 	args         strings.Builder
 	finalArgs    json.RawMessage
 	countedBytes int
+	argCounted   int
 	done         bool
 }
 
@@ -64,6 +66,8 @@ type StreamEncoder struct {
 
 	textAccum        strings.Builder
 	textAnnotations  []map[string]any
+	msgTrimmedRunes  int
+	pendingTrimRunes int
 	argAccum         strings.Builder
 	reasonAccum      strings.Builder
 	reasonIsSummary  bool
@@ -147,18 +151,29 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvText:
 		text := ev.Text
-		if e.opts.TrimLeadingNewlines && (e.openItemType != "message" || e.openItemCand != ev.Index) {
+		openingMsg := e.openItemType != "message" || e.openItemCand != ev.Index
+		totalTrim := 0
+		if e.opts.TrimLeadingNewlines && openingMsg {
 			// When opted in, strip leading newlines before opening a message item
-			// (preventing empty newline-only messages before tool calls).
-			text = strings.TrimLeft(text, "\r\n")
-			if text == "" {
+			// (preventing empty newline-only messages before tool calls) and record
+			// trimmed rune count so subsequent citations stay aligned.
+			trimmed := strings.TrimLeft(text, "\r\n")
+			deltaTrim := utf8.RuneCountInString(text) - utf8.RuneCountInString(trimmed)
+			if trimmed == "" {
+				e.pendingTrimRunes += deltaTrim
 				break
 			}
+			totalTrim = e.pendingTrimRunes + deltaTrim
+			e.pendingTrimRunes = 0
+			text = trimmed
 		}
 		dst = e.ensureStarted(dst)
 		dst = e.ensureMessageOpen(dst, ev.Index)
 		if e.errored {
 			break
+		}
+		if openingMsg {
+			e.msgTrimmedRunes = totalTrim
 		}
 		dst = e.appendEvent(dst, "response.output_text.delta", map[string]any{
 			"sequence_number": e.nextSeq(),
@@ -170,6 +185,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.textAccum.WriteString(text)
 
 	case ir.EvRefusal:
+		e.pendingTrimRunes = 0
 		dst = e.ensureStarted(dst)
 		dst = e.ensureRefusalOpen(dst, ev.Index)
 		if e.errored {
@@ -187,12 +203,16 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	case ir.EvCitation:
 		if ev.Citation != nil {
 			if e.openItemType == "message" {
+				startIdx, endIdx, keep := shiftCitationRange(ev.Citation.StartIndex, ev.Citation.EndIndex, e.msgTrimmedRunes)
+				if !keep {
+					break
+				}
 				ann := map[string]any{
 					"type":        "url_citation",
 					"url":         ev.Citation.URL,
 					"title":       ev.Citation.Title,
-					"start_index": ev.Citation.StartIndex,
-					"end_index":   ev.Citation.EndIndex,
+					"start_index": startIdx,
+					"end_index":   endIdx,
 				}
 				if ev.Citation.Type != "" {
 					ann["type"] = ev.Citation.Type
@@ -218,6 +238,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvReasoningStart:
+		e.pendingTrimRunes = 0
 		dst = e.ensureStarted(dst)
 		dst = e.closeItem(dst)
 		if e.errored {
@@ -244,6 +265,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		})
 
 	case ir.EvReasoning:
+		e.pendingTrimRunes = 0
 		dst = e.ensureStarted(dst)
 		if e.openItemType != "reasoning" || e.openItemCand != ev.Index {
 			dst = e.closeItem(dst)
@@ -380,9 +402,21 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.openItemType = ""
 
 	case ir.EvToolStart:
+		e.pendingTrimRunes = 0
 		dst = e.ensureStarted(dst)
 		if e.openItemType == "function_call" || e.openItemType == "custom_tool_call" {
-			pt := &pendingRespTool{cand: ev.Index, id: ev.ID, name: ev.Name, ns: ev.Namespace, kind: ev.Kind, sig: ev.Signature}
+			hdrBytes := len(ev.ID) + len(ev.Name) + len(ev.Namespace)
+			if ev.Signature != nil {
+				hdrBytes += len(ev.Signature.Value)
+			}
+			if hdrBytes == 0 {
+				hdrBytes = 1
+			}
+			e.pendingBytes += hdrBytes
+			if e.deferredBytes+e.pendingBytes > e.maxBufferedBytes() {
+				return e.failStream(dst, "buffered stream byte limit exceeded"), nil
+			}
+			pt := &pendingRespTool{cand: ev.Index, id: ev.ID, name: ev.Name, ns: ev.Namespace, kind: ev.Kind, sig: ev.Signature, countedBytes: hdrBytes}
 			e.pendingTools = append(e.pendingTools, pt)
 			if ev.ID != "" {
 				e.pendingByKey[respCallKey{cand: ev.Index, id: ev.ID}] = pt
@@ -399,6 +433,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
 				e.pendingBytes += len(ev.Text)
 				pt.countedBytes += len(ev.Text)
+				pt.argCounted += len(ev.Text)
 				if e.deferredBytes+e.pendingBytes > e.maxBufferedBytes() {
 					return e.failStream(dst, "buffered stream byte limit exceeded"), nil
 				}
@@ -456,9 +491,10 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 		if !isActive {
 			if pt := e.lookupPendingTool(ev.Index, ev.ID); pt != nil {
-				if extra := len(ev.Arguments) - pt.countedBytes; extra > 0 {
+				if extra := len(ev.Arguments) - pt.argCounted; extra > 0 {
 					e.pendingBytes += extra
 					pt.countedBytes += extra
+					pt.argCounted += extra
 					if e.deferredBytes+e.pendingBytes > e.maxBufferedBytes() {
 						return e.failStream(dst, "buffered stream byte limit exceeded"), nil
 					}
@@ -1197,6 +1233,7 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 	}
 	e.openItemType = ""
 	e.textAccum.Reset()
+	e.msgTrimmedRunes = 0
 	e.reasonAccum.Reset()
 	return dst
 }
@@ -1311,6 +1348,26 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 	return json.Marshal(wr)
 }
 
+func shiftCitationRange(startIdx, endIdx, trimmedRunes int) (int, int, bool) {
+	if trimmedRunes <= 0 || (startIdx == 0 && endIdx == 0) {
+		return startIdx, endIdx, true
+	}
+	if endIdx > 0 && endIdx <= trimmedRunes {
+		return 0, 0, false
+	}
+	startIdx -= trimmedRunes
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if endIdx > 0 {
+		endIdx -= trimmedRunes
+		if endIdx < startIdx {
+			endIdx = startIdx
+		}
+	}
+	return startIdx, endIdx, true
+}
+
 func useSummaryMode(opts EncodeOptions, hasUpstreamSummary bool) bool {
 	if hasUpstreamSummary {
 		return true
@@ -1335,8 +1392,11 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env, opts EncodeOptions) 
 	switch p.Type {
 	case ir.PartText:
 		text := p.Text
+		trimmedRunes := 0
 		if opts.TrimLeadingNewlines {
-			text = strings.TrimLeft(text, "\r\n")
+			trimmed := strings.TrimLeft(text, "\r\n")
+			trimmedRunes = utf8.RuneCountInString(text) - utf8.RuneCountInString(trimmed)
+			text = trimmed
 			if text == "" && len(p.Citations) == 0 {
 				return nil, nil
 			}
@@ -1344,6 +1404,10 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env, opts EncodeOptions) 
 		id := "msg_" + env.NewID("", 16)
 		op := wireOutputPart{Type: "output_text", Text: text}
 		for _, c := range p.Citations {
+			startIdx, endIdx, keep := shiftCitationRange(c.StartIndex, c.EndIndex, trimmedRunes)
+			if !keep {
+				continue
+			}
 			typ := c.Type
 			if typ == "" {
 				typ = "url_citation"
@@ -1352,8 +1416,8 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env, opts EncodeOptions) 
 				Type:       typ,
 				URL:        c.URL,
 				Title:      c.Title,
-				StartIndex: c.StartIndex,
-				EndIndex:   c.EndIndex,
+				StartIndex: startIdx,
+				EndIndex:   endIdx,
 			})
 		}
 		return []wireOutputItem{{

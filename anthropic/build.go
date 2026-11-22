@@ -335,6 +335,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			return nil, err
 		}
 	}
+	if req.Source == ir.FormatAnthropic && req.Passthrough != nil {
+		if cm, ok := req.Passthrough["context_management"]; ok && !jsonx.IsNull(cm) {
+			out.Raw("context_management", cm)
+		}
+	}
 
 	body := out.End()
 	return &Built{
