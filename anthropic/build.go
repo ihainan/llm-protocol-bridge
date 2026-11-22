@@ -504,7 +504,8 @@ func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.Too
 		}
 		if r.Text != "" {
 			if r.Signature != nil && r.Signature.Value != "" && r.Signature.Origin.Matches(ir.FormatAnthropic, env.ProviderID) {
-				return []wireContentBlock{{Type: "thinking", Thinking: r.Text, Signature: r.Signature.Value}}, nil
+				sig := r.Signature.Value
+				return []wireContentBlock{{Type: "thinking", Thinking: r.Text, Signature: &sig}}, nil
 			}
 			if err := env.Lose(ir.LossReasoningSignature, p, "unsigned or foreign reasoning block dropped for Anthropic"); err != nil {
 				return nil, err

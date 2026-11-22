@@ -71,6 +71,8 @@ type wireResponse struct {
 	Usage             json.RawMessage        `json:"usage,omitempty"`
 	Error             *wireError             `json:"error,omitempty"`
 	ServiceTier       string                 `json:"service_tier,omitempty"`
+	Store             *bool                  `json:"store,omitempty"`
+	PromptCacheKey    string                 `json:"prompt_cache_key,omitempty"`
 }
 
 type wireIncompleteDetails struct {
@@ -90,8 +92,8 @@ type wireOutputItem struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	// reasoning fields
-	Summary          []wireReasoningPart `json:"summary,omitempty"`
-	EncryptedContent string              `json:"encrypted_content,omitempty"`
+	Summary          *[]wireReasoningPart `json:"summary,omitempty"`
+	EncryptedContent string               `json:"encrypted_content,omitempty"`
 	// custom_tool_call fields
 	Namespace string `json:"namespace,omitempty"`
 	Input     string `json:"input,omitempty"`
@@ -196,4 +198,6 @@ type wireStreamResponse struct {
 	Usage             json.RawMessage        `json:"usage,omitempty"`
 	Error             *wireError             `json:"error,omitempty"`
 	ServiceTier       string                 `json:"service_tier,omitempty"`
+	Store             *bool                  `json:"store,omitempty"`
+	PromptCacheKey    string                 `json:"prompt_cache_key,omitempty"`
 }

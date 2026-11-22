@@ -116,9 +116,13 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	}
 	switch ev.Type {
 	case ir.EvStart:
-		e.id = ev.ID
-		if e.id == "" {
+		if e.opts.GenerateResponseID {
 			e.id = "msg_" + e.opts.Env.NewID("", 24)
+		} else {
+			e.id = ev.ID
+			if e.id == "" {
+				e.id = "msg_" + e.opts.Env.NewID("", 24)
+			}
 		}
 		e.model = e.opts.Model
 		if e.model == "" && ev.Model != "" {
@@ -958,7 +962,7 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 		env = &ir.Env{}
 	}
 	id := resp.ID
-	if id == "" {
+	if opts.GenerateResponseID || id == "" {
 		id = "msg_" + env.NewID("", 24)
 	}
 	model := opts.Model
@@ -1038,7 +1042,7 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 					})
 				}
 			}
-			out = append(out, wireContentBlock{Type: "thinking", Thinking: r.Text, Signature: sig})
+			out = append(out, wireContentBlock{Type: "thinking", Thinking: r.Text, Signature: &sig})
 		}
 		if r.Sealed != nil {
 			var dataStr string

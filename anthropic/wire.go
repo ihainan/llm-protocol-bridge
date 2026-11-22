@@ -39,9 +39,9 @@ type wireContentBlock struct {
 	IsError   *bool           `json:"is_error,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"` // string | []wireContentBlock
 	// thinking / redacted_thinking
-	Thinking  string `json:"thinking,omitempty"`
-	Signature string `json:"signature,omitempty"`
-	Data      string `json:"data,omitempty"`
+	Thinking  string  `json:"thinking,omitempty"`
+	Signature *string `json:"signature,omitempty"`
+	Data      string  `json:"data,omitempty"`
 	// cache_control
 	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
 }

@@ -23,9 +23,6 @@ type StreamDecoder struct {
 	created    int64
 	candidates map[int]*chatCandidate // index -> candidate state
 
-	// Names we've seen, for dedup of call IDs within one response.
-	seenCallIDs map[string]bool
-
 	done                 bool
 	sawFinish            bool
 	terminal             bool
@@ -42,8 +39,8 @@ type openCall struct {
 	name      string
 	namespace string
 	kind      ir.ToolKind
-	// nameBuilt accumulates the streamed name fragments.
-	nameBuilt strings.Builder
+	// rawName accumulates streamed name fragments using prefix/repeat deduplication.
+	rawName string
 	// argsBuilt accumulates the streamed arguments fragments.
 	argsBuilt strings.Builder
 	// started is whether EvToolStart has been emitted for this call.
@@ -54,8 +51,9 @@ type openCall struct {
 
 // chatCandidate is per-choice state in the stream.
 type chatCandidate struct {
-	index     int
-	toolCalls map[int]*openCall
+	index       int
+	toolCalls   map[int]*openCall
+	seenCallIDs map[string]bool
 }
 
 // NewStreamDecoder returns a Chat Completions stream decoder.
@@ -70,7 +68,6 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 		dia:             opts.Dialect,
 		names:           opts.Names,
 		candidates:      map[int]*chatCandidate{},
-		seenCallIDs:     map[string]bool{},
 		seenChoices:     map[int]bool{},
 		finishedChoices: map[int]bool{},
 	}
@@ -137,7 +134,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 	for _, ch := range chunk.Choices {
 		ci := ch.Index
 		if d.candidates[ci] == nil {
-			d.candidates[ci] = &chatCandidate{index: ci, toolCalls: map[int]*openCall{}}
+			d.candidates[ci] = &chatCandidate{index: ci, toolCalls: map[int]*openCall{}, seenCallIDs: map[string]bool{}}
 		}
 		out = d.decodeChoice(out, ci, ch)
 	}
@@ -237,8 +234,21 @@ func (d *StreamDecoder) flushUnstartedToolCalls(out []ir.Event, ci int) []ir.Eve
 	return out
 }
 
+func mergeToolNameFragment(current, fragment string) string {
+	if fragment == "" || fragment == current {
+		return current
+	}
+	if current == "" {
+		return fragment
+	}
+	if strings.HasPrefix(fragment, current) {
+		return fragment
+	}
+	return current + fragment
+}
+
 func (d *StreamDecoder) resolveCallName(call *openCall) {
-	name := call.nameBuilt.String()
+	name := call.rawName
 	ns := ""
 	kind := ir.ToolFunction
 	if ref, ok := d.names[name]; ok {
@@ -258,8 +268,12 @@ func (d *StreamDecoder) emitOpenCallStart(out []ir.Event, ci, idx int, call *ope
 		return out
 	}
 	call.started = true
-	if call.id == "" {
-		call.id = d.env.NewID("call_", 16)
+	cand := d.candidates[ci]
+	if call.id == "" || (cand != nil && cand.seenCallIDs[call.id]) {
+		call.id = d.env.NewID("call_", 24)
+	}
+	if cand != nil {
+		cand.seenCallIDs[call.id] = true
 	}
 	d.resolveCallName(call)
 	return append(out, ir.Event{
@@ -276,7 +290,7 @@ func (d *StreamDecoder) emitOpenCallStart(out []ir.Event, ci, idx int, call *ope
 func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolCall) []ir.Event {
 	cand := d.candidates[ci]
 	if cand == nil {
-		cand = &chatCandidate{index: ci, toolCalls: map[int]*openCall{}}
+		cand = &chatCandidate{index: ci, toolCalls: map[int]*openCall{}, seenCallIDs: map[string]bool{}}
 		d.candidates[ci] = cand
 	}
 	// Determine the call index. Chat uses an integer index in streaming.
@@ -294,7 +308,7 @@ func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolC
 		call.id = tc.ID
 	}
 	if tc.Function.Name != "" {
-		call.nameBuilt.WriteString(tc.Function.Name)
+		call.rawName = mergeToolNameFragment(call.rawName, tc.Function.Name)
 	}
 
 	// Defer EvToolStart until arguments arrive (so multi-chunk names such as
@@ -639,12 +653,19 @@ func parseAssistantMessage(wm wireMessage, p ir.Path, names map[string]ir.ToolRe
 	if wm.Refusal != "" {
 		parts = append(parts, ir.Part{Type: ir.PartRefusal, Text: wm.Refusal})
 	}
-	// Tool calls.
+	// Tool calls (deduplicate duplicate upstream call IDs within one choice).
+	seenCallIDs := map[string]bool{}
 	for i, tc := range wm.ToolCalls {
 		fp := p.Key("tool_calls").At(i)
 		part, err := wireToolCallToPart(tc, fp, env)
 		if err != nil {
 			return nil, err
+		}
+		if part.Call != nil {
+			if part.Call.ID == "" || seenCallIDs[part.Call.ID] {
+				part.Call.ID = env.NewID("call_", 24)
+			}
+			seenCallIDs[part.Call.ID] = true
 		}
 		if part.Call != nil && names != nil {
 			if ref, ok := names[part.Call.Name]; ok {

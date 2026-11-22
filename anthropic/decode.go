@@ -498,15 +498,16 @@ func responseBlockToPart(block wireContentBlock, p ir.Path, names map[string]ir.
 		}
 		return &part, nil
 	case "thinking":
+		r := &ir.Reasoning{Text: block.Thinking}
+		if block.Signature != nil && *block.Signature != "" {
+			r.Signature = &ir.Signature{
+				Value:  *block.Signature,
+				Origin: ir.Origin{Format: ir.FormatAnthropic, Provider: env.ProviderID},
+			}
+		}
 		part := ir.Part{
-			Type: ir.PartReasoning,
-			Reasoning: &ir.Reasoning{
-				Text: block.Thinking,
-				Signature: &ir.Signature{
-					Value:  block.Signature,
-					Origin: ir.Origin{Format: ir.FormatAnthropic, Provider: env.ProviderID},
-				},
-			},
+			Type:      ir.PartReasoning,
+			Reasoning: r,
 		}
 		return &part, nil
 	case "redacted_thinking":

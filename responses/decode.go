@@ -557,9 +557,18 @@ func outputItemToIR(item wireOutputItem, p ir.Path, names map[string]ir.ToolRef,
 				Origin: ir.Origin{Format: ir.FormatResponses, Provider: env.ProviderID},
 			}
 		}
-		for _, sp := range item.Summary {
-			r.Summary = append(r.Summary, sp.Text)
-			r.Text += sp.Text
+		if item.Summary != nil {
+			for _, sp := range *item.Summary {
+				r.Summary = append(r.Summary, sp.Text)
+				r.Text += sp.Text
+			}
+		}
+		if r.Text == "" {
+			for _, cp := range item.Content {
+				if cp.Type == "reasoning_text" && cp.Text != "" {
+					r.Text += cp.Text
+				}
+			}
 		}
 		return []ir.Part{{Type: ir.PartReasoning, Reasoning: r}}, ir.Stop{}, nil
 

@@ -62,12 +62,14 @@ type StreamEncoder struct {
 	deferredOtherCand []ir.Event
 	deferredBytes     int
 
-	textAccum       strings.Builder
-	textAnnotations []map[string]any
-	argAccum        strings.Builder
-	reasonAccum     strings.Builder
-	reasonEnc       string
-	reasonSig       *ir.Signature
+	textAccum        strings.Builder
+	textAnnotations  []map[string]any
+	argAccum         strings.Builder
+	reasonAccum      strings.Builder
+	reasonIsSummary  bool
+	reasonPartOpened bool
+	reasonEnc        string
+	reasonSig        *ir.Signature
 
 	outputs []map[string]any
 	stop    ir.Stop
@@ -120,9 +122,13 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	switch ev.Type {
 	case ir.EvStart:
 		if !e.started {
-			e.id = ev.ID
-			if e.id == "" {
+			if e.opts.GenerateResponseID {
 				e.id = "resp_" + e.opts.Env.NewID("", 24)
+			} else {
+				e.id = ev.ID
+				if e.id == "" {
+					e.id = "resp_" + e.opts.Env.NewID("", 24)
+				}
 			}
 			e.model = e.opts.Model
 			if e.model == "" {
@@ -140,6 +146,15 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvText:
+		text := ev.Text
+		if e.openItemType != "message" || e.openItemCand != ev.Index {
+			// Strip leading newlines before opening a message item (matching OpenAI Responses
+			// behavior and preventing empty newline-only messages before tool calls).
+			text = strings.TrimLeft(text, "\r\n")
+			if text == "" {
+				break
+			}
+		}
 		dst = e.ensureStarted(dst)
 		dst = e.ensureMessageOpen(dst, ev.Index)
 		if e.errored {
@@ -150,9 +165,9 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			"item_id":         e.itemID,
 			"output_index":    e.outputIndex,
 			"content_index":   0,
-			"delta":           ev.Text,
+			"delta":           text,
 		})
-		e.textAccum.WriteString(ev.Text)
+		e.textAccum.WriteString(text)
 
 	case ir.EvRefusal:
 		dst = e.ensureStarted(dst)
@@ -216,6 +231,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			e.itemID = "rs_" + e.opts.Env.NewID("", 16)
 		}
 		e.reasonAccum.Reset()
+		e.reasonPartOpened = false
+		e.reasonIsSummary = useSummaryMode(e.opts, ev.Summary)
 		dst = e.appendEvent(dst, "response.output_item.added", map[string]any{
 			"sequence_number": e.nextSeq(),
 			"output_index":    e.outputIndex,
@@ -238,6 +255,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			e.outputIndex++
 			e.itemID = "rs_" + e.opts.Env.NewID("", 16)
 			e.reasonAccum.Reset()
+			e.reasonPartOpened = false
+			e.reasonIsSummary = useSummaryMode(e.opts, ev.Summary)
 			dst = e.appendEvent(dst, "response.output_item.added", map[string]any{
 				"sequence_number": e.nextSeq(),
 				"output_index":    e.outputIndex,
@@ -248,14 +267,45 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 				},
 			})
 		}
+		if !e.reasonPartOpened {
+			e.reasonIsSummary = useSummaryMode(e.opts, ev.Summary)
+			e.reasonPartOpened = true
+			if e.reasonIsSummary {
+				dst = e.appendEvent(dst, "response.reasoning_summary_part.added", map[string]any{
+					"sequence_number": e.nextSeq(),
+					"item_id":         e.itemID,
+					"output_index":    e.outputIndex,
+					"summary_index":   0,
+					"part":            map[string]any{"type": "summary_text", "text": ""},
+				})
+			} else {
+				dst = e.appendEvent(dst, "response.content_part.added", map[string]any{
+					"sequence_number": e.nextSeq(),
+					"item_id":         e.itemID,
+					"output_index":    e.outputIndex,
+					"content_index":   0,
+					"part":            map[string]any{"type": "reasoning_text", "text": ""},
+				})
+			}
+		}
 		e.reasonAccum.WriteString(ev.Text)
-		dst = e.appendEvent(dst, "response.reasoning_summary_text.delta", map[string]any{
-			"sequence_number": e.nextSeq(),
-			"item_id":         e.itemID,
-			"output_index":    e.outputIndex,
-			"summary_index":   0,
-			"delta":           ev.Text,
-		})
+		if e.reasonIsSummary {
+			dst = e.appendEvent(dst, "response.reasoning_summary_text.delta", map[string]any{
+				"sequence_number": e.nextSeq(),
+				"item_id":         e.itemID,
+				"output_index":    e.outputIndex,
+				"summary_index":   0,
+				"delta":           ev.Text,
+			})
+		} else {
+			dst = e.appendEvent(dst, "response.reasoning_text.delta", map[string]any{
+				"sequence_number": e.nextSeq(),
+				"item_id":         e.itemID,
+				"output_index":    e.outputIndex,
+				"content_index":   0,
+				"delta":           ev.Text,
+			})
+		}
 
 	case ir.EvSignature:
 		if ev.Signature != nil && e.openItemType == "reasoning" {
@@ -320,7 +370,6 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			"id":                e.itemID,
 			"summary":           []any{},
 			"encrypted_content": encStr,
-			"status":            "completed",
 		}
 		e.outputs = append(e.outputs, doneItem)
 		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
@@ -877,6 +926,9 @@ func (e *StreamEncoder) flushAllPendingTools(dst []byte) []byte {
 }
 
 func (e *StreamEncoder) abortOpenToolItem(dst []byte) []byte {
+	// Record the interrupted item with status:"incomplete" in e.outputs so
+	// response.incomplete.response.output stays 1:1 with output_index, without
+	// emitting response.output_item.done (which clients treat as an executable call).
 	switch e.openItemType {
 	case "function_call":
 		doneItem := map[string]any{
@@ -891,11 +943,6 @@ func (e *StreamEncoder) abortOpenToolItem(dst []byte) []byte {
 			doneItem["namespace"] = e.callNS
 		}
 		e.outputs = append(e.outputs, doneItem)
-		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
-			"sequence_number": e.nextSeq(),
-			"output_index":    e.outputIndex,
-			"item":            doneItem,
-		})
 		e.openItemType = ""
 		e.argAccum.Reset()
 	case "custom_tool_call":
@@ -911,11 +958,6 @@ func (e *StreamEncoder) abortOpenToolItem(dst []byte) []byte {
 			doneItem["namespace"] = e.callNS
 		}
 		e.outputs = append(e.outputs, doneItem)
-		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
-			"sequence_number": e.nextSeq(),
-			"output_index":    e.outputIndex,
-			"item":            doneItem,
-		})
 		e.openItemType = ""
 		e.argAccum.Reset()
 	}
@@ -1086,21 +1128,47 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 	case "reasoning":
 		rtext := e.reasonAccum.String()
 		summary := []map[string]any{}
-		if rtext != "" {
-			dst = e.appendEvent(dst, "response.reasoning_summary_text.done", map[string]any{
-				"sequence_number": e.nextSeq(),
-				"item_id":         e.itemID,
-				"output_index":    e.outputIndex,
-				"summary_index":   0,
-				"text":            rtext,
-			})
-			summary = append(summary, map[string]any{"type": "summary_text", "text": rtext})
-		}
 		doneItem := map[string]any{
 			"type":    "reasoning",
 			"id":      e.itemID,
 			"summary": summary,
-			"status":  "completed",
+		}
+		if rtext != "" {
+			if e.reasonIsSummary {
+				part := map[string]any{"type": "summary_text", "text": rtext}
+				dst = e.appendEvent(dst, "response.reasoning_summary_text.done", map[string]any{
+					"sequence_number": e.nextSeq(),
+					"item_id":         e.itemID,
+					"output_index":    e.outputIndex,
+					"summary_index":   0,
+					"text":            rtext,
+				})
+				dst = e.appendEvent(dst, "response.reasoning_summary_part.done", map[string]any{
+					"sequence_number": e.nextSeq(),
+					"item_id":         e.itemID,
+					"output_index":    e.outputIndex,
+					"summary_index":   0,
+					"part":            part,
+				})
+				doneItem["summary"] = []map[string]any{part}
+			} else {
+				part := map[string]any{"type": "reasoning_text", "text": rtext}
+				dst = e.appendEvent(dst, "response.reasoning_text.done", map[string]any{
+					"sequence_number": e.nextSeq(),
+					"item_id":         e.itemID,
+					"output_index":    e.outputIndex,
+					"content_index":   0,
+					"text":            rtext,
+				})
+				dst = e.appendEvent(dst, "response.content_part.done", map[string]any{
+					"sequence_number": e.nextSeq(),
+					"item_id":         e.itemID,
+					"output_index":    e.outputIndex,
+					"content_index":   0,
+					"part":            part,
+				})
+				doneItem["content"] = []map[string]any{part}
+			}
 		}
 		enc := e.reasonEnc
 		if enc == "" && e.reasonSig != nil && e.reasonSig.Value != "" {
@@ -1116,6 +1184,7 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 		}
 		e.reasonEnc = ""
 		e.reasonSig = nil
+		e.reasonPartOpened = false
 		e.outputs = append(e.outputs, doneItem)
 		dst = e.appendEvent(dst, "response.output_item.done", map[string]any{
 			"sequence_number": e.nextSeq(),
@@ -1143,6 +1212,14 @@ func (e *StreamEncoder) buildResponseObject(status string, includeUsage bool) ma
 		"model":  e.model,
 		"status": status,
 		"output": outs,
+	}
+	if e.opts.Request != nil {
+		if e.opts.Request.Store != nil {
+			m["store"] = *e.opts.Request.Store
+		}
+		if e.opts.Request.PromptCacheKey != "" {
+			m["prompt_cache_key"] = e.opts.Request.PromptCacheKey
+		}
 	}
 	if includeUsage && e.usage != nil {
 		m["usage"] = irUsageToWire(e.usage)
@@ -1181,7 +1258,7 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 		env = &ir.Env{}
 	}
 	id := resp.ID
-	if id == "" {
+	if opts.GenerateResponseID || id == "" {
 		id = "resp_" + env.NewID("", 24)
 	}
 	model := opts.Model
@@ -1194,7 +1271,7 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 		var parts []wireOutputItem
 		for i, p := range o.Parts {
 			fp := ir.Root.Key("output").At(i)
-			its, err := irPartToOutputItem(p, fp, env)
+			its, err := irPartToOutputItem(p, fp, env, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -1220,6 +1297,10 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 		Output: out,
 		Usage:  usageRaw,
 	}
+	if opts.Request != nil {
+		wr.Store = opts.Request.Store
+		wr.PromptCacheKey = opts.Request.PromptCacheKey
+	}
 	if status == "incomplete" {
 		reason := "max_output_tokens"
 		if stop.Filtered() {
@@ -1230,6 +1311,19 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 	return json.Marshal(wr)
 }
 
+func useSummaryMode(opts EncodeOptions, hasUpstreamSummary bool) bool {
+	if hasUpstreamSummary {
+		return true
+	}
+	if opts.Request != nil && opts.Request.Reasoning != nil {
+		s := opts.Request.Reasoning.Summary
+		if s == "auto" || s == "concise" || s == "detailed" {
+			return opts.RawReasoningAsSummary == nil || *opts.RawReasoningAsSummary
+		}
+	}
+	return false
+}
+
 func respStop(resp *ir.Response) ir.Stop {
 	if len(resp.Outputs) > 0 {
 		return resp.Outputs[0].Stop
@@ -1237,11 +1331,15 @@ func respStop(resp *ir.Response) ir.Stop {
 	return ir.Stop{}
 }
 
-func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, error) {
+func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env, opts EncodeOptions) ([]wireOutputItem, error) {
 	switch p.Type {
 	case ir.PartText:
+		text := strings.TrimLeft(p.Text, "\r\n")
+		if text == "" && len(p.Citations) == 0 {
+			return nil, nil
+		}
 		id := "msg_" + env.NewID("", 16)
-		op := wireOutputPart{Type: "output_text", Text: p.Text}
+		op := wireOutputPart{Type: "output_text", Text: text}
 		for _, c := range p.Citations {
 			typ := c.Type
 			if typ == "" {
@@ -1277,9 +1375,11 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 		if p.Reasoning == nil {
 			return nil, nil
 		}
+		emptySum := []wireReasoningPart{}
 		item := wireOutputItem{
-			Type: "reasoning",
-			ID:   p.Reasoning.ID,
+			Type:    "reasoning",
+			ID:      p.Reasoning.ID,
+			Summary: &emptySum,
 		}
 		if item.ID == "" {
 			item.ID = "rs_" + env.NewID("", 16)
@@ -1310,11 +1410,20 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 				Text:   p.Reasoning.Text,
 			})
 		}
-		for _, s := range p.Reasoning.Summary {
-			item.Summary = append(item.Summary, wireReasoningPart{Type: "summary_text", Text: s})
-		}
-		if len(item.Summary) == 0 && p.Reasoning.Text != "" {
-			item.Summary = []wireReasoningPart{{Type: "summary_text", Text: p.Reasoning.Text}}
+		if useSummaryMode(opts, len(p.Reasoning.Summary) > 0) {
+			var sum []wireReasoningPart
+			for _, s := range p.Reasoning.Summary {
+				sum = append(sum, wireReasoningPart{Type: "summary_text", Text: s})
+			}
+			if len(sum) == 0 && p.Reasoning.Text != "" {
+				sum = []wireReasoningPart{{Type: "summary_text", Text: p.Reasoning.Text}}
+			}
+			if sum == nil {
+				sum = []wireReasoningPart{}
+			}
+			item.Summary = &sum
+		} else if p.Reasoning.Text != "" {
+			item.Content = []wireOutputPart{{Type: "reasoning_text", Text: p.Reasoning.Text}}
 		}
 		return []wireOutputItem{item}, nil
 
