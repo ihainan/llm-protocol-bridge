@@ -26,12 +26,14 @@ type StreamDecoder struct {
 	// Names we've seen, for dedup of call IDs within one response.
 	seenCallIDs map[string]bool
 
-	done            bool
-	sawFinish       bool
-	terminal        bool
-	seenChoices     map[int]bool
-	finishedChoices map[int]bool
-	rawUsage        wireUsage
+	done                 bool
+	sawFinish            bool
+	terminal             bool
+	seenChoices          map[int]bool
+	finishedChoices      map[int]bool
+	rawUsage             wireUsage
+	rawDialectCacheRead  *int
+	rawDialectCacheWrite *int
 }
 
 // openCall tracks one tool call in flight within a candidate.
@@ -146,7 +148,25 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		var u wireUsage
 		if json.Unmarshal(chunk.Usage, &u) == nil {
 			mergeChatRawUsage(&d.rawUsage, &u)
-			merged := decodeUsage(&d.rawUsage, chunk.Usage, d.dia)
+			if len(d.dia.CacheReadFields) > 0 {
+				for _, field := range d.dia.CacheReadFields {
+					if n, ok := lookupIntPath(chunk.Usage, field); ok {
+						v := n
+						d.rawDialectCacheRead = &v
+						break
+					}
+				}
+			}
+			if len(d.dia.CacheWriteFields) > 0 {
+				for _, field := range d.dia.CacheWriteFields {
+					if n, ok := lookupIntPath(chunk.Usage, field); ok {
+						v := n
+						d.rawDialectCacheWrite = &v
+						break
+					}
+				}
+			}
+			merged := decodeUsageMerged(&d.rawUsage, d.rawDialectCacheRead, d.rawDialectCacheWrite, d.dia)
 			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &merged})
 		}
 	}
@@ -521,6 +541,29 @@ func decodeUsageRaw(raw json.RawMessage, dia Dialect) (ir.Usage, bool) {
 
 // decodeUsage decodes a wire usage object into ir.Usage using the dialect.
 func decodeUsage(u *wireUsage, raw json.RawMessage, dia Dialect) ir.Usage {
+	var diaRead, diaWrite *int
+	if len(dia.CacheReadFields) > 0 && len(raw) > 0 {
+		for _, field := range dia.CacheReadFields {
+			if n, ok := lookupIntPath(raw, field); ok {
+				v := n
+				diaRead = &v
+				break
+			}
+		}
+	}
+	if len(dia.CacheWriteFields) > 0 && len(raw) > 0 {
+		for _, field := range dia.CacheWriteFields {
+			if n, ok := lookupIntPath(raw, field); ok {
+				v := n
+				diaWrite = &v
+				break
+			}
+		}
+	}
+	return decodeUsageMerged(u, diaRead, diaWrite, dia)
+}
+
+func decodeUsageMerged(u *wireUsage, diaRead, diaWrite *int, dia Dialect) ir.Usage {
 	var out ir.Usage
 	if u.CompletionTokens != nil {
 		out.OutputTokens = *u.CompletionTokens
@@ -531,25 +574,15 @@ func decodeUsage(u *wireUsage, raw json.RawMessage, dia Dialect) ir.Usage {
 	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens != nil {
 		out.CacheReadTokens = *u.PromptTokensDetails.CachedTokens
 		out.Reported |= ir.UCacheRead
-	} else if len(dia.CacheReadFields) > 0 && len(raw) > 0 {
-		for _, field := range dia.CacheReadFields {
-			if n, ok := lookupIntPath(raw, field); ok {
-				out.CacheReadTokens = n
-				out.Reported |= ir.UCacheRead
-				break
-			}
-		}
+	} else if diaRead != nil {
+		out.CacheReadTokens = *diaRead
+		out.Reported |= ir.UCacheRead
 	}
 
 	// Cache write: dialect-configured field paths.
-	if len(dia.CacheWriteFields) > 0 && len(raw) > 0 {
-		for _, field := range dia.CacheWriteFields {
-			if n, ok := lookupIntPath(raw, field); ok {
-				out.CacheWriteTokens = n
-				out.Reported |= ir.UCacheWrite
-				break
-			}
-		}
+	if diaWrite != nil {
+		out.CacheWriteTokens = *diaWrite
+		out.Reported |= ir.UCacheWrite
 	}
 
 	// Reasoning tokens.

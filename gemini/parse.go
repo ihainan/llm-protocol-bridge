@@ -402,9 +402,11 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 			}
 		}
 		if len(extraPartsRaw) > 0 && !jsonx.IsNull(extraPartsRaw) {
-			if extraParts, err := parseContentParts(extraPartsRaw, p.Key("functionResponse").Key("parts"), env); err == nil {
-				result.Content = append(result.Content, extraParts...)
+			extraParts, err := parseContentParts(extraPartsRaw, p.Key("functionResponse").Key("parts"), env)
+			if err != nil {
+				return ir.Part{}, err
 			}
+			result.Content = append(result.Content, extraParts...)
 		}
 		return ir.Part{Type: ir.PartToolResult, Result: result}, nil
 

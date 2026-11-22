@@ -525,6 +525,7 @@ type Stream struct {
 	expectedCands int
 	finishedCands map[int]bool
 	done          bool
+	errored       bool
 }
 
 func newStream(p *Plan, collect bool) *Stream {
@@ -592,7 +593,11 @@ func newStreamWithEncoder(p *Plan, eo encodeOpts) *Stream {
 	case ir.FormatResponses:
 		dec = responses.NewStreamDecoder(responses.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Responses, Names: p.names})
 	case ir.FormatAnthropic:
-		dec = anthropic.NewStreamDecoder(anthropic.DecodeOptions{Env: upstreamEnv, Names: p.names})
+		dec = anthropic.NewStreamDecoder(anthropic.DecodeOptions{
+			Env:              upstreamEnv,
+			Names:            p.names,
+			MaxBufferedBytes: p.opts.Limits.MaxBufferedBytes,
+		})
 	case ir.FormatGemini:
 		dec = gemini.NewStreamDecoder(gemini.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Gemini, Names: p.names})
 	default:
@@ -628,6 +633,7 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 		filtered := s.filter.process(rawEv)
 		for _, e := range filtered {
 			if e.Type == ir.EvError {
+				s.errored = true
 				s.done = true
 			}
 			if e.Type == ir.EvStop {
@@ -655,7 +661,8 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 
 // End signals how the upstream ended and flushes any final client bytes.
 func (s *Stream) End(dst []byte, how ir.EndKind) ([]byte, error) {
-	if !s.done && !s.filter.allStopsTriggered(s.expectedCands) {
+	earlyEmulatedDone := s.done && len(s.filter.stopTriggered) > 0
+	if !s.errored && !earlyEmulatedDone && !s.filter.allStopsTriggered(s.expectedCands) {
 		ev := s.dec.End(how)
 		if ev == nil && !s.done && len(s.finishedCands) < s.expectedCands && len(s.filter.intercepted) == 0 {
 			ev = ir.EndErrorEvent(how)
@@ -663,6 +670,7 @@ func (s *Stream) End(dst []byte, how ir.EndKind) ([]byte, error) {
 		if ev != nil {
 			for _, e := range s.filter.process(*ev) {
 				if e.Type == ir.EvError {
+					s.errored = true
 					s.done = true
 				}
 				if e.Type == ir.EvStop {

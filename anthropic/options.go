@@ -24,6 +24,8 @@ type DecodeOptions struct {
 	Dialect Dialect
 	// Names maps sanitised upstream tool names back to their original IR identifiers.
 	Names map[string]ir.ToolRef
+	// MaxBufferedBytes caps buffered server_tool_use JSON arguments (default 8 MiB).
+	MaxBufferedBytes int
 }
 
 // EncodeOptions controls how an ir.Response is serialised to Anthropic Messages JSON.

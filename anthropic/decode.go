@@ -20,7 +20,11 @@ type StreamDecoder struct {
 	blockCallID     map[int]string
 	serverToolBlock map[int]*ir.BuiltinActivity
 	serverToolArgs  map[int]*strings.Builder
+	serverToolBytes int
+	maxBuf          int
 }
+
+const defaultAnthropicMaxBufferedBytes = 8 << 20
 
 // NewStreamDecoder returns an Anthropic stream decoder.
 func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
@@ -29,6 +33,10 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 		env = &ir.Env{}
 	}
 	env.Style = ir.StyleDot
+	maxBuf := opts.MaxBufferedBytes
+	if maxBuf <= 0 {
+		maxBuf = defaultAnthropicMaxBufferedBytes
+	}
 	return &StreamDecoder{
 		env:             env,
 		names:           opts.Names,
@@ -36,6 +44,7 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 		blockCallID:     map[int]string{},
 		serverToolBlock: map[int]*ir.BuiltinActivity{},
 		serverToolArgs:  map[int]*strings.Builder{},
+		maxBuf:          maxBuf,
 	}
 }
 
@@ -172,6 +181,18 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				out = append(out, ir.Event{Type: ir.EvToolArgs, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index], Text: se.Delta.PartialJSON})
 			} else if blockType == "server_tool_use" {
 				if sb := d.serverToolArgs[se.Index]; sb != nil {
+					if d.serverToolBytes+len(se.Delta.PartialJSON) > d.maxBuf {
+						d.serverToolBlock = map[int]*ir.BuiltinActivity{}
+						d.serverToolArgs = map[int]*strings.Builder{}
+						d.serverToolBytes = 0
+						d.terminal = true
+						out = append(out, ir.Event{
+							Type: ir.EvError,
+							Err:  &ir.APIError{Status: 502, Type: ir.ErrServer, Message: "buffered server_tool_use arguments exceeded max_buffered_bytes"},
+						})
+						return out, nil
+					}
+					d.serverToolBytes += len(se.Delta.PartialJSON)
 					sb.WriteString(se.Delta.PartialJSON)
 				}
 			}
@@ -186,6 +207,10 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		case "server_tool_use":
 			if b := d.serverToolBlock[se.Index]; b != nil {
 				if sb := d.serverToolArgs[se.Index]; sb != nil && sb.Len() > 0 {
+					d.serverToolBytes -= sb.Len()
+					if d.serverToolBytes < 0 {
+						d.serverToolBytes = 0
+					}
 					b.Input = json.RawMessage(sb.String())
 				}
 				out = append(out, ir.Event{Type: ir.EvBuiltin, Index: 0, Builtin: b})
