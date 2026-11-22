@@ -298,6 +298,7 @@ func parseContentBlock(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, er
 
 	case "tool_use":
 		id, _ := jsonx.String(fields["id"])
+		id = ir.AnthropicRawID(id)
 		name, _ := jsonx.String(fields["name"])
 		if name == "" {
 			return ir.Part{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
@@ -310,6 +311,7 @@ func parseContentBlock(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, er
 
 	case "tool_result":
 		callID, _ := jsonx.String(fields["tool_use_id"])
+		callID = ir.AnthropicRawID(callID)
 		isErr := false
 		if b, ok := jsonx.Bool(fields["is_error"]); ok {
 			isErr = b

@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
 	"github.com/ihainan/llm-protocol-bridge/internal/schema"
@@ -18,10 +19,20 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	dia := opts.Dialect
 	names := map[string]ir.ToolRef{}
 
+	// Map tool call IDs to function names so functionResponse.name is always populated.
+	callNames := map[string]string{}
+	for _, msg := range req.Messages {
+		for _, pt := range msg.Parts {
+			if pt.Type == ir.PartToolCall && pt.Call != nil && pt.Call.ID != "" && pt.Call.Name != "" {
+				callNames[pt.Call.ID] = pt.Call.Name
+			}
+		}
+	}
+
 	// System instruction.
 	var sysContent *wireContent
 	if len(req.Instructions) > 0 {
-		parts, err := irPartsToWireParts(req.Instructions, ir.Root.Key("systemInstruction"), env, dia, names, false)
+		parts, err := irPartsToWireParts(req.Instructions, ir.Root.Key("systemInstruction"), env, dia, names, callNames, false)
 		if err != nil {
 			return nil, err
 		}
@@ -32,7 +43,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	var contents []wireContent
 	for i, msg := range req.Messages {
 		fp := ir.Root.Key("contents").At(i)
-		wc, err := irMessageToWireContent(msg, fp, env, dia, names)
+		wc, err := irMessageToWireContent(msg, fp, env, dia, names, callNames)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +124,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}, nil
 }
 
-func irMessageToWireContent(msg ir.Message, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef) (wireContent, error) {
+func irMessageToWireContent(msg ir.Message, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef, callNames map[string]string) (wireContent, error) {
 	var role string
 	switch msg.Role {
 	case ir.RoleUser, ir.RoleSystem, ir.RoleDeveloper:
@@ -121,18 +132,18 @@ func irMessageToWireContent(msg ir.Message, p ir.Path, env *ir.Env, dia Dialect,
 	case ir.RoleAssistant:
 		role = "model"
 	}
-	parts, err := irPartsToWireParts(msg.Parts, p.Key("parts"), env, dia, names, true)
+	parts, err := irPartsToWireParts(msg.Parts, p.Key("parts"), env, dia, names, callNames, true)
 	if err != nil {
 		return wireContent{}, err
 	}
 	return wireContent{Role: role, Parts: parts}, nil
 }
 
-func irPartsToWireParts(parts []ir.Part, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef, inMessage bool) ([]wirePart, error) {
+func irPartsToWireParts(parts []ir.Part, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef, callNames map[string]string, inMessage bool) ([]wirePart, error) {
 	var out []wirePart
 	for i, part := range parts {
 		fp := p.At(i)
-		wp, err := irPartToWirePart(part, fp, env, dia, names, inMessage)
+		wp, err := irPartToWirePart(part, fp, env, dia, names, callNames, inMessage)
 		if err != nil {
 			return nil, err
 		}
@@ -141,7 +152,7 @@ func irPartsToWireParts(parts []ir.Part, p ir.Path, env *ir.Env, dia Dialect, na
 	return out, nil
 }
 
-func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef, inMessage bool) ([]wirePart, error) {
+func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names map[string]ir.ToolRef, callNames map[string]string, inMessage bool) ([]wirePart, error) {
 	switch part.Type {
 	case ir.PartText:
 		wp := wirePart{Text: part.Text}
@@ -232,18 +243,25 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 			return nil, nil
 		}
 		result := part.Result
-		// Wrap content as {output: <text>} or {error: <text>}.
+		fnName := result.Name
+		if fnName == "" && result.CallID != "" && callNames != nil {
+			fnName = callNames[result.CallID]
+		}
+		// Wrap content as {output: <text>} or {error: <text>}, preserving JSON objects directly when not an error.
 		var respRaw json.RawMessage
 		text := toolResultText(result.Content)
+		trimmed := strings.TrimSpace(text)
 		if result.IsError {
 			b, _ := jsonx.Marshal(map[string]any{"error": text})
 			respRaw = b
+		} else if len(trimmed) > 0 && jsonx.Kind([]byte(trimmed)) == '{' && json.Valid([]byte(trimmed)) {
+			respRaw = json.RawMessage(trimmed)
 		} else {
 			b, _ := jsonx.Marshal(map[string]any{"output": text})
 			respRaw = b
 		}
 		fr := &wireFunctionResponse{
-			Name:     result.Name,
+			Name:     fnName,
 			Response: respRaw,
 		}
 		if dia.FunctionCallIDs && result.CallID != "" {
@@ -278,12 +296,13 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 }
 
 func toolResultText(parts []ir.Part) string {
+	var sb strings.Builder
 	for _, p := range parts {
 		if p.Type == ir.PartText {
-			return p.Text
+			sb.WriteString(p.Text)
 		}
 	}
-	return ""
+	return sb.String()
 }
 
 func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env) (wireFunctionDecl, error) {

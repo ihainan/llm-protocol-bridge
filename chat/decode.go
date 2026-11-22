@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
@@ -21,9 +22,6 @@ type StreamDecoder struct {
 	model      string
 	created    int64
 	candidates map[int]*chatCandidate // index -> candidate state
-	// currentToolIndex maps chat tool-call index -> the open tool call's IR state
-	// (chat calls share one index per call, and multiple calls may interleave).
-	toolCalls map[int]*openCall
 
 	// Names we've seen, for dedup of call IDs within one response.
 	seenCallIDs map[string]bool
@@ -35,24 +33,22 @@ type StreamDecoder struct {
 
 // openCall tracks one tool call in flight within a candidate.
 type openCall struct {
-	// partIndex is the index of the tool-call part in the candidate's parts slice.
-	partIndex int
+	id        string
+	name      string
+	namespace string
+	kind      ir.ToolKind
 	// nameBuilt accumulates the streamed name fragments.
 	nameBuilt strings.Builder
 	// argsBuilt accumulates the streamed arguments fragments.
 	argsBuilt strings.Builder
-	// nameSeen is whether the first fragment with a name has arrived (so we can
-	// emit a tool_start event the first time we know a call's index).
+	// started is whether EvToolStart has been emitted for this call.
 	started bool
 }
 
 // chatCandidate is per-choice state in the stream.
 type chatCandidate struct {
-	index int
-	// openCallIdx is the index of the tool call whose arguments are currently
-	// streaming (used only for ordering).
-	openCallIdx int
-	hasCall     bool
+	index     int
+	toolCalls map[int]*openCall
 }
 
 // NewStreamDecoder returns a Chat Completions stream decoder.
@@ -67,7 +63,6 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 		dia:         opts.Dialect,
 		names:       opts.Names,
 		candidates:  map[int]*chatCandidate{},
-		toolCalls:   map[int]*openCall{},
 		seenCallIDs: map[string]bool{},
 	}
 }
@@ -143,7 +138,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 	for _, ch := range chunk.Choices {
 		ci := ch.Index
 		if d.candidates[ci] == nil {
-			d.candidates[ci] = &chatCandidate{index: ci}
+			d.candidates[ci] = &chatCandidate{index: ci, toolCalls: map[int]*openCall{}}
 		}
 		out = d.decodeChoice(out, ci, ch)
 	}
@@ -201,34 +196,56 @@ func (d *StreamDecoder) decodeChoice(out []ir.Event, ci int, ch wireStreamChoice
 }
 
 func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolCall) []ir.Event {
+	cand := d.candidates[ci]
+	if cand == nil {
+		cand = &chatCandidate{index: ci, toolCalls: map[int]*openCall{}}
+		d.candidates[ci] = cand
+	}
 	// Determine the call index. Chat uses an integer index in streaming.
 	idx := 0
 	if tc.Index != nil {
 		idx = *tc.Index
 	}
-	call, exists := d.toolCalls[idx]
+	call, exists := cand.toolCalls[idx]
 	if !exists {
-		call = &openCall{partIndex: -1}
-		d.toolCalls[idx] = call
+		call = &openCall{kind: ir.ToolFunction}
+		cand.toolCalls[idx] = call
+	}
+
+	if tc.ID != "" && call.id == "" {
+		call.id = tc.ID
+	}
+	if tc.Function.Name != "" {
+		call.nameBuilt.WriteString(tc.Function.Name)
 	}
 
 	if !call.started {
-		// Emit tool_start once we have either a name or any arguments.
 		call.started = true
+		if call.id == "" {
+			call.id = d.env.NewID("call_", 16)
+		}
+		name := call.nameBuilt.String()
+		ns := ""
+		kind := ir.ToolFunction
+		if ref, ok := d.names[name]; ok {
+			name = ref.Name
+			ns = ref.Namespace
+			if ref.Kind != "" {
+				kind = ref.Kind
+			}
+		}
+		call.name = name
+		call.namespace = ns
+		call.kind = kind
 		out = append(out, ir.Event{
 			Type:      ir.EvToolStart,
 			Index:     ci,
-			ID:        tc.ID,
-			Name:      tc.Function.Name,
-			Namespace: "",
-			Kind:      ir.ToolFunction,
+			Part:      idx,
+			ID:        call.id,
+			Name:      name,
+			Namespace: ns,
+			Kind:      kind,
 		})
-	}
-
-	// Accumulate name fragments (chat may send the name across multiple chunks,
-	// or re-send it whole after a prefix).
-	if tc.Function.Name != "" {
-		call.nameBuilt.WriteString(tc.Function.Name)
 	}
 
 	// Accumulate argument fragments.
@@ -237,6 +254,8 @@ func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolC
 		out = append(out, ir.Event{
 			Type:  ir.EvToolArgs,
 			Index: ci,
+			Part:  idx,
+			ID:    call.id,
 			Text:  tc.Function.Arguments,
 		})
 	}
@@ -245,27 +264,47 @@ func (d *StreamDecoder) decodeToolCallDelta(out []ir.Event, ci int, tc wireToolC
 }
 
 func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []ir.Event {
-	// Close all open tool calls for this choice.
-	for idx, call := range d.toolCalls {
-		if !call.started {
-			continue
+	cand := d.candidates[ci]
+	if cand != nil && len(cand.toolCalls) > 0 {
+		idxs := make([]int, 0, len(cand.toolCalls))
+		for idx := range cand.toolCalls {
+			idxs = append(idxs, idx)
 		}
-		args := call.argsBuilt.String()
-		out = append(out, ir.Event{
-			Type:      ir.EvToolEnd,
-			Index:     ci,
-			Arguments: json.RawMessage(args),
-		})
-		// Replace the partial name with the fully accumulated one if present.
-		_ = idx
+		sort.Ints(idxs)
+		for _, idx := range idxs {
+			call := cand.toolCalls[idx]
+			if !call.started {
+				continue
+			}
+			argsStr := strings.TrimSpace(call.argsBuilt.String())
+			var argsRaw json.RawMessage
+			if call.kind == ir.ToolCustom {
+				var m map[string]string
+				if json.Unmarshal([]byte(argsStr), &m) == nil {
+					argsRaw, _ = jsonx.Marshal(m["input"])
+				} else if argsStr != "" {
+					argsRaw, _ = jsonx.Marshal(argsStr)
+				}
+			} else {
+				if argsStr == "" {
+					argsStr = "{}"
+				}
+				argsRaw = json.RawMessage(argsStr)
+			}
+			out = append(out, ir.Event{
+				Type:      ir.EvToolEnd,
+				Index:     ci,
+				Part:      idx,
+				ID:        call.id,
+				Arguments: argsRaw,
+			})
+		}
+		cand.toolCalls = map[int]*openCall{}
 	}
 
 	stop := stopFromFinish(finish)
 	out = append(out, ir.Event{Type: ir.EvStop, Index: ci, Stop: &stop})
 	d.sawFinish = true
-
-	// Clear call state for this choice so the next choice can start fresh.
-	d.toolCalls = map[int]*openCall{}
 	return out
 }
 
@@ -434,7 +473,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 	for _, ch := range wr.Choices {
 		out := ir.Output{Index: ch.Index}
 		// Message -> parts.
-		parts, err := parseAssistantMessage(ch.Message, ir.Root.Key("choices").At(ch.Index).Key("message"), env)
+		parts, err := parseAssistantMessage(ch.Message, ir.Root.Key("choices").At(ch.Index).Key("message"), opts.Names, env)
 		if err != nil {
 			return nil, err
 		}
@@ -455,7 +494,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 }
 
 // parseAssistantMessage converts a non-streaming assistant wireMessage to parts.
-func parseAssistantMessage(wm wireMessage, p ir.Path, env *ir.Env) ([]ir.Part, error) {
+func parseAssistantMessage(wm wireMessage, p ir.Path, names map[string]ir.ToolRef, env *ir.Env) ([]ir.Part, error) {
 	var parts []ir.Part
 	// Reasoning.
 	if wm.ReasoningContent != "" {
@@ -499,6 +538,21 @@ func parseAssistantMessage(wm wireMessage, p ir.Path, env *ir.Env) ([]ir.Part, e
 		part, err := wireToolCallToPart(tc, fp, env)
 		if err != nil {
 			return nil, err
+		}
+		if part.Call != nil && names != nil {
+			if ref, ok := names[part.Call.Name]; ok {
+				part.Call.Name = ref.Name
+				part.Call.Namespace = ref.Namespace
+				if ref.Kind != "" {
+					part.Call.Kind = ref.Kind
+				}
+				if part.Call.Kind == ir.ToolCustom && part.Call.Input == "" && len(part.Call.Arguments) > 0 {
+					var m map[string]string
+					if json.Unmarshal(part.Call.Arguments, &m) == nil {
+						part.Call.Input = m["input"]
+					}
+				}
+			}
 		}
 		parts = append(parts, part)
 	}

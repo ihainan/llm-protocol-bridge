@@ -9,6 +9,16 @@ import (
 	"github.com/ihainan/llm-protocol-bridge/sse"
 )
 
+type pendingRespTool struct {
+	id        string
+	name      string
+	ns        string
+	kind      ir.ToolKind
+	args      strings.Builder
+	finalArgs json.RawMessage
+	done      bool
+}
+
 // StreamEncoder converts ir.Events into Responses API SSE chunks.
 type StreamEncoder struct {
 	opts    EncodeOptions
@@ -29,9 +39,11 @@ type StreamEncoder struct {
 	// itemID is the wire item id assigned to the open item.
 	itemID string
 	// callID is the tool call_id (may differ from itemID).
-	callID   string
-	callName string
-	callNS   string
+	callID       string
+	callName     string
+	callNS       string
+	pendingTools []*pendingRespTool
+	pendingByID  map[string]*pendingRespTool
 
 	textAccum   strings.Builder
 	argAccum    strings.Builder
@@ -44,7 +56,7 @@ type StreamEncoder struct {
 
 // NewStreamEncoder returns a Responses stream encoder.
 func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
-	return &StreamEncoder{opts: opts, outputIndex: -1}
+	return &StreamEncoder{opts: opts, outputIndex: -1, pendingByID: map[string]*pendingRespTool{}}
 }
 
 func (e *StreamEncoder) ensureStarted(dst []byte) []byte {
@@ -190,52 +202,23 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvToolStart:
 		dst = e.ensureStarted(dst)
-		dst = e.closeItem(dst)
-		e.outputIndex++
-		e.callName = ev.Name
-		e.callNS = ev.Namespace
-		e.callID = ev.ID
-		if e.callID == "" {
-			e.callID = "call_" + e.opts.Env.NewID("", 16)
-		}
-		e.argAccum.Reset()
-		if ev.Kind == ir.ToolCustom {
-			e.openItemType = "custom_tool_call"
-			e.itemID = "ctc_" + e.opts.Env.NewID("", 16)
-			item := map[string]any{
-				"type":    "custom_tool_call",
-				"id":      e.itemID,
-				"call_id": e.callID,
-				"name":    ev.Name,
-				"input":   "",
-				"status":  "in_progress",
+		if e.openItemType == "function_call" || e.openItemType == "custom_tool_call" {
+			pt := &pendingRespTool{id: ev.ID, name: ev.Name, ns: ev.Namespace, kind: ev.Kind}
+			e.pendingTools = append(e.pendingTools, pt)
+			if ev.ID != "" {
+				e.pendingByID[ev.ID] = pt
 			}
-			if ev.Namespace != "" {
-				item["namespace"] = ev.Namespace
-			}
-			dst = e.appendEvent(dst, "response.output_item.added", map[string]any{
-				"sequence_number": e.nextSeq(),
-				"output_index":    e.outputIndex,
-				"item":            item,
-			})
-		} else {
-			e.openItemType = "function_call"
-			e.itemID = "fc_" + e.opts.Env.NewID("", 16)
-			dst = e.appendEvent(dst, "response.output_item.added", map[string]any{
-				"sequence_number": e.nextSeq(),
-				"output_index":    e.outputIndex,
-				"item": map[string]any{
-					"type":      "function_call",
-					"id":        e.itemID,
-					"call_id":   e.callID,
-					"name":      ev.Name,
-					"arguments": "",
-					"status":    "in_progress",
-				},
-			})
+			break
 		}
+		dst = e.openToolItem(dst, ev.ID, ev.Name, ev.Namespace, ev.Kind)
 
 	case ir.EvToolArgs:
+		if ev.ID != "" && ev.ID != e.callID {
+			if pt := e.pendingByID[ev.ID]; pt != nil {
+				pt.args.WriteString(ev.Text)
+				break
+			}
+		}
 		switch e.openItemType {
 		case "function_call":
 			e.argAccum.WriteString(ev.Text)
@@ -256,7 +239,15 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 
 	case ir.EvToolEnd:
+		if ev.ID != "" && ev.ID != e.callID {
+			if pt := e.pendingByID[ev.ID]; pt != nil {
+				pt.finalArgs = ev.Arguments
+				pt.done = true
+				break
+			}
+		}
 		dst = e.finishToolItem(dst, ev.Arguments)
+		dst = e.drainPendingTools(dst)
 
 	case ir.EvStop:
 		e.stop = ir.Stop{}
@@ -265,6 +256,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 		e.stopped = true
 		dst = e.closeItem(dst)
+		dst = e.flushAllPendingTools(dst)
 		// Defer terminal response.completed / response.incomplete to Close()
 		// so trailing EvUsage events (Chat, Anthropic, EventsOf) are included.
 
@@ -307,6 +299,7 @@ func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 	}
 	dst = e.ensureStarted(dst)
 	dst = e.closeItem(dst)
+	dst = e.flushAllPendingTools(dst)
 	status := stopToResponsesStatus(e.stop)
 	evName := "response.completed"
 	if status == "incomplete" {
@@ -362,6 +355,90 @@ func (e *StreamEncoder) ensureMessageOpen(dst []byte) []byte {
 			"text": "",
 		},
 	})
+	return dst
+}
+
+func (e *StreamEncoder) openToolItem(dst []byte, id, name, ns string, kind ir.ToolKind) []byte {
+	dst = e.closeItem(dst)
+	e.outputIndex++
+	e.callName = name
+	e.callNS = ns
+	e.callID = id
+	if e.callID == "" {
+		e.callID = "call_" + e.opts.Env.NewID("", 16)
+	}
+	e.argAccum.Reset()
+	if kind == ir.ToolCustom {
+		e.openItemType = "custom_tool_call"
+		e.itemID = "ctc_" + e.opts.Env.NewID("", 16)
+		item := map[string]any{
+			"type":    "custom_tool_call",
+			"id":      e.itemID,
+			"call_id": e.callID,
+			"name":    name,
+			"input":   "",
+			"status":  "in_progress",
+		}
+		if ns != "" {
+			item["namespace"] = ns
+		}
+		return e.appendEvent(dst, "response.output_item.added", map[string]any{
+			"sequence_number": e.nextSeq(),
+			"output_index":    e.outputIndex,
+			"item":            item,
+		})
+	}
+	e.openItemType = "function_call"
+	e.itemID = "fc_" + e.opts.Env.NewID("", 16)
+	return e.appendEvent(dst, "response.output_item.added", map[string]any{
+		"sequence_number": e.nextSeq(),
+		"output_index":    e.outputIndex,
+		"item": map[string]any{
+			"type":      "function_call",
+			"id":        e.itemID,
+			"call_id":   e.callID,
+			"name":      name,
+			"arguments": "",
+			"status":    "in_progress",
+		},
+	})
+}
+
+func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
+	for len(e.pendingTools) > 0 {
+		pt := e.pendingTools[0]
+		e.pendingTools = e.pendingTools[1:]
+		if pt.id != "" {
+			delete(e.pendingByID, pt.id)
+		}
+		dst = e.openToolItem(dst, pt.id, pt.name, pt.ns, pt.kind)
+		if s := pt.args.String(); s != "" {
+			e.argAccum.WriteString(s)
+			evName := "response.function_call_arguments.delta"
+			if pt.kind == ir.ToolCustom {
+				evName = "response.custom_tool_call_input.delta"
+			}
+			dst = e.appendEvent(dst, evName, map[string]any{
+				"sequence_number": e.nextSeq(),
+				"output_index":    e.outputIndex,
+				"item_id":         e.itemID,
+				"delta":           s,
+			})
+		}
+		if pt.done {
+			dst = e.finishToolItem(dst, pt.finalArgs)
+			continue
+		}
+		break
+	}
+	return dst
+}
+
+func (e *StreamEncoder) flushAllPendingTools(dst []byte) []byte {
+	for len(e.pendingTools) > 0 {
+		e.pendingTools[0].done = true
+		dst = e.drainPendingTools(dst)
+	}
 	return dst
 }
 

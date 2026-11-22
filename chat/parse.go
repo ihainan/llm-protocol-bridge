@@ -309,21 +309,28 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 
 	switch role {
 	case "tool":
-		// A tool message carries a single text result.
+		// A tool message carries a string or content-part array.
+		var parts []ir.Part
 		if !jsonx.IsNull(contentRaw) {
-			text := ""
-			if s, ok := jsonx.String(contentRaw); ok {
-				text = s
+			if jsonx.Kind(contentRaw) == '"' {
+				s, _ := jsonx.String(contentRaw)
+				parts = []ir.Part{ir.TextPart(s)}
+			} else {
+				var err error
+				parts, err = parseContent(contentRaw, p.Key("content"), env)
+				if err != nil {
+					return ir.Message{}, err
+				}
 			}
-			msg.Parts = []ir.Part{{
-				Type: ir.PartToolResult,
-				Result: &ir.ToolResult{
-					CallID:  toolCallID,
-					IsError: false,
-					Content: []ir.Part{ir.TextPart(text)},
-				},
-			}}
 		}
+		msg.Parts = []ir.Part{{
+			Type: ir.PartToolResult,
+			Result: &ir.ToolResult{
+				CallID:  toolCallID,
+				IsError: false,
+				Content: parts,
+			},
+		}}
 
 	case "assistant":
 		if reasoningText != "" {

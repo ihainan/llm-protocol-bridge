@@ -2,35 +2,63 @@ package gemini
 
 import (
 	"encoding/json"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/ihainan/llm-protocol-bridge/ir"
 	"github.com/ihainan/llm-protocol-bridge/sse"
 )
 
+type pendingGeminiCall struct {
+	id        string
+	name      string
+	args      strings.Builder
+	signature string
+	order     int
+}
+
+type geminiCand struct {
+	calls       map[string]*pendingGeminiCall
+	lastCallKey string
+	callSeq     int
+}
+
 // StreamEncoder converts ir.Events into Gemini streamGenerateContent chunks.
 type StreamEncoder struct {
-	opts    EncodeOptions
-	model   string
-	started bool
-	errored bool
-	// pending accumulates parts for the current candidate before a stop event
-	// flushes them as a chunk.
-	pending []wirePart
-	// pendingIdx is the candidate index of pending parts.
-	pendingIdx int
-	// usage holds the last usage snapshot seen.
-	usage *wireUsage
-	// stop holds the finish reason for the current candidate.
-	stop string
+	opts        EncodeOptions
+	model       string
+	started     bool
+	errored     bool
+	arrayOpened bool
+	arrayClosed bool
+	chunkCount  int
+	cands       map[int]*geminiCand
+	usage       *ir.Usage
 }
 
 // NewStreamEncoder returns a Gemini stream encoder.
 func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
-	return &StreamEncoder{opts: opts}
+	return &StreamEncoder{
+		opts:  opts,
+		cands: map[int]*geminiCand{},
+	}
+}
+
+func (e *StreamEncoder) cand(idx int) *geminiCand {
+	c := e.cands[idx]
+	if c == nil {
+		c = &geminiCand{calls: map[string]*pendingGeminiCall{}}
+		e.cands[idx] = c
+	}
+	return c
 }
 
 // Encode serialises one ir.Event to Gemini SSE / JSON-stream bytes appended to dst.
 func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
+	if e.errored {
+		return dst, nil
+	}
 	switch ev.Type {
 	case ir.EvStart:
 		e.model = ev.Model
@@ -39,79 +67,115 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}
 		e.started = true
 		if ev.Usage != nil {
-			e.usage = irUsageToWire(ev.Usage)
-		}
-
-	case ir.EvText:
-		e.pending = append(e.pending, wirePart{Text: ev.Text})
-
-	case ir.EvReasoningStart:
-		// no-op; first EvReasoning event will add a thought part
-
-	case ir.EvReasoning:
-		e.pending = append(e.pending, wirePart{Text: ev.Text, Thought: true})
-
-	case ir.EvSignature:
-		if ev.Signature != nil && len(e.pending) > 0 {
-			last := &e.pending[len(e.pending)-1]
-			last.ThoughtSignature = ev.Signature.Value
-		}
-
-	case ir.EvToolStart:
-		// Accumulate; EvToolEnd will add the functionCall part with final args.
-		e.pending = append(e.pending, wirePart{
-			FunctionCall: &wireFunctionCall{
-				ID:   ev.ID,
-				Name: ev.Name,
-			},
-		})
-
-	case ir.EvToolArgs:
-		// Update the last pending function call's args incrementally; we overwrite
-		// since Gemini sends complete args in one shot.
-		for i := len(e.pending) - 1; i >= 0; i-- {
-			if e.pending[i].FunctionCall != nil {
-				e.pending[i].FunctionCall.Args = json.RawMessage(ev.Text)
-				break
+			if e.usage == nil {
+				u := *ev.Usage
+				e.usage = &u
+			} else {
+				e.usage.Merge(*ev.Usage)
 			}
 		}
 
+	case ir.EvText:
+		if ev.Text == "" {
+			break
+		}
+		dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{Text: ev.Text}}, "")
+
+	case ir.EvReasoningStart:
+		// No wire chunk needed until thought text arrives.
+
+	case ir.EvReasoning:
+		if ev.Text == "" {
+			break
+		}
+		dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{Text: ev.Text, Thought: true}}, "")
+
+	case ir.EvSignature:
+		if ev.Signature == nil || ev.Signature.Value == "" {
+			break
+		}
+		c := e.cand(ev.Index)
+		if c.lastCallKey != "" {
+			if pc := c.calls[c.lastCallKey]; pc != nil {
+				pc.signature = ev.Signature.Value
+				break
+			}
+		}
+		dst = e.emitCandidateParts(dst, ev.Index, []wirePart{{ThoughtSignature: ev.Signature.Value}}, "")
+
+	case ir.EvToolStart:
+		c := e.cand(ev.Index)
+		c.callSeq++
+		key := ev.ID
+		if key == "" {
+			key = "__call_" + strconv.Itoa(c.callSeq)
+		}
+		pc := &pendingGeminiCall{
+			id:    ev.ID,
+			name:  ev.Name,
+			order: c.callSeq,
+		}
+		if ev.Signature != nil {
+			pc.signature = ev.Signature.Value
+		}
+		c.calls[key] = pc
+		c.lastCallKey = key
+
+	case ir.EvToolArgs:
+		c := e.cand(ev.Index)
+		pc := c.lookup(ev.ID)
+		if pc != nil && ev.Text != "" {
+			pc.args.WriteString(ev.Text)
+		}
+
 	case ir.EvToolEnd:
-		if ev.Arguments != nil {
-			for i := len(e.pending) - 1; i >= 0; i-- {
-				if e.pending[i].FunctionCall != nil {
-					e.pending[i].FunctionCall.Args = ev.Arguments
-					break
-				}
+		c := e.cand(ev.Index)
+		key, pc := c.lookupWithKey(ev.ID)
+		if pc != nil {
+			dst = e.emitCall(dst, ev.Index, pc, ev.Arguments)
+			delete(c.calls, key)
+			if c.lastCallKey == key {
+				c.lastCallKey = ""
 			}
 		}
 
 	case ir.EvStop:
-		e.pendingIdx = ev.Index
+		c := e.cand(ev.Index)
+		dst = e.flushPendingCalls(dst, ev.Index, c)
+		reason := "STOP"
 		if ev.Stop != nil {
-			e.stop = irStopToGemini(ev.Stop)
-		} else {
-			e.stop = "STOP"
+			reason = irStopToGemini(ev.Stop)
 		}
-		dst = e.flush(dst)
+		dst = e.emitCandidateParts(dst, ev.Index, nil, reason)
 
 	case ir.EvUsage:
 		if ev.Usage != nil {
-			e.usage = irUsageToWire(ev.Usage)
+			if e.usage == nil {
+				u := *ev.Usage
+				e.usage = &u
+			} else {
+				e.usage.Merge(*ev.Usage)
+			}
 		}
-		// Emit a usage-only chunk.
-		chunk := wireResponse{
-			UsageMetadata: e.usage,
-			ModelVersion:  e.model,
+		if e.usage != nil {
+			chunk := wireResponse{
+				UsageMetadata: irUsageToWire(e.usage),
+				ModelVersion:  e.model,
+			}
+			dst = e.emit(dst, chunk)
 		}
-		dst = e.emit(dst, chunk)
 
 	case ir.EvError:
 		if ev.Err != nil {
 			e.errored = true
-			e.pending = nil
+			e.cands = map[int]*geminiCand{}
 			if e.opts.AltSSE {
 				dst = BuildStreamErrorSSE(dst, ev.Err)
+			} else if e.arrayOpened && !e.arrayClosed {
+				dst = append(dst, ',')
+				dst = BuildStreamError(dst, ev.Err)
+				dst = append(dst, ']')
+				e.arrayClosed = true
 			} else {
 				dst = BuildStreamError(dst, ev.Err)
 			}
@@ -120,40 +184,103 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	return dst, nil
 }
 
-// Close flushes any remaining pending parts unless the stream ended with an error.
+// Close flushes any remaining pending tool calls and closes the JSON array when AltSSE is false.
 func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 	if e.errored {
 		return dst, nil
 	}
-	if len(e.pending) > 0 {
-		dst = e.flush(dst)
+	if len(e.cands) > 0 {
+		idxs := make([]int, 0, len(e.cands))
+		for idx := range e.cands {
+			idxs = append(idxs, idx)
+		}
+		sort.Ints(idxs)
+		for _, idx := range idxs {
+			dst = e.flushPendingCalls(dst, idx, e.cands[idx])
+		}
+	}
+	if !e.opts.AltSSE && e.arrayOpened && !e.arrayClosed {
+		dst = append(dst, ']')
+		e.arrayClosed = true
 	}
 	return dst, nil
 }
 
-// Keepalive sends an empty SSE comment.
+// Keepalive sends an empty SSE comment (when AltSSE) or whitespace.
 func (e *StreamEncoder) Keepalive(dst []byte) []byte {
-	return sse.AppendComment(dst, "", false)
+	if e.opts.AltSSE {
+		return sse.AppendComment(dst, "", false)
+	}
+	return append(dst, ' ')
 }
 
-func (e *StreamEncoder) flush(dst []byte) []byte {
-	if len(e.pending) == 0 && e.stop == "" {
+func (c *geminiCand) lookup(id string) *pendingGeminiCall {
+	_, pc := c.lookupWithKey(id)
+	return pc
+}
+
+func (c *geminiCand) lookupWithKey(id string) (string, *pendingGeminiCall) {
+	if id != "" {
+		if pc := c.calls[id]; pc != nil {
+			return id, pc
+		}
+	}
+	if c.lastCallKey != "" {
+		if pc := c.calls[c.lastCallKey]; pc != nil {
+			return c.lastCallKey, pc
+		}
+	}
+	return "", nil
+}
+
+func (e *StreamEncoder) flushPendingCalls(dst []byte, idx int, c *geminiCand) []byte {
+	if len(c.calls) == 0 {
 		return dst
 	}
-	parts := e.pending
-	e.pending = nil
-
-	var cands []wireCandidate
-	cand := wireCandidate{
-		Index:        e.pendingIdx,
-		Content:      wireContent{Role: "model", Parts: parts},
-		FinishReason: e.stop,
+	keys := make([]string, 0, len(c.calls))
+	for k := range c.calls {
+		keys = append(keys, k)
 	}
-	e.stop = ""
-	cands = append(cands, cand)
+	sort.Slice(keys, func(i, j int) bool {
+		return c.calls[keys[i]].order < c.calls[keys[j]].order
+	})
+	for _, k := range keys {
+		dst = e.emitCall(dst, idx, c.calls[k], nil)
+		delete(c.calls, k)
+	}
+	c.lastCallKey = ""
+	return dst
+}
 
+func (e *StreamEncoder) emitCall(dst []byte, idx int, pc *pendingGeminiCall, finalArgs json.RawMessage) []byte {
+	argsStr := strings.TrimSpace(string(finalArgs))
+	if argsStr == "" {
+		argsStr = strings.TrimSpace(pc.args.String())
+	}
+	if argsStr == "" || !json.Valid([]byte(argsStr)) {
+		argsStr = "{}"
+	}
+	wp := wirePart{
+		FunctionCall: &wireFunctionCall{
+			ID:   pc.id,
+			Name: pc.name,
+			Args: json.RawMessage(argsStr),
+		},
+		ThoughtSignature: pc.signature,
+	}
+	return e.emitCandidateParts(dst, idx, []wirePart{wp}, "")
+}
+
+func (e *StreamEncoder) emitCandidateParts(dst []byte, idx int, parts []wirePart, finishReason string) []byte {
+	cand := wireCandidate{
+		Index:        idx,
+		FinishReason: finishReason,
+	}
+	if len(parts) > 0 {
+		cand.Content = wireContent{Role: "model", Parts: parts}
+	}
 	chunk := wireResponse{
-		Candidates:   cands,
+		Candidates:   []wireCandidate{cand},
 		ModelVersion: e.model,
 	}
 	return e.emit(dst, chunk)
@@ -167,8 +294,14 @@ func (e *StreamEncoder) emit(dst []byte, chunk wireResponse) []byte {
 	if e.opts.AltSSE {
 		return sse.AppendData(dst, b)
 	}
+	if !e.arrayOpened {
+		dst = append(dst, '[')
+		e.arrayOpened = true
+	} else {
+		dst = append(dst, ',')
+	}
 	dst = append(dst, b...)
-	dst = append(dst, '\n')
+	e.chunkCount++
 	return dst
 }
 
@@ -188,7 +321,7 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 		var parts []wirePart
 		for i, p := range out.Parts {
 			fp := ir.Root.Key("candidates").At(out.Index).Key("content").Key("parts").At(i)
-			wps, err := irPartToWirePart(p, fp, env, Dialect{}, nil, true)
+			wps, err := irPartToWirePart(p, fp, env, Dialect{}, nil, nil, true)
 			if err != nil {
 				return nil, err
 			}

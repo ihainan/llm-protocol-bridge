@@ -284,9 +284,28 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 				resp = kv.Value
 			}
 		}
-		// Gemini wraps the result in {output: ...} or {error: ...}.
+		// Gemini wraps the result in {output: ...} or {error: ...} or a structured JSON object.
 		if !jsonx.IsNull(resp) {
-			result.Content = []ir.Part{ir.TextPart(string(resp))}
+			if kvs3, err := jsonx.Object(resp); err == nil && len(kvs3) == 1 {
+				if kvs3[0].Key == "output" {
+					if s, ok := jsonx.String(kvs3[0].Value); ok {
+						result.Content = []ir.Part{ir.TextPart(s)}
+					} else {
+						result.Content = []ir.Part{ir.TextPart(string(kvs3[0].Value))}
+					}
+				} else if kvs3[0].Key == "error" {
+					result.IsError = true
+					if s, ok := jsonx.String(kvs3[0].Value); ok {
+						result.Content = []ir.Part{ir.TextPart(s)}
+					} else {
+						result.Content = []ir.Part{ir.TextPart(string(kvs3[0].Value))}
+					}
+				} else {
+					result.Content = []ir.Part{ir.TextPart(string(resp))}
+				}
+			} else {
+				result.Content = []ir.Part{ir.TextPart(string(resp))}
+			}
 		}
 		return ir.Part{Type: ir.PartToolResult, Result: result}, nil
 	}

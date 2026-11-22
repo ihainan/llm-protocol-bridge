@@ -17,16 +17,23 @@ type StreamEncoder struct {
 	created int64
 	started bool
 	errored bool
-	// seqByIdx tracks the number of tool call objects emitted for each choice
-	// index, for assigning the streaming tool_calls[].index field.
-	callIdxBy map[int]int
+	// callIdxBy tracks the next tool call slot to assign for each choice index.
+	callIdxBy    map[int]int
+	callSlots    map[int]map[string]int
+	callHasArgs  map[int]map[string]bool
+	lastCallID   map[int]string
+	lastCallSlot map[int]int
 }
 
 // NewStreamEncoder returns a Chat Completions stream encoder.
 func NewStreamEncoder(opts EncodeOptions) *StreamEncoder {
 	return &StreamEncoder{
-		opts:      opts,
-		callIdxBy: map[int]int{},
+		opts:         opts,
+		callIdxBy:    map[int]int{},
+		callSlots:    map[int]map[string]int{},
+		callHasArgs:  map[int]map[string]bool{},
+		lastCallID:   map[int]string{},
+		lastCallSlot: map[int]int{},
 	}
 }
 
@@ -78,13 +85,23 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	case ir.EvToolStart:
 		idx := e.callIdxBy[ev.Index]
 		e.callIdxBy[ev.Index] = idx + 1
+		if e.callSlots[ev.Index] == nil {
+			e.callSlots[ev.Index] = map[string]int{}
+			e.callHasArgs[ev.Index] = map[string]bool{}
+		}
+		if ev.ID != "" {
+			e.callSlots[ev.Index][ev.ID] = idx
+		}
+		e.lastCallID[ev.Index] = ev.ID
+		e.lastCallSlot[ev.Index] = idx
+		wireName := flattenToolName(ev.Namespace, ev.Name)
 		chunk := e.baseChunk(ev.Index)
 		tc := map[string]any{
 			"index": idx,
 			"id":    ev.ID,
 			"type":  "function",
 			"function": map[string]any{
-				"name":      ev.Name,
+				"name":      wireName,
 				"arguments": "",
 			},
 		}
@@ -96,9 +113,12 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		dst = e.appendChunk(dst, chunk)
 
 	case ir.EvToolArgs:
-		idx := e.callIdxBy[ev.Index] - 1
-		if idx < 0 {
-			idx = 0
+		idx, key := e.resolveCallSlot(ev.Index, ev.ID)
+		if e.callHasArgs[ev.Index] == nil {
+			e.callHasArgs[ev.Index] = map[string]bool{}
+		}
+		if ev.Text != "" {
+			e.callHasArgs[ev.Index][key] = true
 		}
 		chunk := e.baseChunk(ev.Index)
 		tc := map[string]any{
@@ -114,6 +134,32 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		}}
 		dst = e.appendChunk(dst, chunk)
 
+	case ir.EvToolEnd:
+		idx, key := e.resolveCallSlot(ev.Index, ev.ID)
+		if e.callHasArgs[ev.Index] == nil || !e.callHasArgs[ev.Index][key] {
+			argsStr := strings.TrimSpace(string(ev.Arguments))
+			if argsStr == "" {
+				argsStr = "{}"
+			}
+			if e.callHasArgs[ev.Index] == nil {
+				e.callHasArgs[ev.Index] = map[string]bool{}
+			}
+			e.callHasArgs[ev.Index][key] = true
+			chunk := e.baseChunk(ev.Index)
+			tc := map[string]any{
+				"index": idx,
+				"function": map[string]any{
+					"arguments": argsStr,
+				},
+			}
+			chunk["choices"] = []map[string]any{{
+				"index":         ev.Index,
+				"delta":         map[string]any{"tool_calls": []any{tc}},
+				"finish_reason": nil,
+			}}
+			dst = e.appendChunk(dst, chunk)
+		}
+
 	case ir.EvStop:
 		finish := finishFromStop(ev.Stop)
 		chunk := e.baseChunk(ev.Index)
@@ -125,6 +171,10 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		dst = e.appendChunk(dst, chunk)
 		// Reset per-choice tool index for the next candidate.
 		delete(e.callIdxBy, ev.Index)
+		delete(e.callSlots, ev.Index)
+		delete(e.callHasArgs, ev.Index)
+		delete(e.lastCallID, ev.Index)
+		delete(e.lastCallSlot, ev.Index)
 
 	case ir.EvUsage:
 		if ev.Usage != nil {
@@ -156,6 +206,17 @@ func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 // Keepalive writes a Chat SSE comment (: keepalive).
 func (e *StreamEncoder) Keepalive(dst []byte) []byte {
 	return sse.AppendComment(dst, "keepalive", true)
+}
+
+func (e *StreamEncoder) resolveCallSlot(candIdx int, callID string) (int, string) {
+	if callID != "" {
+		if m := e.callSlots[candIdx]; m != nil {
+			if slot, ok := m[callID]; ok {
+				return slot, callID
+			}
+		}
+	}
+	return e.lastCallSlot[candIdx], e.lastCallID[candIdx]
 }
 
 func (e *StreamEncoder) baseChunk(idx int) map[string]any {
@@ -238,12 +299,20 @@ func buildAssistantMessage(parts []ir.Part) wireMessage {
 			}
 		case ir.PartToolCall:
 			if p.Call != nil {
+				args := string(p.Call.Arguments)
+				if p.Call.Kind == ir.ToolCustom && args == "" {
+					b, _ := jsonx.Marshal(map[string]string{"input": p.Call.Input})
+					args = string(b)
+				}
+				if strings.TrimSpace(args) == "" {
+					args = "{}"
+				}
 				tc := wireToolCall{
 					ID:   p.Call.ID,
 					Type: "function",
 					Function: wireFunctionCall{
-						Name:      p.Call.Name,
-						Arguments: string(p.Call.Arguments),
+						Name:      flattenToolName(p.Call.Namespace, p.Call.Name),
+						Arguments: args,
 					},
 				}
 				toolCalls = append(toolCalls, tc)

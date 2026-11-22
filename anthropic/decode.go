@@ -15,7 +15,8 @@ type StreamDecoder struct {
 	started  bool
 	terminal bool
 	// openBlocks maps block index -> type of the open block.
-	openBlocks map[int]string
+	openBlocks  map[int]string
+	blockCallID map[int]string
 }
 
 // NewStreamDecoder returns an Anthropic stream decoder.
@@ -26,9 +27,10 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 	}
 	env.Style = ir.StyleDot
 	return &StreamDecoder{
-		env:        env,
-		names:      opts.Names,
-		openBlocks: map[int]string{},
+		env:         env,
+		names:       opts.Names,
+		openBlocks:  map[int]string{},
+		blockCallID: map[int]string{},
 	}
 }
 
@@ -80,16 +82,36 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		case "redacted_thinking":
 			out = append(out, ir.Event{Type: ir.EvReasoningStart, Index: 0, ID: ""})
 		case "tool_use":
-			id := se.ContentBlock.ID
+			id := ir.AnthropicRawID(se.ContentBlock.ID)
 			name := se.ContentBlock.Name
+			ns := ""
+			kind := ir.ToolFunction
+			if ref, ok := d.names[name]; ok {
+				name = ref.Name
+				ns = ref.Namespace
+				if ref.Kind != "" {
+					kind = ref.Kind
+				}
+			}
+			d.blockCallID[se.Index] = id
 			out = append(out, ir.Event{
 				Type:      ir.EvToolStart,
 				Index:     0,
+				Part:      se.Index,
 				ID:        id,
 				Name:      name,
-				Namespace: "",
-				Kind:      ir.ToolFunction,
+				Namespace: ns,
+				Kind:      kind,
 			})
+			if len(se.ContentBlock.Input) > 0 && string(se.ContentBlock.Input) != "{}" && !jsonx.IsNull(se.ContentBlock.Input) {
+				out = append(out, ir.Event{
+					Type:  ir.EvToolArgs,
+					Index: 0,
+					Part:  se.Index,
+					ID:    id,
+					Text:  string(se.ContentBlock.Input),
+				})
+			}
 		}
 
 	case "content_block_delta":
@@ -107,18 +129,19 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		case "signature_delta":
 			sig := &ir.Signature{
 				Value:  se.Delta.Signature,
-				Origin: ir.Origin{Format: ir.FormatAnthropic},
+				Origin: ir.Origin{Format: ir.FormatAnthropic, Provider: d.env.ProviderID},
 			}
 			out = append(out, ir.Event{Type: ir.EvSignature, Index: 0, Signature: sig})
 		case "input_json_delta":
-			out = append(out, ir.Event{Type: ir.EvToolArgs, Index: 0, Text: se.Delta.PartialJSON})
+			out = append(out, ir.Event{Type: ir.EvToolArgs, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index], Text: se.Delta.PartialJSON})
 		}
 
 	case "content_block_stop":
 		blockType := d.openBlocks[se.Index]
 		switch blockType {
 		case "tool_use":
-			out = append(out, ir.Event{Type: ir.EvToolEnd, Index: 0})
+			out = append(out, ir.Event{Type: ir.EvToolEnd, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index]})
+			delete(d.blockCallID, se.Index)
 		case "redacted_thinking":
 			// The sealed block was delivered at content_block_start (whole).
 			// We already emitted EvReasoningStart; emit a sealed event now.
@@ -256,7 +279,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 	var parts []ir.Part
 	for i, block := range wr.Content {
 		fp := ir.Root.Key("content").At(i)
-		part, err := responseBlockToPart(block, fp, env)
+		part, err := responseBlockToPart(block, fp, opts.Names, env)
 		if err != nil {
 			return nil, err
 		}
@@ -274,7 +297,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 	return resp, nil
 }
 
-func responseBlockToPart(block wireContentBlock, p ir.Path, env *ir.Env) (*ir.Part, error) {
+func responseBlockToPart(block wireContentBlock, p ir.Path, names map[string]ir.ToolRef, env *ir.Env) (*ir.Part, error) {
 	switch block.Type {
 	case "text":
 		part := ir.TextPart(block.Text)
@@ -286,7 +309,7 @@ func responseBlockToPart(block wireContentBlock, p ir.Path, env *ir.Env) (*ir.Pa
 				Text: block.Thinking,
 				Signature: &ir.Signature{
 					Value:  block.Signature,
-					Origin: ir.Origin{Format: ir.FormatAnthropic},
+					Origin: ir.Origin{Format: ir.FormatAnthropic, Provider: env.ProviderID},
 				},
 			},
 		}
@@ -299,7 +322,7 @@ func responseBlockToPart(block wireContentBlock, p ir.Path, env *ir.Env) (*ir.Pa
 				Sealed: &ir.Sealed{
 					Kind:   ir.SealedAnthropicRedacted,
 					Data:   data,
-					Origin: ir.Origin{Format: ir.FormatAnthropic},
+					Origin: ir.Origin{Format: ir.FormatAnthropic, Provider: env.ProviderID},
 				},
 			},
 		}
@@ -309,12 +332,23 @@ func responseBlockToPart(block wireContentBlock, p ir.Path, env *ir.Env) (*ir.Pa
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}
+		name := block.Name
+		ns := ""
+		kind := ir.ToolFunction
+		if ref, ok := names[name]; ok {
+			name = ref.Name
+			ns = ref.Namespace
+			if ref.Kind != "" {
+				kind = ref.Kind
+			}
+		}
 		part := ir.Part{
 			Type: ir.PartToolCall,
 			Call: &ir.ToolCall{
-				ID:        block.ID,
-				Name:      block.Name,
-				Kind:      ir.ToolFunction,
+				ID:        ir.AnthropicRawID(block.ID),
+				Name:      name,
+				Namespace: ns,
+				Kind:      kind,
 				Arguments: args,
 			},
 		}

@@ -165,73 +165,86 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}, nil
 }
 
-// buildMessages converts ir.Messages to wireMessages.
-// Tool results (PartToolResult) in a user message become their own tool_result blocks.
+// buildMessages converts ir.Messages to wireMessages, merging consecutive
+// messages with the same role (required by the Anthropic Messages API).
 func buildMessages(msgs []ir.Message, names map[string]ir.ToolRef, env *ir.Env, dia Dialect) ([]wireMessage, error) {
-	out := make([]wireMessage, 0, len(msgs))
+	type msgBlocks struct {
+		role   string
+		blocks []wireContentBlock
+	}
+	var merged []msgBlocks
+	appendBlocks := func(role string, blocks []wireContentBlock) {
+		if len(blocks) == 0 {
+			return
+		}
+		if len(merged) > 0 && merged[len(merged)-1].role == role {
+			merged[len(merged)-1].blocks = append(merged[len(merged)-1].blocks, blocks...)
+			return
+		}
+		merged = append(merged, msgBlocks{role: role, blocks: blocks})
+	}
+
 	for i, m := range msgs {
 		fp := ir.Root.Key("messages").At(i)
-		wms, err := buildMessage(m, fp, names, env, dia)
+		switch m.Role {
+		case ir.RoleUser:
+			blocks, err := partsToBlocks(m.Parts, fp.Key("content"), env)
+			if err != nil {
+				return nil, err
+			}
+			appendBlocks("user", blocks)
+		case ir.RoleAssistant:
+			blocks, err := partsToBlocks(m.Parts, fp.Key("content"), env)
+			if err != nil {
+				return nil, err
+			}
+			appendBlocks("assistant", blocks)
+		case ir.RoleSystem, ir.RoleDeveloper:
+			switch dia.MidSystem {
+			case "fold":
+				// Handled in Stage 5 (fold into adjacent user message).
+				var sb strings.Builder
+				for _, pt := range m.Parts {
+					if pt.Type == ir.PartText {
+						sb.WriteString(pt.Text)
+					}
+				}
+				if sb.Len() > 0 {
+					appendBlocks("user", []wireContentBlock{{Type: "text", Text: "<system_message>" + sb.String() + "</system_message>"}})
+				}
+			default: // "keep"
+				blocks, err := partsToBlocks(m.Parts, fp.Key("content"), env)
+				if err != nil {
+					return nil, err
+				}
+				appendBlocks("user", blocks)
+			}
+		default:
+			return nil, env.Err(ir.Invalid(fp.Key("role"), "unsupported role: "+string(m.Role)))
+		}
+	}
+
+	out := make([]wireMessage, 0, len(merged))
+	for _, mb := range merged {
+		content, err := jsonx.Marshal(mb.blocks)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, wms...)
+		out = append(out, wireMessage{Role: mb.role, Content: content})
 	}
 	return out, nil
 }
 
-func buildMessage(m ir.Message, p ir.Path, names map[string]ir.ToolRef, env *ir.Env, dia Dialect) ([]wireMessage, error) {
-	switch m.Role {
-	case ir.RoleUser:
-		return buildUserMessage(m, p, env)
-	case ir.RoleAssistant:
-		return buildAssistantMessage(m, p, env)
-	case ir.RoleSystem, ir.RoleDeveloper:
-		// Mid-conversation system messages.
-		switch dia.MidSystem {
-		case "fold":
-			// Skip: merged by caller into nearest assistant turn (not yet implemented).
-			return nil, nil
-		default: // "keep"
-			blocks := buildContentBlocks(m.Parts, env)
-			return []wireMessage{{Role: "user", Content: blocks}}, nil
-		}
-	}
-	return nil, env.Err(ir.Invalid(p.Key("role"), "unsupported role: "+string(m.Role)))
-}
-
-func buildUserMessage(m ir.Message, p ir.Path, env *ir.Env) ([]wireMessage, error) {
+func partsToBlocks(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, error) {
 	var blocks []wireContentBlock
-	for i, part := range m.Parts {
-		fp := p.Key("content").At(i)
-		bs, err := partToBlocks(part, fp, env)
+	for i, part := range parts {
+		bs, err := partToBlocks(part, p.At(i), env)
 		if err != nil {
 			return nil, err
 		}
 		blocks = append(blocks, bs...)
 	}
-	content, err := jsonx.Marshal(blocks)
-	if err != nil {
-		return nil, err
-	}
-	return []wireMessage{{Role: "user", Content: content}}, nil
-}
-
-func buildAssistantMessage(m ir.Message, p ir.Path, env *ir.Env) ([]wireMessage, error) {
-	var blocks []wireContentBlock
-	for i, part := range m.Parts {
-		fp := p.Key("content").At(i)
-		bs, err := partToBlocks(part, fp, env)
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, bs...)
-	}
-	content, err := jsonx.Marshal(blocks)
-	if err != nil {
-		return nil, err
-	}
-	return []wireMessage{{Role: "assistant", Content: content}}, nil
+	return blocks, nil
 }
 
 func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, error) {
@@ -305,7 +318,7 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 		}
 		return []wireContentBlock{{
 			Type:  "tool_use",
-			ID:    call.ID,
+			ID:    ir.AnthropicSafeID(call.ID),
 			Name:  call.Name,
 			Input: args,
 		}}, nil
@@ -337,7 +350,7 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 		isErr := r.IsError
 		b := wireContentBlock{
 			Type:      "tool_result",
-			ToolUseID: r.CallID,
+			ToolUseID: ir.AnthropicSafeID(r.CallID),
 			Content:   content,
 		}
 		if isErr {
@@ -413,8 +426,7 @@ func buildToolChoice(tc ir.ToolChoice, parallelToolCalls *bool, env *ir.Env) (js
 	case ir.ToolChoiceTool:
 		return jsonx.Marshal(wireToolChoiceTool{Type: "tool", Name: tc.Name, DisableParallelToolUse: disableParallel})
 	case ir.ToolChoiceNone:
-		// Anthropic has no "none" mode; closest is auto (model may still use tools).
-		return jsonx.Marshal(wireToolChoiceAuto{Type: "auto", DisableParallelToolUse: disableParallel})
+		return jsonx.Marshal(map[string]any{"type": "none"})
 	}
 	return nil, nil
 }

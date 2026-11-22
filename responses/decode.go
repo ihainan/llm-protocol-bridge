@@ -2,6 +2,7 @@ package responses
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
 	"github.com/ihainan/llm-protocol-bridge/ir"
@@ -22,6 +23,7 @@ type StreamDecoder struct {
 	callID      map[int]string
 	callName    map[int]string
 	callKind    map[int]ir.ToolKind
+	callArgs    map[int]*strings.Builder
 	toolStarted map[int]bool
 }
 
@@ -40,6 +42,7 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 		callID:      map[int]string{},
 		callName:    map[int]string{},
 		callKind:    map[int]ir.ToolKind{},
+		callArgs:    map[int]*strings.Builder{},
 		toolStarted: map[int]bool{},
 	}
 }
@@ -164,9 +167,10 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				d.callID[idx] = id
 				d.callName[idx] = se.Item.Name
 				d.callKind[idx] = ir.ToolFunction
+				d.callArgs[idx] = &strings.Builder{}
 				d.toolStarted[idx] = true
 				d.hasToolCalls = true
-				out = d.emitToolStart(out, id, se.Item.Name, "", ir.ToolFunction)
+				out = d.emitToolStart(out, idx, id, se.Item.Name, "", ir.ToolFunction)
 			case "custom_tool_call":
 				id := se.Item.CallID
 				if id == "" {
@@ -175,9 +179,10 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				d.callID[idx] = id
 				d.callName[idx] = se.Item.Name
 				d.callKind[idx] = ir.ToolCustom
+				d.callArgs[idx] = &strings.Builder{}
 				d.toolStarted[idx] = true
 				d.hasToolCalls = true
-				out = d.emitToolStart(out, id, se.Item.Name, se.Item.Namespace, ir.ToolCustom)
+				out = d.emitToolStart(out, idx, id, se.Item.Name, se.Item.Namespace, ir.ToolCustom)
 			case "reasoning":
 				out = append(out, ir.Event{Type: ir.EvReasoningStart, ID: se.Item.ID})
 			}
@@ -191,35 +196,52 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				// Individual message item done does not end the whole response;
 				// response.completed / response.incomplete emits EvStop.
 			case "function_call":
-				if !d.toolStarted[idx] {
-					id := se.Item.CallID
+				id := d.callID[idx]
+				if id == "" {
+					id = se.Item.CallID
 					if id == "" {
 						id = se.Item.ID
 					}
+					d.callID[idx] = id
+				}
+				if !d.toolStarted[idx] {
 					d.toolStarted[idx] = true
 					d.hasToolCalls = true
-					out = d.emitToolStart(out, id, se.Item.Name, "", ir.ToolFunction)
+					out = d.emitToolStart(out, idx, id, se.Item.Name, "", ir.ToolFunction)
 				}
-				args := json.RawMessage(se.Item.Arguments)
-				if len(args) == 0 {
-					args = json.RawMessage(`{}`)
+				argsStr := strings.TrimSpace(se.Item.Arguments)
+				if argsStr == "" && d.callArgs[idx] != nil {
+					argsStr = strings.TrimSpace(d.callArgs[idx].String())
 				}
-				out = append(out, ir.Event{Type: ir.EvToolEnd, Arguments: args})
+				if argsStr == "" {
+					argsStr = "{}"
+				}
+				out = append(out, ir.Event{Type: ir.EvToolEnd, Part: idx, ID: id, Arguments: json.RawMessage(argsStr)})
+				delete(d.callArgs, idx)
 			case "custom_tool_call":
-				if !d.toolStarted[idx] {
-					id := se.Item.CallID
+				id := d.callID[idx]
+				if id == "" {
+					id = se.Item.CallID
 					if id == "" {
 						id = se.Item.ID
 					}
+					d.callID[idx] = id
+				}
+				if !d.toolStarted[idx] {
 					d.toolStarted[idx] = true
 					d.hasToolCalls = true
-					out = d.emitToolStart(out, id, se.Item.Name, se.Item.Namespace, ir.ToolCustom)
+					out = d.emitToolStart(out, idx, id, se.Item.Name, se.Item.Namespace, ir.ToolCustom)
 				}
 				var raw json.RawMessage
-				if se.Item.Input != "" {
-					raw, _ = jsonx.Marshal(se.Item.Input)
+				inp := se.Item.Input
+				if inp == "" && d.callArgs[idx] != nil {
+					inp = d.callArgs[idx].String()
 				}
-				out = append(out, ir.Event{Type: ir.EvToolEnd, Arguments: raw})
+				if inp != "" {
+					raw, _ = jsonx.Marshal(inp)
+				}
+				out = append(out, ir.Event{Type: ir.EvToolEnd, Part: idx, ID: id, Arguments: raw})
+				delete(d.callArgs, idx)
 			case "reasoning":
 				if se.Item.EncryptedContent != "" {
 					data, _ := jsonx.Marshal(se.Item.EncryptedContent)
@@ -253,10 +275,14 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		if !d.toolStarted[idx] {
 			d.toolStarted[idx] = true
 			d.hasToolCalls = true
-			out = d.emitToolStart(out, d.callID[idx], d.callName[idx], "", ir.ToolFunction)
+			out = d.emitToolStart(out, idx, d.callID[idx], d.callName[idx], "", ir.ToolFunction)
 		}
 		if se.Delta != "" {
-			out = append(out, ir.Event{Type: ir.EvToolArgs, Text: se.Delta})
+			if d.callArgs[idx] == nil {
+				d.callArgs[idx] = &strings.Builder{}
+			}
+			d.callArgs[idx].WriteString(se.Delta)
+			out = append(out, ir.Event{Type: ir.EvToolArgs, Part: idx, ID: d.callID[idx], Text: se.Delta})
 		}
 
 	case "response.function_call_arguments.done":
@@ -267,10 +293,14 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		if !d.toolStarted[idx] {
 			d.toolStarted[idx] = true
 			d.hasToolCalls = true
-			out = d.emitToolStart(out, d.callID[idx], d.callName[idx], "", ir.ToolCustom)
+			out = d.emitToolStart(out, idx, d.callID[idx], d.callName[idx], "", ir.ToolCustom)
 		}
 		if se.Delta != "" {
-			out = append(out, ir.Event{Type: ir.EvToolArgs, Text: se.Delta})
+			if d.callArgs[idx] == nil {
+				d.callArgs[idx] = &strings.Builder{}
+			}
+			d.callArgs[idx].WriteString(se.Delta)
+			out = append(out, ir.Event{Type: ir.EvToolArgs, Part: idx, ID: d.callID[idx], Text: se.Delta})
 		}
 
 	case "response.custom_tool_call_input.done":
@@ -289,7 +319,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 	return out, nil
 }
 
-func (d *StreamDecoder) emitToolStart(out []ir.Event, id, name, ns string, kind ir.ToolKind) []ir.Event {
+func (d *StreamDecoder) emitToolStart(out []ir.Event, partIdx int, id, name, ns string, kind ir.ToolKind) []ir.Event {
 	if ref, ok := d.names[name]; ok {
 		name = ref.Name
 		if ns == "" {
@@ -301,6 +331,7 @@ func (d *StreamDecoder) emitToolStart(out []ir.Event, id, name, ns string, kind 
 	}
 	return append(out, ir.Event{
 		Type:      ir.EvToolStart,
+		Part:      partIdx,
 		ID:        id,
 		Name:      name,
 		Namespace: ns,

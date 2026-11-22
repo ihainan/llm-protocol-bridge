@@ -3,6 +3,7 @@ package ir
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -15,14 +16,20 @@ type Collector struct {
 	seen bool
 }
 
+type openCollectedCall struct {
+	partIdx int
+	args    strings.Builder
+}
+
 type collected struct {
-	out   Output
-	text  strings.Builder // text being added to the last part
-	open  int             // index+1 of the part text belongs to, 0 when none
-	args  strings.Builder // arguments of the open tool call
-	call  int             // index+1 of the open tool call
-	fresh bool            // a reasoning_start asked for a new reasoning part
-	rid   string          // id given by reasoning_start
+	out         Output
+	text        strings.Builder // text being added to the last part
+	open        int             // index+1 of the part text belongs to, 0 when none
+	openCalls   map[string]*openCollectedCall
+	lastCallKey string
+	callSeq     int
+	fresh       bool   // a reasoning_start asked for a new reasoning part
+	rid         string // id given by reasoning_start
 }
 
 // NewCollector returns an empty collector.
@@ -31,7 +38,7 @@ func NewCollector() *Collector { return &Collector{outs: map[int]*collected{}} }
 func (c *Collector) output(i int) *collected {
 	o := c.outs[i]
 	if o == nil {
-		o = &collected{out: Output{Index: i}}
+		o = &collected{out: Output{Index: i}, openCalls: map[string]*openCollectedCall{}}
 		c.outs[i] = o
 	}
 	return o
@@ -51,14 +58,43 @@ func (o *collected) flushText() {
 	}
 }
 
-func (o *collected) closeCall() {
-	if o.call == 0 {
+func (o *collected) lookupCallKey(id string) string {
+	if id != "" {
+		if _, ok := o.openCalls[id]; ok {
+			return id
+		}
+	}
+	if o.lastCallKey != "" {
+		if _, ok := o.openCalls[o.lastCallKey]; ok {
+			return o.lastCallKey
+		}
+	}
+	return ""
+}
+
+func (o *collected) closeCallKey(key string, finalArgs json.RawMessage) {
+	oc := o.openCalls[key]
+	if oc == nil {
 		return
 	}
-	p := &o.out.Parts[o.call-1]
-	s := o.args.String()
+	p := &o.out.Parts[oc.partIdx]
+	if len(finalArgs) > 0 {
+		if p.Call.Kind == ToolCustom {
+			oc.args.Reset()
+			var s string
+			if json.Unmarshal(finalArgs, &s) == nil {
+				p.Call.Input = s
+			}
+		} else {
+			oc.args.Reset()
+			p.Call.Arguments = append(json.RawMessage(nil), finalArgs...)
+		}
+	}
+	s := oc.args.String()
 	if p.Call.Kind == ToolCustom {
-		p.Call.Input += s
+		if p.Call.Input == "" {
+			p.Call.Input = s
+		}
 	} else if len(p.Call.Arguments) == 0 {
 		t := strings.TrimSpace(s)
 		if t == "" {
@@ -66,8 +102,34 @@ func (o *collected) closeCall() {
 		}
 		p.Call.Arguments = json.RawMessage(t)
 	}
-	o.args.Reset()
-	o.call = 0
+	delete(o.openCalls, key)
+	if o.lastCallKey == key {
+		o.lastCallKey = ""
+		// Fall back to the highest partIdx still open, if any.
+		bestIdx := -1
+		for k, rem := range o.openCalls {
+			if rem.partIdx > bestIdx {
+				bestIdx = rem.partIdx
+				o.lastCallKey = k
+			}
+		}
+	}
+}
+
+func (o *collected) closeAllCalls() {
+	if len(o.openCalls) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(o.openCalls))
+	for k := range o.openCalls {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return o.openCalls[keys[i]].partIdx < o.openCalls[keys[j]].partIdx
+	})
+	for _, k := range keys {
+		o.closeCallKey(k, nil)
+	}
 }
 
 func (o *collected) last() *Part {
@@ -79,7 +141,6 @@ func (o *collected) last() *Part {
 
 func (o *collected) add(p Part) *Part {
 	o.flushText()
-	o.closeCall()
 	o.out.Parts = append(o.out.Parts, p)
 	return &o.out.Parts[len(o.out.Parts)-1]
 }
@@ -146,7 +207,6 @@ func (c *Collector) Add(ev Event) {
 		}
 	case EvReasoningStart:
 		o.flushText()
-		o.closeCall()
 		o.fresh, o.rid = true, ev.ID
 	case EvReasoning:
 		p := o.openReasoning()
@@ -210,27 +270,20 @@ func (c *Collector) Add(ev Event) {
 			kind = ToolFunction
 		}
 		o.add(Part{Type: PartToolCall, Call: &ToolCall{ID: ev.ID, Name: ev.Name, Namespace: ev.Namespace, Kind: kind, Signature: ev.Signature}})
-		o.call = len(o.out.Parts)
+		key := ev.ID
+		if key == "" {
+			o.callSeq++
+			key = "__call_" + strconv.Itoa(o.callSeq)
+		}
+		o.openCalls[key] = &openCollectedCall{partIdx: len(o.out.Parts) - 1}
+		o.lastCallKey = key
 	case EvToolArgs:
-		if o.call > 0 {
-			o.args.WriteString(ev.Text)
+		if key := o.lookupCallKey(ev.ID); key != "" {
+			o.openCalls[key].args.WriteString(ev.Text)
 		}
 	case EvToolEnd:
-		if o.call > 0 {
-			p := &o.out.Parts[o.call-1]
-			if len(ev.Arguments) > 0 {
-				if p.Call.Kind == ToolCustom {
-					o.args.Reset()
-					var s string
-					if json.Unmarshal(ev.Arguments, &s) == nil {
-						p.Call.Input = s
-					}
-				} else {
-					o.args.Reset()
-					p.Call.Arguments = append(json.RawMessage(nil), ev.Arguments...)
-				}
-			}
-			o.closeCall()
+		if key := o.lookupCallKey(ev.ID); key != "" {
+			o.closeCallKey(key, ev.Arguments)
 		}
 	case EvBuiltin:
 		if ev.Builtin == nil {
@@ -249,7 +302,7 @@ func (c *Collector) Add(ev Event) {
 		}
 	case EvStop:
 		o.flushText()
-		o.closeCall()
+		o.closeAllCalls()
 		if ev.Stop != nil {
 			o.out.Stop = *ev.Stop
 		}
@@ -305,22 +358,24 @@ func (o *collected) snapshot() Output {
 		}
 		out.Parts[o.open-1] = p
 	}
-	if o.call > 0 && o.call <= len(out.Parts) {
-		p := out.Parts[o.call-1]
-		if p.Call != nil {
-			cc := *p.Call
-			s := o.args.String()
-			if cc.Kind == ToolCustom {
-				cc.Input += s
-			} else if len(cc.Arguments) == 0 {
-				t := strings.TrimSpace(s)
-				if t == "" {
-					t = "{}"
+	for _, oc := range o.openCalls {
+		if oc.partIdx >= 0 && oc.partIdx < len(out.Parts) {
+			p := out.Parts[oc.partIdx]
+			if p.Call != nil {
+				cc := *p.Call
+				s := oc.args.String()
+				if cc.Kind == ToolCustom {
+					cc.Input += s
+				} else if len(cc.Arguments) == 0 {
+					t := strings.TrimSpace(s)
+					if t == "" {
+						t = "{}"
+					}
+					cc.Arguments = json.RawMessage(t)
 				}
-				cc.Arguments = json.RawMessage(t)
+				p.Call = &cc
+				out.Parts[oc.partIdx] = p
 			}
-			p.Call = &cc
-			out.Parts[o.call-1] = p
 		}
 	}
 	return out
@@ -409,12 +464,12 @@ func appendPartEvents(evs []Event, idx int, p Part) []Event {
 		evs = append(evs, Event{Type: EvToolStart, Index: idx, ID: c.ID, Name: c.Name, Namespace: c.Namespace, Kind: c.Kind, Signature: c.Signature})
 		if c.Kind == ToolCustom {
 			if c.Input != "" {
-				evs = append(evs, Event{Type: EvToolArgs, Index: idx, Text: c.Input})
+				evs = append(evs, Event{Type: EvToolArgs, Index: idx, ID: c.ID, Text: c.Input})
 			}
 		} else if len(c.Arguments) > 0 {
-			evs = append(evs, Event{Type: EvToolArgs, Index: idx, Text: string(c.Arguments)})
+			evs = append(evs, Event{Type: EvToolArgs, Index: idx, ID: c.ID, Text: string(c.Arguments)})
 		}
-		evs = append(evs, Event{Type: EvToolEnd, Index: idx})
+		evs = append(evs, Event{Type: EvToolEnd, Index: idx, ID: c.ID})
 	case PartBuiltinCall, PartBuiltinResult:
 		if p.Builtin != nil {
 			b := *p.Builtin

@@ -16,8 +16,7 @@ type StreamDecoder struct {
 	started      bool
 	terminal     bool
 	hasToolCalls map[int]bool
-	// callIDGen tracks emitted call IDs so we assign stable ones when missing.
-	callSeq int
+	callSeqBy    map[int]int
 }
 
 // NewStreamDecoder returns a Gemini stream decoder.
@@ -32,6 +31,7 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 		dia:          opts.Dialect,
 		names:        opts.Names,
 		hasToolCalls: map[int]bool{},
+		callSeqBy:    map[int]int{},
 	}
 }
 
@@ -127,24 +127,34 @@ func (d *StreamDecoder) decodePart(out []ir.Event, part wirePart, idx int) []ir.
 	case part.FunctionCall != nil:
 		fc := part.FunctionCall
 		d.hasToolCalls[idx] = true
-		id := fc.ID
-		if id == "" {
-			d.callSeq++
-			id = d.env.NewID("call_", 16)
-		}
-		name := fc.Name
-		ns := ""
-		if ref, ok := d.names[name]; ok {
-			ns = ref.Namespace
-		}
+		callIdx := d.callSeqBy[idx]
+		d.callSeqBy[idx] = callIdx + 1
 		args := fc.Args
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}
+		id := fc.ID
+		if id == "" {
+			id = ir.DeterministicCallID(idx, callIdx, fc.Name, args)
+		}
+		name := fc.Name
+		ns := ""
+		kind := ir.ToolFunction
+		if ref, ok := d.names[name]; ok {
+			name = ref.Name
+			ns = ref.Namespace
+			if ref.Kind != "" {
+				kind = ref.Kind
+			}
+		}
+		var sig *ir.Signature
+		if part.ThoughtSignature != "" {
+			sig = &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: d.env.ProviderID}}
+		}
 		out = append(out,
-			ir.Event{Type: ir.EvToolStart, Index: idx, ID: id, Name: name, Namespace: ns, Kind: ir.ToolFunction},
-			ir.Event{Type: ir.EvToolArgs, Index: idx, Text: string(args)},
-			ir.Event{Type: ir.EvToolEnd, Index: idx, Arguments: args},
+			ir.Event{Type: ir.EvToolStart, Index: idx, Part: callIdx, ID: id, Name: name, Namespace: ns, Kind: kind, Signature: sig},
+			ir.Event{Type: ir.EvToolArgs, Index: idx, Part: callIdx, ID: id, Text: string(args)},
+			ir.Event{Type: ir.EvToolEnd, Index: idx, Part: callIdx, ID: id, Arguments: args},
 		)
 
 	case part.FunctionResponse != nil:
@@ -210,9 +220,10 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 
 	for _, cand := range wr.Candidates {
 		out := ir.Output{Index: cand.Index}
+		callIdx := 0
 		for i, part := range cand.Content.Parts {
 			fp := ir.Root.Key("candidates").At(cand.Index).Key("content").Key("parts").At(i)
-			p, err := wirePartToIR(part, fp, opts.Names, env)
+			p, err := wirePartToIR(part, fp, cand.Index, &callIdx, opts.Names, env)
 			if err != nil {
 				return nil, err
 			}
@@ -242,7 +253,7 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 	return resp, nil
 }
 
-func wirePartToIR(part wirePart, p ir.Path, names map[string]ir.ToolRef, env *ir.Env) (*ir.Part, error) {
+func wirePartToIR(part wirePart, p ir.Path, candIdx int, callIdx *int, names map[string]ir.ToolRef, env *ir.Env) (*ir.Part, error) {
 	switch {
 	case part.FunctionCall != nil:
 		fc := part.FunctionCall
@@ -250,19 +261,34 @@ func wirePartToIR(part wirePart, p ir.Path, names map[string]ir.ToolRef, env *ir
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}
+		id := fc.ID
+		ci := 0
+		if callIdx != nil {
+			ci = *callIdx
+			*callIdx = ci + 1
+		}
+		if id == "" {
+			id = ir.DeterministicCallID(candIdx, ci, fc.Name, args)
+		}
+		name := fc.Name
 		ns := ""
+		kind := ir.ToolFunction
 		if ref, ok := names[fc.Name]; ok {
+			name = ref.Name
 			ns = ref.Namespace
+			if ref.Kind != "" {
+				kind = ref.Kind
+			}
 		}
 		call := &ir.ToolCall{
-			ID:        fc.ID,
-			Name:      fc.Name,
+			ID:        id,
+			Name:      name,
 			Namespace: ns,
-			Kind:      ir.ToolFunction,
+			Kind:      kind,
 			Arguments: args,
 		}
 		if part.ThoughtSignature != "" {
-			call.Signature = &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini}}
+			call.Signature = &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
 		}
 		return &ir.Part{Type: ir.PartToolCall, Call: call}, nil
 

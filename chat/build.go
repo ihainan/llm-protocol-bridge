@@ -223,21 +223,38 @@ type built struct {
 	losses []ir.Loss
 }
 
+var customToolSchema = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}`)
+
+func flattenToolName(ns, name string) string {
+	if ns != "" {
+		return ns + "__" + name
+	}
+	return name
+}
+
 // buildTool converts an ir.Tool to wireTool and records the name mapping.
 func (b *built) buildTool(t ir.Tool, p ir.Path) (wireTool, error) {
 	if t.Name == "" {
 		return wireTool{}, b.env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
-	if t.Kind != "" && t.Kind != ir.ToolFunction {
-		return wireTool{}, b.env.Err(ir.Invalid(p.Key("kind"), "only function tools are supported"))
+	kind := t.Kind
+	if kind == "" {
+		kind = ir.ToolFunction
 	}
+	if kind != ir.ToolFunction && kind != ir.ToolCustom {
+		return wireTool{}, b.env.Err(ir.Invalid(p.Key("kind"), "only function and custom tools are supported"))
+	}
+	wireName := flattenToolName(t.Namespace, t.Name)
 	// Record the name mapping (sanitised name -> original ir.ToolRef).
-	ref := ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: t.Kind}
-	b.names[t.Name] = ref
+	ref := ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: kind}
+	b.names[wireName] = ref
 
 	params := t.Schema
+	if kind == ir.ToolCustom {
+		params = customToolSchema
+	}
 	fn := wireFunctionDef{
-		Name:        t.Name,
+		Name:        wireName,
 		Description: t.Description,
 		Parameters:  params,
 	}
@@ -278,8 +295,9 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 	var reasoningSignature string
 	var refusalText string
 
-	// Collect tool result messages and remaining (non-result) parts.
+	// Collect tool result messages, lifted tool-result images, and remaining (non-result) parts.
 	var toolMsgs []wireMessage
+	var liftedImages []wireContentPart
 
 	for i, part := range m.Parts {
 		fp := p.Key("parts").At(i)
@@ -295,18 +313,7 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 			if part.Media == nil {
 				continue
 			}
-			url := part.Media.URL
-			if url == "" && part.Media.Data != "" {
-				mt := part.Media.MediaType
-				if mt == "" {
-					mt = "image/jpeg"
-				}
-				url = "data:" + mt + ";base64," + part.Media.Data
-			}
-			contentParts = append(contentParts, wireContentPart{
-				Type:     "image_url",
-				ImageURL: &wireImageURL{URL: url, Detail: part.Media.Detail},
-			})
+			contentParts = append(contentParts, buildImageContentPart(part.Media))
 
 		case ir.PartAudio:
 			if part.Media == nil {
@@ -346,12 +353,20 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 			if part.Call == nil {
 				continue
 			}
+			args := string(part.Call.Arguments)
+			if part.Call.Kind == ir.ToolCustom && args == "" {
+				bArgs, _ := jsonx.Marshal(map[string]string{"input": part.Call.Input})
+				args = string(bArgs)
+			}
+			if strings.TrimSpace(args) == "" {
+				args = "{}"
+			}
 			tc := wireToolCall{
 				ID:   part.Call.ID,
 				Type: "function",
 				Function: wireFunctionCall{
-					Name:      part.Call.Name,
-					Arguments: string(part.Call.Arguments),
+					Name:      flattenToolName(part.Call.Namespace, part.Call.Name),
+					Arguments: args,
 				},
 			}
 			toolCalls = append(toolCalls, tc)
@@ -361,19 +376,30 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 			if part.Result == nil {
 				continue
 			}
-			resultText := toolResultText(part.Result)
+			resultText, imgs := buildToolResultContent(part.Result)
 			toolMsgs = append(toolMsgs, wireMessage{
 				Role:       "tool",
 				ToolCallID: part.Result.CallID,
 				Content:    jsonRawString(resultText),
 			})
+			if len(imgs) > 0 {
+				liftedImages = append(liftedImages, wireContentPart{
+					Type: "text",
+					Text: "[images returned by tool call " + part.Result.CallID + "]",
+				})
+				liftedImages = append(liftedImages, imgs...)
+			}
 
 		case ir.PartBuiltinCall, ir.PartBuiltinResult:
 			_ = fp
 		}
 	}
 
-	// If the message was entirely tool results, return just those.
+	if len(liftedImages) > 0 {
+		contentParts = append(liftedImages, contentParts...)
+	}
+
+	// If the message was entirely tool results (with no lifted images), return just those.
 	if len(contentParts) == 0 && len(toolCalls) == 0 && reasoningText == "" && refusalText == "" {
 		if len(toolMsgs) > 0 {
 			return toolMsgs, nil
@@ -472,7 +498,7 @@ func buildToolChoice(tc ir.ToolChoice, b *built) ([]byte, error) {
 	case ir.ToolChoiceTool:
 		wtc := wireToolChoice{
 			Type:     "function",
-			Function: &wireToolChoiceFunc{Name: tc.Name},
+			Function: &wireToolChoiceFunc{Name: flattenToolName(tc.Namespace, tc.Name)},
 		}
 		return jsonx.Marshal(wtc)
 	case ir.ToolChoiceAllowed:
@@ -513,15 +539,51 @@ func buildResponseFormat(of *ir.OutputFormat) ([]byte, error) {
 	return nil, nil
 }
 
-// toolResultText extracts the text content of a tool result.
-func toolResultText(r *ir.ToolResult) string {
+func buildImageContentPart(m *ir.Media) wireContentPart {
+	url := m.URL
+	if url == "" && m.Data != "" {
+		mt := m.MediaType
+		if mt == "" {
+			mt = "image/jpeg"
+		}
+		url = "data:" + mt + ";base64," + m.Data
+	}
+	return wireContentPart{
+		Type:     "image_url",
+		ImageURL: &wireImageURL{URL: url, Detail: m.Detail},
+	}
+}
+
+// buildToolResultContent builds the text payload for a Chat tool message and
+// extracts any images to be lifted into a follow-up user message.
+func buildToolResultContent(r *ir.ToolResult) (string, []wireContentPart) {
 	var sb strings.Builder
+	var imgs []wireContentPart
 	for _, p := range r.Content {
-		if p.Type == ir.PartText {
+		switch p.Type {
+		case ir.PartText:
 			sb.WriteString(p.Text)
+		case ir.PartImage:
+			if p.Media != nil {
+				imgs = append(imgs, buildImageContentPart(p.Media))
+			}
 		}
 	}
-	return sb.String()
+	if len(imgs) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString("[image: attached in the next message]")
+	}
+	text := sb.String()
+	if r.IsError {
+		if text == "" {
+			text = "[tool error]"
+		} else {
+			text = "[tool error] " + text
+		}
+	}
+	return text, imgs
 }
 
 // mustMarshalTextParts concatenates text parts into a single string.
