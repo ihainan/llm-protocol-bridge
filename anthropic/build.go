@@ -135,24 +135,42 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// Thinking config resolved via ModelProfile.
+	var offPatchFields []ir.OffPatchField
 	if req.Reasoning != nil || (profile != nil && profile.DefaultEffort != ir.EffortUnset) {
-		var budget int
-		thinkingRaw, thinkingEnabled, budget, adaptiveEffort, err = buildThinking(req.Reasoning, profile, env)
-		if err != nil {
-			return nil, err
-		}
-		if thinkingEnabled && budget > 0 && maxTok <= budget {
-			minBudget := 1024
-			if profile != nil && profile.MinBudget > 0 {
-				minBudget = profile.MinBudget
+		res := profile.Resolve(req.Reasoning)
+		if res.Off && profile != nil && profile.Off.Mode == ir.OffPatch {
+			var cfgErr *ir.Error
+			offPatchFields, cfgErr = ir.ParseOffPatch(profile.Off.Patch)
+			if cfgErr != nil {
+				return nil, env.Err(cfgErr)
 			}
-			if req.MaxOutputTokens == nil {
-				maxTok = budget + 4096
-			} else if maxTok > minBudget {
-				budget = maxTok - 1
-				thinkingRaw, _ = jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: budget})
-			} else {
-				maxTok = budget + 1024
+		} else {
+			var budget int
+			thinkingRaw, thinkingEnabled, budget, adaptiveEffort, err = buildThinking(req.Reasoning, profile, env)
+			if err != nil {
+				return nil, err
+			}
+			if thinkingEnabled && budget > 0 && maxTok <= budget {
+				minBudget := 1024
+				if profile != nil && profile.MinBudget > 0 {
+					minBudget = profile.MinBudget
+				}
+				if req.MaxOutputTokens == nil {
+					maxTok = budget + 4096
+				} else if maxTok > minBudget {
+					budget = maxTok - 1
+					thinkingRaw, _ = jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: budget})
+				} else {
+					return nil, env.Err(ir.Invalid(ir.Root.Key("max_tokens"), "explicit max_tokens is too small to fit Anthropic minimum thinking budget"))
+				}
+			}
+			// Manual extended thinking (type:"enabled") is mutually exclusive with forced tool_choice (any/tool).
+			isManualThinking := thinkingEnabled && budget > 0
+			isForcedToolChoice := req.ToolChoice.Mode == ir.ToolChoiceRequired ||
+				req.ToolChoice.Mode == ir.ToolChoiceTool ||
+				(req.ToolChoice.Mode == ir.ToolChoiceAllowed && req.ToolChoice.AllowedMode == ir.ToolChoiceRequired)
+			if isManualThinking && isForcedToolChoice {
+				return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), "thinking.forced_tool_choice", "Anthropic manual extended thinking does not support forced tool_choice (any/tool)"))
 			}
 		}
 	}
@@ -184,6 +202,9 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 	if thinkingRaw != nil {
 		out.Raw("thinking", thinkingRaw)
+	}
+	for _, f := range offPatchFields {
+		out.Raw(f.Key, f.Value)
 	}
 	if adaptiveEffort != ir.EffortUnset || outputFormat != nil {
 		oc := map[string]any{}

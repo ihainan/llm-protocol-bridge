@@ -31,6 +31,11 @@ type bufferedToolCall struct {
 	order       int
 }
 
+type queuedEntry struct {
+	callKey string
+	ev      ir.Event
+}
+
 type streamFilter struct {
 	client     ir.Format
 	release    ir.ToolRelease
@@ -57,7 +62,7 @@ type streamFilter struct {
 	callSeq       int
 	bufferedBytes int
 	liveUsed      bool
-	postCallEvs   map[int][]ir.Event
+	timeline      map[int][]queuedEntry
 	intercepted   []ir.ToolCall
 }
 
@@ -140,8 +145,36 @@ func (f *streamFilter) resetRound() {
 	f.callSeq = 0
 	f.bufferedBytes = 0
 	f.liveUsed = false
-	f.postCallEvs = map[int][]ir.Event{}
+	f.timeline = map[int][]queuedEntry{}
 	f.intercepted = nil
+}
+
+func eventByteSize(ev ir.Event) int {
+	n := len(ev.Text) + len(ev.Arguments)
+	if ev.Signature != nil {
+		n += len(ev.Signature.Value)
+	}
+	if ev.Sealed != nil {
+		n += len(ev.Sealed.Data)
+	}
+	if ev.Media != nil {
+		n += len(ev.Media.Data) + len(ev.Media.URL) + len(ev.Media.Text)
+	}
+	if ev.Builtin != nil {
+		n += len(ev.Builtin.Input) + len(ev.Builtin.Content) + len(ev.Builtin.Raw)
+	}
+	return n
+}
+
+func (f *streamFilter) queueEvents(idx int, evs ...ir.Event) []ir.Event {
+	for _, e := range evs {
+		f.bufferedBytes += eventByteSize(e)
+		if f.bufferedBytes > f.maxBytes {
+			return f.fail(idx, "buffered byte limit exceeded")
+		}
+		f.timeline[idx] = append(f.timeline[idx], queuedEntry{ev: e})
+	}
+	return nil
 }
 
 func (f *streamFilter) resetRoundForPlan(p *Plan) {
@@ -228,7 +261,7 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		f.errored = true
 		f.calls = map[string]*bufferedToolCall{}
 		f.callOrder = nil
-		f.postCallEvs = map[int][]ir.Event{}
+		f.timeline = map[int][]queuedEntry{}
 		return []ir.Event{ev}
 
 	case ir.EvReasoningStart, ir.EvReasoning, ir.EvSignature, ir.EvSealed:
@@ -239,8 +272,7 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		if f.reasoning == ir.ReasoningOutHidden {
 			if len(out) > 0 {
 				if f.hasPendingCalls(ev.Index) {
-					f.postCallEvs[ev.Index] = append(f.postCallEvs[ev.Index], out...)
-					return nil
+					return f.queueEvents(ev.Index, out...)
 				}
 				return out
 			}
@@ -251,8 +283,7 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		}
 		out = append(out, ev)
 		if f.hasPendingCalls(ev.Index) {
-			f.postCallEvs[ev.Index] = append(f.postCallEvs[ev.Index], out...)
-			return nil
+			return f.queueEvents(ev.Index, out...)
 		}
 		return out
 
@@ -266,14 +297,22 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		// Keep text/reasoning queued while buffered or unvalidated LiveFirst calls are pending
 		// so encoders never prematurely close/complete a live tool item before EvStop validation.
 		if !f.stopTriggered[ev.Index] && f.hasPendingCalls(ev.Index) {
-			f.postCallEvs[ev.Index] = append(f.postCallEvs[ev.Index], out...)
-			return nil
+			return f.queueEvents(ev.Index, out...)
 		}
 		return out
 
 	case ir.EvToolStart:
 		var out []ir.Event
-		out = append(out, f.flushStopBuf(ev.Index)...)
+		flushed := f.flushStopBuf(ev.Index)
+		if len(flushed) > 0 {
+			if f.hasPendingCalls(ev.Index) {
+				if failEvs := f.queueEvents(ev.Index, flushed...); failEvs != nil {
+					return failEvs
+				}
+			} else {
+				out = append(out, flushed...)
+			}
+		}
 
 		f.callSeq++
 		f.totalCalls++
@@ -301,6 +340,7 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		f.calls[key] = bc
 		f.callOrder = append(f.callOrder, key)
 		f.lastCallKey[ev.Index] = key
+		f.timeline[ev.Index] = append(f.timeline[ev.Index], queuedEntry{callKey: key})
 
 		if !bc.intercepted && !f.isInterceptedOrPrefix(ev.Name) {
 			switch f.release {
@@ -372,7 +412,7 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 
 	case ir.EvStop:
 		var out []ir.Event
-		out = append(out, f.flushStopBuf(ev.Index)...)
+		flushed := f.flushStopBuf(ev.Index)
 
 		stop := ir.Stop{Reason: ir.StopEndTurn}
 		if ev.Stop != nil {
@@ -383,85 +423,26 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 		candCalls := f.candidateCalls(ev.Index)
 		dropBuffered := stop.Truncated() || (f.client == ir.FormatResponses && stop.Filtered())
 		if dropBuffered {
-			// Drop every buffered call without error.
+			// Drop every buffered call without error, emitting queued non-call events in order.
+			for _, entry := range f.timeline[ev.Index] {
+				if entry.callKey == "" {
+					out = append(out, entry.ev)
+				}
+			}
+			out = append(out, flushed...)
+			delete(f.timeline, ev.Index)
 			f.clearCandidateCalls(ev.Index)
-			out = append(out, f.postCallEvs[ev.Index]...)
-			delete(f.postCallEvs, ev.Index)
 			st := stop
 			out = append(out, ir.Event{Type: ir.EvStop, Index: ev.Index, Stop: &st})
 			return out
 		}
 
-		// Validate all calls before releasing any buffered or liveFirst completion.
-		type validated struct {
-			bc        *bufferedToolCall
-			finalArgs json.RawMessage
-			customIn  string
+		emitted, failEvs := f.flushValidatedTimeline(ev.Index, candCalls)
+		if failEvs != nil {
+			return failEvs
 		}
-		var vals []validated
-		for _, bc := range candCalls {
-			args, cin, errMsg := bc.validate()
-			if errMsg != "" {
-				return f.fail(ev.Index, errMsg)
-			}
-			if bc.live && bc.closed && f.release == ir.ToolReleaseStream {
-				continue
-			}
-			vals = append(vals, validated{bc: bc, finalArgs: args, customIn: cin})
-		}
-
-		for _, v := range vals {
-			bc := v.bc
-			if bc.intercepted {
-				tc := ir.ToolCall{
-					ID:        bc.id,
-					Name:      bc.name,
-					Namespace: bc.ns,
-					Kind:      bc.kind,
-					Signature: bc.sig,
-				}
-				if bc.kind == ir.ToolCustom {
-					tc.Input = v.customIn
-				} else {
-					tc.Arguments = v.finalArgs
-				}
-				f.intercepted = append(f.intercepted, tc)
-				continue
-			}
-			f.deliveredCall[ev.Index] = true
-			if bc.live {
-				// LiveFirst already streamed EvToolStart + EvToolArgs; only emit EvToolEnd now.
-				out = append(out, ir.Event{
-					Type:      ir.EvToolEnd,
-					Index:     bc.candIdx,
-					ID:        bc.id,
-					Arguments: v.finalArgs,
-				})
-				continue
-			}
-			// Buffered call: emit Start -> Args -> End whole.
-			out = append(out, ir.Event{
-				Type:      ir.EvToolStart,
-				Index:     bc.candIdx,
-				ID:        bc.id,
-				Name:      bc.name,
-				Namespace: bc.ns,
-				Kind:      bc.kind,
-				Signature: bc.sig,
-			})
-			if bc.kind == ir.ToolCustom {
-				if v.customIn != "" {
-					out = append(out, ir.Event{Type: ir.EvToolArgs, Index: bc.candIdx, ID: bc.id, Text: v.customIn})
-				}
-			} else if len(v.finalArgs) > 0 {
-				out = append(out, ir.Event{Type: ir.EvToolArgs, Index: bc.candIdx, ID: bc.id, Text: string(v.finalArgs)})
-			}
-			out = append(out, ir.Event{Type: ir.EvToolEnd, Index: bc.candIdx, ID: bc.id, Arguments: v.finalArgs})
-		}
-
-		out = append(out, f.postCallEvs[ev.Index]...)
-		delete(f.postCallEvs, ev.Index)
-		f.clearCandidateCalls(ev.Index)
+		out = append(out, emitted...)
+		out = append(out, flushed...)
 
 		// If intercepted calls exist, hold back EvStop so caller can run tools and call NextRound.
 		if len(f.intercepted) > 0 {
@@ -484,6 +465,96 @@ func (f *streamFilter) process(ev ir.Event) []ir.Event {
 	return []ir.Event{ev}
 }
 
+func (f *streamFilter) flushValidatedTimeline(idx int, candCalls []*bufferedToolCall) (out []ir.Event, failEvs []ir.Event) {
+	type validated struct {
+		bc        *bufferedToolCall
+		finalArgs json.RawMessage
+		customIn  string
+	}
+	valByPtr := map[*bufferedToolCall]validated{}
+	for _, bc := range candCalls {
+		args, cin, errMsg := bc.validate()
+		if errMsg != "" {
+			return nil, f.fail(idx, errMsg)
+		}
+		if bc.live && bc.closed && f.release == ir.ToolReleaseStream {
+			continue
+		}
+		valByPtr[bc] = validated{bc: bc, finalArgs: args, customIn: cin}
+	}
+
+	emitCall := func(v validated) {
+		bc := v.bc
+		if bc.intercepted {
+			tc := ir.ToolCall{
+				ID:        bc.id,
+				Name:      bc.name,
+				Namespace: bc.ns,
+				Kind:      bc.kind,
+				Signature: bc.sig,
+			}
+			if bc.kind == ir.ToolCustom {
+				tc.Input = v.customIn
+			} else {
+				tc.Arguments = v.finalArgs
+			}
+			f.intercepted = append(f.intercepted, tc)
+			return
+		}
+		f.deliveredCall[idx] = true
+		if bc.live {
+			out = append(out, ir.Event{
+				Type:      ir.EvToolEnd,
+				Index:     bc.candIdx,
+				ID:        bc.id,
+				Arguments: v.finalArgs,
+			})
+			return
+		}
+		out = append(out, ir.Event{
+			Type:      ir.EvToolStart,
+			Index:     bc.candIdx,
+			ID:        bc.id,
+			Name:      bc.name,
+			Namespace: bc.ns,
+			Kind:      bc.kind,
+			Signature: bc.sig,
+		})
+		if bc.kind == ir.ToolCustom {
+			if v.customIn != "" {
+				out = append(out, ir.Event{Type: ir.EvToolArgs, Index: bc.candIdx, ID: bc.id, Text: v.customIn})
+			}
+		} else if len(v.finalArgs) > 0 {
+			out = append(out, ir.Event{Type: ir.EvToolArgs, Index: bc.candIdx, ID: bc.id, Text: string(v.finalArgs)})
+		}
+		out = append(out, ir.Event{Type: ir.EvToolEnd, Index: bc.candIdx, ID: bc.id, Arguments: v.finalArgs})
+	}
+
+	seen := map[*bufferedToolCall]bool{}
+	for _, entry := range f.timeline[idx] {
+		if entry.callKey != "" {
+			if bc := f.calls[entry.callKey]; bc != nil {
+				if v, ok := valByPtr[bc]; ok {
+					emitCall(v)
+					seen[bc] = true
+				}
+			}
+			continue
+		}
+		out = append(out, entry.ev)
+	}
+	for _, bc := range candCalls {
+		if !seen[bc] {
+			if v, ok := valByPtr[bc]; ok {
+				emitCall(v)
+			}
+		}
+	}
+	delete(f.timeline, idx)
+	f.clearCandidateCalls(idx)
+	return out, nil
+}
+
 func (f *streamFilter) processStopText(ev ir.Event) []ir.Event {
 	buf := f.stopBuf[ev.Index] + ev.Text
 	bestPos := -1
@@ -501,77 +572,14 @@ func (f *streamFilter) processStopText(ev ir.Event) []ir.Event {
 	}
 	if bestPos >= 0 {
 		var out []ir.Event
-		// Validate any pending calls before emitting stop so unvalidated LiveFirst/buffered
-		// calls can never be completed by an emulated stop sequence.
+		// Validate any pending calls and release timeline in order before emitting stop.
 		candCalls := f.candidateCalls(ev.Index)
-		if len(candCalls) > 0 {
-			type validated struct {
-				bc        *bufferedToolCall
-				finalArgs json.RawMessage
-				customIn  string
+		if len(candCalls) > 0 || len(f.timeline[ev.Index]) > 0 {
+			emitted, failEvs := f.flushValidatedTimeline(ev.Index, candCalls)
+			if failEvs != nil {
+				return failEvs
 			}
-			var vals []validated
-			for _, bc := range candCalls {
-				args, cin, errMsg := bc.validate()
-				if errMsg != "" {
-					return f.fail(ev.Index, errMsg)
-				}
-				if bc.live && bc.closed && f.release == ir.ToolReleaseStream {
-					continue
-				}
-				vals = append(vals, validated{bc: bc, finalArgs: args, customIn: cin})
-			}
-			for _, v := range vals {
-				bc := v.bc
-				if bc.intercepted {
-					tc := ir.ToolCall{
-						ID:        bc.id,
-						Name:      bc.name,
-						Namespace: bc.ns,
-						Kind:      bc.kind,
-						Signature: bc.sig,
-					}
-					if bc.kind == ir.ToolCustom {
-						tc.Input = v.customIn
-					} else {
-						tc.Arguments = v.finalArgs
-					}
-					f.intercepted = append(f.intercepted, tc)
-					continue
-				}
-				f.deliveredCall[ev.Index] = true
-				if bc.live {
-					out = append(out, ir.Event{
-						Type:      ir.EvToolEnd,
-						Index:     bc.candIdx,
-						ID:        bc.id,
-						Arguments: v.finalArgs,
-					})
-					continue
-				}
-				out = append(out, ir.Event{
-					Type:      ir.EvToolStart,
-					Index:     bc.candIdx,
-					ID:        bc.id,
-					Name:      bc.name,
-					Namespace: bc.ns,
-					Kind:      bc.kind,
-					Signature: bc.sig,
-				})
-				if bc.kind == ir.ToolCustom {
-					if v.customIn != "" {
-						out = append(out, ir.Event{Type: ir.EvToolArgs, Index: bc.candIdx, ID: bc.id, Text: v.customIn})
-					}
-				} else if len(v.finalArgs) > 0 {
-					out = append(out, ir.Event{Type: ir.EvToolArgs, Index: bc.candIdx, ID: bc.id, Text: string(v.finalArgs)})
-				}
-				out = append(out, ir.Event{Type: ir.EvToolEnd, Index: bc.candIdx, ID: bc.id, Arguments: v.finalArgs})
-			}
-			f.clearCandidateCalls(ev.Index)
-		}
-		if len(f.postCallEvs[ev.Index]) > 0 {
-			out = append(out, f.postCallEvs[ev.Index]...)
-			delete(f.postCallEvs, ev.Index)
+			out = append(out, emitted...)
 		}
 		if bestPos > 0 {
 			out = append(out, ir.Event{Type: ir.EvText, Index: ev.Index, Text: buf[:bestPos]})
@@ -668,7 +676,7 @@ func (f *streamFilter) fail(candIdx int, msg string) []ir.Event {
 	f.errored = true
 	f.calls = map[string]*bufferedToolCall{}
 	f.callOrder = nil
-	f.postCallEvs = map[int][]ir.Event{}
+	f.timeline = map[int][]queuedEntry{}
 	return []ir.Event{{
 		Type:  ir.EvError,
 		Index: candIdx,

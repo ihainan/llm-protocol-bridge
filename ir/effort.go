@@ -1,7 +1,9 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -206,6 +208,48 @@ func (p *ModelProfile) Lowest() Effort {
 	return EffortLow
 }
 
+// OffPatchField is one validated top-level field from an OffPatch rule.
+type OffPatchField struct {
+	Key   string
+	Value json.RawMessage
+}
+
+var offPatchWhitelist = map[string]bool{
+	"reasoning_effort":     true,
+	"reasoning":            true,
+	"enable_thinking":      true,
+	"chat_template_kwargs": true,
+	"think":                true,
+	"thinking":             true,
+}
+
+// ParseOffPatch validates an OffPatch JSON object against the design.md §9.3.3
+// whitelist and returns its fields in deterministic key order. Invalid JSON or
+// non-whitelisted keys return a CodeConfig error.
+func ParseOffPatch(raw json.RawMessage) ([]OffPatchField, *Error) {
+	b := bytes.TrimSpace(raw)
+	if len(b) == 0 {
+		return nil, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil || m == nil {
+		return nil, &Error{Code: CodeConfig, Path: Root.Key("reasoning"), Message: "invalid reasoning off patch configuration"}
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		if !offPatchWhitelist[k] {
+			return nil, &Error{Code: CodeConfig, Path: Root.Key("reasoning"), Message: "reasoning off patch contains disallowed key"}
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]OffPatchField, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, OffPatchField{Key: k, Value: m[k]})
+	}
+	return out, nil
+}
+
 // ResolvedReasoning is a reasoning request resolved against a model profile.
 type ResolvedReasoning struct {
 	// Off is true when the client turned reasoning off.
@@ -214,6 +258,8 @@ type ResolvedReasoning struct {
 	Effort Effort
 	// Budget is the client's explicit budget, if any.
 	Budget *int
+	// Dynamic is true when the client requested dynamic/model-decided thinking budget (e.g. Gemini -1).
+	Dynamic bool
 	// Asked is true when the client said anything about reasoning.
 	Asked bool
 	// Adaptive is true when the client asked for adaptive thinking.
@@ -225,7 +271,6 @@ type ResolvedReasoning struct {
 func (p *ModelProfile) Resolve(c *ReasoningConfig) ResolvedReasoning {
 	var r ResolvedReasoning
 	if c != nil {
-		r.Budget = c.Budget
 		r.Adaptive = c.Mode == ReasoningAdaptive
 		r.Asked = c.Mode != ReasoningDefault || c.Effort != EffortUnset || c.Budget != nil
 		if c.Mode == ReasoningOff || c.Effort == EffortNone {
@@ -235,12 +280,19 @@ func (p *ModelProfile) Resolve(c *ReasoningConfig) ResolvedReasoning {
 		}
 		switch {
 		case c.Effort != EffortUnset:
+			// Effort takes precedence over Budget (design.md §9.3.1).
 			r.Effort = c.Effort
 		case c.Budget != nil:
-			r.Effort = p.BudgetEffort(*c.Budget)
+			r.Budget = c.Budget
+			if *c.Budget < 0 {
+				// Dynamic / model-decided thinking budget (e.g. Gemini thinkingBudget: -1).
+				r.Dynamic = true
+			} else {
+				r.Effort = p.BudgetEffort(*c.Budget)
+			}
 		}
 	}
-	if r.Effort == EffortUnset && p != nil {
+	if r.Effort == EffortUnset && !r.Dynamic && p != nil {
 		r.Effort = p.DefaultEffort
 	}
 	r.Effort = p.Fit(r.Effort)

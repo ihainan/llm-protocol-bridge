@@ -507,13 +507,12 @@ func (b *built) buildReasoning(req *ir.Request, out *jsonx.Obj) error {
 			case ir.OffUnsupported:
 				return b.env.Err(ir.Unsupported(ir.Root.Key("reasoning"), "off", "model does not allow disabling reasoning"))
 			case ir.OffPatch:
-				if len(profile.Off.Patch) > 0 {
-					kvs, err := jsonx.Object(profile.Off.Patch)
-					if err == nil {
-						for _, kv := range kvs {
-							out.Raw(kv.Key, kv.Value)
-						}
-					}
+				fields, cfgErr := ir.ParseOffPatch(profile.Off.Patch)
+				if cfgErr != nil {
+					return b.env.Err(cfgErr)
+				}
+				for _, f := range fields {
+					out.Raw(f.Key, f.Value)
 				}
 				return nil
 			case ir.OffLowestHidden:
@@ -536,6 +535,10 @@ func (b *built) buildReasoning(req *ir.Request, out *jsonx.Obj) error {
 		return nil
 	}
 	if profile != nil && profile.Style == ir.StyleNone {
+		return nil
+	}
+	if res.Dynamic && res.Effort == ir.EffortUnset {
+		// Dynamic/model-decided budget (e.g. Gemini -1): omit explicit effort so upstream uses model default.
 		return nil
 	}
 	effort := res.Effort

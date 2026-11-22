@@ -550,6 +550,11 @@ func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGene
 				switch profile.Off.Mode {
 				case ir.OffUnsupported:
 					return nil, env.Err(ir.Unsupported(ir.Root.Key("reasoning"), "off", "model does not allow disabling reasoning"))
+				case ir.OffPatch:
+					if _, cfgErr := ir.ParseOffPatch(profile.Off.Patch); cfgErr != nil {
+						return nil, env.Err(cfgErr)
+					}
+					// Valid OffPatch validated; omit thinkingConfig for Gemini.
 				case ir.OffLowestHidden:
 					low := profile.Lowest()
 					tc := &wireThinkingConfig{}
@@ -578,7 +583,10 @@ func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGene
 					tc.ThinkingLevel = strings.ToUpper(string(res.Effort))
 				}
 			} else {
-				if res.Budget != nil {
+				if res.Dynamic || (res.Budget != nil && *res.Budget < 0) {
+					dyn := -1
+					tc.ThinkingBudget = &dyn
+				} else if res.Budget != nil {
 					b := *res.Budget
 					if profile != nil && profile.MinBudget > 0 && b < profile.MinBudget {
 						b = profile.MinBudget

@@ -455,7 +455,7 @@ func appendPartEvents(evs []Event, idx int, p Part) []Event {
 			return evs
 		}
 		evs = append(evs, Event{Type: EvReasoningStart, Index: idx, ID: r.ID})
-		if r.Text != "" {
+		if r.Text != "" && (len(r.Summary) == 0 || r.Text != strings.Join(r.Summary, "")) {
 			evs = append(evs, Event{Type: EvReasoning, Index: idx, Text: r.Text})
 		}
 		for i, s := range r.Summary {

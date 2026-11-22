@@ -150,12 +150,23 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	// reasoning.
 	profile := env.ModelProfileOr(nil)
 	if req.Reasoning != nil || (profile != nil && profile.DefaultEffort != ir.EffortUnset) {
-		rb, err := buildReasoning(req.Reasoning, profile, env)
-		if err != nil {
-			return nil, err
-		}
-		if rb != nil {
-			out.Raw("reasoning", rb)
+		res := profile.Resolve(req.Reasoning)
+		if res.Off && profile != nil && profile.Off.Mode == ir.OffPatch {
+			fields, cfgErr := ir.ParseOffPatch(profile.Off.Patch)
+			if cfgErr != nil {
+				return nil, env.Err(cfgErr)
+			}
+			for _, f := range fields {
+				out.Raw(f.Key, f.Value)
+			}
+		} else {
+			rb, err := buildReasoning(req.Reasoning, profile, env)
+			if err != nil {
+				return nil, err
+			}
+			if rb != nil {
+				out.Raw("reasoning", rb)
+			}
 		}
 	}
 
