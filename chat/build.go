@@ -2,10 +2,10 @@ package chat
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
-	"github.com/ihainan/llm-protocol-bridge/internal/schema"
 	"github.com/ihainan/llm-protocol-bridge/ir"
 )
 
@@ -175,7 +175,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// reasoning
-	if err := b.buildReasoning(req, out); err != nil {
+	if err := b.buildReasoning(req, &out); err != nil {
 		return nil, err
 	}
 
@@ -194,9 +194,16 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 	// store is a Responses-API-only field; never emit it in Chat format.
 
-	// passthrough
-	for k, v := range req.Passthrough {
-		out.Raw(k, v)
+	// passthrough (identity builds only, deterministic key order)
+	if req.Source == ir.FormatChat && len(req.Passthrough) > 0 {
+		pkeys := make([]string, 0, len(req.Passthrough))
+		for k := range req.Passthrough {
+			pkeys = append(pkeys, k)
+		}
+		sort.Strings(pkeys)
+		for _, k := range pkeys {
+			out.Raw(k, req.Passthrough[k])
+		}
 	}
 
 	body := out.End()
@@ -229,9 +236,6 @@ func (b *built) buildTool(t ir.Tool, p ir.Path) (wireTool, error) {
 	b.names[t.Name] = ref
 
 	params := t.Schema
-	if !jsonx.Absent(params) {
-		params = schema.ToOpenAPI(params)
-	}
 	fn := wireFunctionDef{
 		Name:        t.Name,
 		Description: t.Description,
@@ -410,7 +414,7 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 }
 
 // buildReasoning writes reasoning configuration based on the dialect.
-func (b *built) buildReasoning(req *ir.Request, out jsonx.Obj) error {
+func (b *built) buildReasoning(req *ir.Request, out *jsonx.Obj) error {
 	if req.Reasoning == nil {
 		return nil
 	}

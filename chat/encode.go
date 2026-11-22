@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
 	"github.com/ihainan/llm-protocol-bridge/ir"
@@ -15,6 +16,7 @@ type StreamEncoder struct {
 	model   string
 	created int64
 	started bool
+	errored bool
 	// seqByIdx tracks the number of tool call objects emitted for each choice
 	// index, for assigning the streaming tool_calls[].index field.
 	callIdxBy map[int]int
@@ -135,14 +137,18 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvError:
 		if ev.Err != nil {
+			e.errored = true
 			dst = BuildStreamError(dst, ev.Err)
 		}
 	}
 	return dst, nil
 }
 
-// Close writes the [DONE] SSE marker.
+// Close writes the [DONE] SSE marker unless the stream ended with an error.
 func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
+	if e.errored {
+		return dst, nil
+	}
 	dst = append(dst, "data: [DONE]\n\n"...)
 	return dst, nil
 }
@@ -261,8 +267,12 @@ func buildAssistantMessage(parts []ir.Part) wireMessage {
 	case 1:
 		wm.Content = jsonRawString(textParts[0].Text)
 	default:
-		b, _ := jsonx.Marshal(textParts)
-		wm.Content = b
+		// Chat Completions assistant response message.content is always a string (or null), never an array.
+		var sb strings.Builder
+		for _, tp := range textParts {
+			sb.WriteString(tp.Text)
+		}
+		wm.Content = jsonRawString(sb.String())
 	}
 	return wm
 }

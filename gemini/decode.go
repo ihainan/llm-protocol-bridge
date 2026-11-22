@@ -10,11 +10,12 @@ import (
 
 // StreamDecoder converts Gemini streamGenerateContent chunks into ir.Events.
 type StreamDecoder struct {
-	env      *ir.Env
-	dia      Dialect
-	names    map[string]ir.ToolRef
-	started  bool
-	terminal bool
+	env          *ir.Env
+	dia          Dialect
+	names        map[string]ir.ToolRef
+	started      bool
+	terminal     bool
+	hasToolCalls map[int]bool
 	// callIDGen tracks emitted call IDs so we assign stable ones when missing.
 	callSeq int
 }
@@ -27,9 +28,10 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 	}
 	env.Style = ir.StyleBracket
 	return &StreamDecoder{
-		env:   env,
-		dia:   opts.Dialect,
-		names: opts.Names,
+		env:          env,
+		dia:          opts.Dialect,
+		names:        opts.Names,
+		hasToolCalls: map[int]bool{},
 	}
 }
 
@@ -72,6 +74,22 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		out = append(out, ev)
 	}
 
+	if len(resp.Candidates) == 0 && resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" {
+		msg := resp.PromptFeedback.BlockReasonMessage
+		if msg == "" {
+			msg = "prompt blocked: " + resp.PromptFeedback.BlockReason
+		}
+		out = append(out, ir.Event{Type: ir.EvError, Err: &ir.APIError{
+			Status:  400,
+			Type:    ir.ErrInvalidRequest,
+			Code:    resp.PromptFeedback.BlockReason,
+			Message: msg,
+			Raw:     append([]byte(nil), data...),
+		}})
+		d.terminal = true
+		return out, nil
+	}
+
 	for _, cand := range resp.Candidates {
 		idx := cand.Index
 		for _, part := range cand.Content.Parts {
@@ -79,6 +97,9 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		}
 		if cand.FinishReason != "" && cand.FinishReason != "FINISH_REASON_UNSPECIFIED" {
 			stop := geminiStop(cand.FinishReason)
+			if d.hasToolCalls[idx] && stop.Reason == ir.StopEndTurn {
+				stop.Reason = ir.StopToolUse
+			}
 			out = append(out, ir.Event{Type: ir.EvStop, Index: idx, Stop: &stop})
 			d.terminal = true
 		}
@@ -105,6 +126,7 @@ func (d *StreamDecoder) decodePart(out []ir.Event, part wirePart, idx int) []ir.
 	switch {
 	case part.FunctionCall != nil:
 		fc := part.FunctionCall
+		d.hasToolCalls[idx] = true
 		id := fc.ID
 		if id == "" {
 			d.callSeq++
@@ -198,11 +220,24 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 				out.Parts = append(out.Parts, *p)
 			}
 		}
-		out.Stop = geminiStop(cand.FinishReason)
+		out.Stop = ir.FinalStop(geminiStop(cand.FinishReason), out.Parts)
 		resp.Outputs = append(resp.Outputs, out)
 	}
 	if len(resp.Outputs) == 0 {
-		resp.Outputs = []ir.Output{{}}
+		if wr.PromptFeedback != nil && wr.PromptFeedback.BlockReason != "" {
+			msg := wr.PromptFeedback.BlockReasonMessage
+			if msg == "" {
+				msg = "prompt blocked: " + wr.PromptFeedback.BlockReason
+			}
+			return nil, &ir.APIError{
+				Status:  400,
+				Type:    ir.ErrInvalidRequest,
+				Code:    wr.PromptFeedback.BlockReason,
+				Message: msg,
+				Raw:     append([]byte(nil), body...),
+			}
+		}
+		return nil, ir.Protocol("gemini: response has no candidates")
 	}
 	return resp, nil
 }

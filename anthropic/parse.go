@@ -355,13 +355,14 @@ func parseContentBlock(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, er
 
 	case "redacted_thinking":
 		data, _ := jsonx.String(fields["data"])
+		rawData, _ := jsonx.Marshal(data)
 		return ir.Part{
 			Type: ir.PartReasoning,
 			Reasoning: &ir.Reasoning{
 				Sealed: &ir.Sealed{
 					Kind:   ir.SealedAnthropicRedacted,
-					Data:   json.RawMessage(`"` + data + `"`),
-					Origin: ir.Origin{Format: ir.FormatAnthropic},
+					Data:   rawData,
+					Origin: ir.Origin{Format: ir.FormatAnthropic, Provider: env.ProviderID},
 				},
 			},
 		}, nil

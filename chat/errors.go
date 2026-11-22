@@ -39,7 +39,7 @@ func BuildError(err *ir.APIError) (int, []byte) {
 	body, _ := jsonx.Marshal(wireErrorResponse{
 		Error: wireError{
 			Message: err.Message,
-			Type:    string(err.Type),
+			Type:    openaiErrorType(err.Type),
 			Code:    codeJSON(err.Code),
 			Param:   err.Param,
 		},
@@ -55,7 +55,7 @@ func BuildStreamError(dst []byte, err *ir.APIError) []byte {
 	}{
 		Error: wireError{
 			Message: err.Message,
-			Type:    string(err.Type),
+			Type:    openaiErrorType(err.Type),
 			Code:    codeJSON(err.Code),
 			Param:   err.Param,
 		},
@@ -64,6 +64,31 @@ func BuildStreamError(dst []byte, err *ir.APIError) []byte {
 	dst = append(dst, body...)
 	dst = append(dst, '\n', '\n')
 	return dst
+}
+
+func openaiErrorType(t ir.ErrorType) string {
+	switch t {
+	case ir.ErrInvalidRequest:
+		return "invalid_request_error"
+	case ir.ErrAuthentication:
+		return "authentication_error"
+	case ir.ErrBilling:
+		return "billing_error"
+	case ir.ErrPermission:
+		return "permission_error"
+	case ir.ErrNotFound:
+		return "not_found_error"
+	case ir.ErrRequestTooLarge:
+		return "request_too_large"
+	case ir.ErrRateLimit:
+		return "rate_limit_error"
+	case ir.ErrOverloaded:
+		return "overloaded_error"
+	case ir.ErrTimeout:
+		return "timeout_error"
+	default:
+		return "server_error"
+	}
 }
 
 // mapErrorType maps an OpenAI error type string to ir.ErrorType.

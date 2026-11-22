@@ -236,9 +236,8 @@ func (o *Obj) key(k string) {
 		o.B = append(o.B, ',')
 	}
 	o.first = false
-	o.B = append(o.B, '"')
-	o.B = append(o.B, k...)
-	o.B = append(o.B, '"', ':')
+	o.B = AppendString(o.B, k)
+	o.B = append(o.B, ':')
 }
 
 // Str writes a string member.

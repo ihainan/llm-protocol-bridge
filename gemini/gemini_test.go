@@ -25,7 +25,7 @@ func TestParseBuildRoundTrip(t *testing.T) {
 		},
 		{
 			name:  "system_instruction",
-			body:  `{"system_instruction":{"parts":[{"text":"be brief"}]},"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`,
+			body:  `{"systemInstruction":{"parts":[{"text":"be brief"}]},"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`,
 			model: "gemini-2.0",
 		},
 		{
@@ -40,7 +40,7 @@ func TestParseBuildRoundTrip(t *testing.T) {
 		},
 		{
 			name:  "generation_config",
-			body:  `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generation_config":{"temperature":0.7,"max_output_tokens":64}}`,
+			body:  `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"temperature":0.7,"maxOutputTokens":64}}`,
 			model: "gemini-2.0",
 		},
 	}
@@ -70,6 +70,15 @@ func TestParseBuildRoundTrip(t *testing.T) {
 			}
 			if len(req.Messages) != len(req2.Messages) {
 				t.Errorf("messages count: want %d, got %d", len(req.Messages), len(req2.Messages))
+			}
+			if len(req.Instructions) != len(req2.Instructions) {
+				t.Errorf("instructions count: want %d, got %d", len(req.Instructions), len(req2.Instructions))
+			}
+			if (req.Temperature == nil) != (req2.Temperature == nil) {
+				t.Errorf("temperature mismatch: %v vs %v", req.Temperature, req2.Temperature)
+			}
+			if (req.MaxOutputTokens == nil) != (req2.MaxOutputTokens == nil) {
+				t.Errorf("maxOutputTokens mismatch: %v vs %v", req.MaxOutputTokens, req2.MaxOutputTokens)
 			}
 		})
 	}

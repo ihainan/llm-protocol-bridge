@@ -44,16 +44,16 @@ func TestStreamDecode_Responses_HappyPath(t *testing.T) {
 		`data: {"type":"response.created","response":{"id":"resp1","model":"gpt-4","status":"in_progress"}}` + "\n\n" +
 		"event: response.in_progress\n" +
 		`data: {"type":"response.in_progress","response":{"id":"resp1","model":"gpt-4","status":"in_progress"}}` + "\n\n" +
-		"event: output_item.added\n" +
-		`data: {"type":"output_item.added","output_index":0,"item":{"type":"message","id":"item1","status":"in_progress"}}` + "\n\n" +
-		"event: content_part.added\n" +
-		`data: {"type":"content_part.added","item_id":"item1","output_index":0,"content_index":0,"part":{"type":"output_text","text":""}}` + "\n\n" +
-		"event: output_text.delta\n" +
-		`data: {"type":"output_text.delta","item_id":"item1","output_index":0,"content_index":0,"delta":"hello"}` + "\n\n" +
-		"event: content_part.done\n" +
-		`data: {"type":"content_part.done","item_id":"item1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"hello"}}` + "\n\n" +
-		"event: output_item.done\n" +
-		`data: {"type":"output_item.done","output_index":0,"item":{"type":"message","id":"item1","status":"completed"}}` + "\n\n" +
+		"event: response.output_item.added\n" +
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"item1","status":"in_progress"}}` + "\n\n" +
+		"event: response.content_part.added\n" +
+		`data: {"type":"response.content_part.added","item_id":"item1","output_index":0,"content_index":0,"part":{"type":"output_text","text":""}}` + "\n\n" +
+		"event: response.output_text.delta\n" +
+		`data: {"type":"response.output_text.delta","item_id":"item1","output_index":0,"content_index":0,"delta":"hello"}` + "\n\n" +
+		"event: response.content_part.done\n" +
+		`data: {"type":"response.content_part.done","item_id":"item1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"hello"}}` + "\n\n" +
+		"event: response.output_item.done\n" +
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"item1","status":"completed"}}` + "\n\n" +
 		"event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"id":"resp1","model":"gpt-4","status":"completed","usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}` + "\n\n"
 
@@ -100,8 +100,8 @@ func TestStreamDecode_Responses_Truncated(t *testing.T) {
 	dec := newResponsesDecoder()
 	raw := "event: response.created\n" +
 		`data: {"type":"response.created","response":{"id":"resp2","model":"gpt-4","status":"in_progress"}}` + "\n\n" +
-		"event: output_text.delta\n" +
-		`data: {"type":"output_text.delta","item_id":"item1","output_index":0,"content_index":0,"delta":"partial"}` + "\n\n"
+		"event: response.output_text.delta\n" +
+		`data: {"type":"response.output_text.delta","item_id":"item1","output_index":0,"content_index":0,"delta":"partial"}` + "\n\n"
 
 	feedResponsesChunks(t, dec, raw)
 
@@ -119,16 +119,16 @@ func TestStreamDecode_Responses_InterleavedToolCalls(t *testing.T) {
 	dec := newResponsesDecoder()
 	raw := "event: response.created\n" +
 		`data: {"type":"response.created","response":{"id":"resp3","model":"gpt-4","status":"in_progress"}}` + "\n\n" +
-		"event: output_item.added\n" +
-		`data: {"type":"output_item.added","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"call1","name":"Read","arguments":""}}` + "\n\n" +
-		"event: function_call_arguments.delta\n" +
-		`data: {"type":"function_call_arguments.delta","item_id":"fc1","output_index":0,"delta":"{\"path\":"}` + "\n\n" +
-		"event: function_call_arguments.delta\n" +
-		`data: {"type":"function_call_arguments.delta","item_id":"fc1","output_index":0,"delta":"\"/x\"}"}` + "\n\n" +
-		"event: function_call_arguments.done\n" +
-		`data: {"type":"function_call_arguments.done","item_id":"fc1","output_index":0,"arguments":"{\"path\":\"/x\"}"}` + "\n\n" +
-		"event: output_item.done\n" +
-		`data: {"type":"output_item.done","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"call1","name":"Read","arguments":"{\"path\":\"/x\"}"}}` + "\n\n" +
+		"event: response.output_item.added\n" +
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"call1","name":"Read","arguments":""}}` + "\n\n" +
+		"event: response.function_call_arguments.delta\n" +
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc1","output_index":0,"delta":"{\"path\":"}` + "\n\n" +
+		"event: response.function_call_arguments.delta\n" +
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc1","output_index":0,"delta":"\"/x\"}"}` + "\n\n" +
+		"event: response.function_call_arguments.done\n" +
+		`data: {"type":"response.function_call_arguments.done","item_id":"fc1","output_index":0,"arguments":"{\"path\":\"/x\"}"}` + "\n\n" +
+		"event: response.output_item.done\n" +
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"call1","name":"Read","arguments":"{\"path\":\"/x\"}"}}` + "\n\n" +
 		"event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"id":"resp3","model":"gpt-4","status":"completed","usage":{"input_tokens":5,"output_tokens":5,"total_tokens":10}}}` + "\n\n"
 
@@ -159,12 +159,12 @@ func TestStreamDecode_Responses_UsageOnlyFinalChunk(t *testing.T) {
 	dec := newResponsesDecoder()
 	raw := "event: response.created\n" +
 		`data: {"type":"response.created","response":{"id":"resp4","model":"gpt-4","status":"in_progress"}}` + "\n\n" +
-		"event: output_item.added\n" +
-		`data: {"type":"output_item.added","output_index":0,"item":{"type":"message","id":"item1","status":"in_progress"}}` + "\n\n" +
-		"event: output_text.delta\n" +
-		`data: {"type":"output_text.delta","item_id":"item1","output_index":0,"content_index":0,"delta":"hi"}` + "\n\n" +
-		"event: output_item.done\n" +
-		`data: {"type":"output_item.done","output_index":0,"item":{"type":"message","id":"item1","status":"completed"}}` + "\n\n" +
+		"event: response.output_item.added\n" +
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"item1","status":"in_progress"}}` + "\n\n" +
+		"event: response.output_text.delta\n" +
+		`data: {"type":"response.output_text.delta","item_id":"item1","output_index":0,"content_index":0,"delta":"hi"}` + "\n\n" +
+		"event: response.output_item.done\n" +
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"item1","status":"completed"}}` + "\n\n" +
 		"event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"id":"resp4","model":"gpt-4","status":"completed","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}` + "\n\n"
 

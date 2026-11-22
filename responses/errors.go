@@ -33,7 +33,7 @@ func BuildError(err *ir.APIError) (int, []byte) {
 	body, _ := jsonx.Marshal(wireErrorResponse{
 		Error: wireError{
 			Message: err.Message,
-			Type:    string(err.Type),
+			Type:    openaiErrorType(err.Type),
 			Code:    err.Code,
 			Param:   err.Param,
 		},
@@ -43,13 +43,9 @@ func BuildError(err *ir.APIError) (int, []byte) {
 
 // BuildStreamError writes an in-stream Responses error event (response.failed).
 func BuildStreamError(dst []byte, err *ir.APIError) []byte {
-	status := err.Status
-	if status == 0 {
-		status = ir.StatusForType(err.Type)
-	}
-	_ = status
 	body, _ := jsonx.Marshal(map[string]any{
-		"type": "response.failed",
+		"type":            "response.failed",
+		"sequence_number": 0,
 		"response": map[string]any{
 			"id":     "",
 			"object": "response",
@@ -62,10 +58,35 @@ func BuildStreamError(dst []byte, err *ir.APIError) []byte {
 			},
 		},
 	})
-	dst = append(dst, "data: "...)
+	dst = append(dst, "event: response.failed\ndata: "...)
 	dst = append(dst, body...)
 	dst = append(dst, '\n', '\n')
 	return dst
+}
+
+func openaiErrorType(t ir.ErrorType) string {
+	switch t {
+	case ir.ErrInvalidRequest:
+		return "invalid_request_error"
+	case ir.ErrAuthentication:
+		return "authentication_error"
+	case ir.ErrBilling:
+		return "billing_error"
+	case ir.ErrPermission:
+		return "permission_error"
+	case ir.ErrNotFound:
+		return "not_found_error"
+	case ir.ErrRequestTooLarge:
+		return "request_too_large"
+	case ir.ErrRateLimit:
+		return "rate_limit_error"
+	case ir.ErrOverloaded:
+		return "overloaded_error"
+	case ir.ErrTimeout:
+		return "timeout_error"
+	default:
+		return "server_error"
+	}
 }
 
 func mapErrorType(t string) ir.ErrorType {

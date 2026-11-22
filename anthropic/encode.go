@@ -14,6 +14,7 @@ type StreamEncoder struct {
 	id      string
 	model   string
 	started bool
+	errored bool
 	// blockIdx is the next content block index to assign.
 	blockIdx int
 	// openBlock is the index of the currently open content block (-1 = none).
@@ -159,14 +160,18 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvError:
 		if ev.Err != nil {
+			e.errored = true
 			dst = BuildStreamError(dst, ev.Err)
 		}
 	}
 	return dst, nil
 }
 
-// Close writes the message_stop event.
+// Close writes the message_stop event unless the stream ended with an error.
 func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
+	if e.errored {
+		return dst, nil
+	}
 	dst = e.closeBlock(dst)
 	dst = e.appendSSE(dst, "message_stop", map[string]any{"type": "message_stop"})
 	return dst, nil

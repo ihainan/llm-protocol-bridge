@@ -58,6 +58,25 @@ func BuildStreamError(dst []byte, err *ir.APIError) []byte {
 	return dst
 }
 
+// BuildStreamErrorSSE writes an in-stream Gemini error framed as an SSE data event.
+func BuildStreamErrorSSE(dst []byte, err *ir.APIError) []byte {
+	status := err.Status
+	if status == 0 {
+		status = ir.StatusForType(err.Type)
+	}
+	body, _ := jsonx.Marshal(map[string]any{
+		"error": map[string]any{
+			"code":    status,
+			"message": err.Message,
+			"status":  geminiStatusCode(err.Type),
+		},
+	})
+	dst = append(dst, "data: "...)
+	dst = append(dst, body...)
+	dst = append(dst, '\n', '\n')
+	return dst
+}
+
 func refineGeminiType(t ir.ErrorType, code, msg string) ir.ErrorType {
 	if ir.IsContextLength(&ir.APIError{Type: t, Code: code, Message: msg}) {
 		return ir.ErrRequestTooLarge

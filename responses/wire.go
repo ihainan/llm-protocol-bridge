@@ -104,14 +104,19 @@ type wireTool struct {
 
 // wireResponse is the non-streaming response body.
 type wireResponse struct {
-	ID          string           `json:"id"`
-	Object      string           `json:"object"` // "response"
-	Model       string           `json:"model"`
-	Status      string           `json:"status"` // completed | incomplete | failed
-	Output      []wireOutputItem `json:"output"`
-	Usage       *wireUsage       `json:"usage,omitempty"`
-	Error       *wireError       `json:"error,omitempty"`
-	ServiceTier string           `json:"service_tier,omitempty"`
+	ID                string                 `json:"id"`
+	Object            string                 `json:"object"` // "response"
+	Model             string                 `json:"model"`
+	Status            string                 `json:"status"` // completed | incomplete | failed
+	IncompleteDetails *wireIncompleteDetails `json:"incomplete_details,omitempty"`
+	Output            []wireOutputItem       `json:"output"`
+	Usage             *wireUsage             `json:"usage,omitempty"`
+	Error             *wireError             `json:"error,omitempty"`
+	ServiceTier       string                 `json:"service_tier,omitempty"`
+}
+
+type wireIncompleteDetails struct {
+	Reason string `json:"reason,omitempty"`
 }
 
 // wireOutputItem is one item in the response output array.
@@ -203,20 +208,24 @@ type wireStreamEvent struct {
 	Arguments string `json:"arguments,omitempty"`
 	// custom_tool_call_input.delta
 	Input string `json:"input,omitempty"`
-	// response.failed / error
-	Error *wireError `json:"error,omitempty"`
+	// response.failed / error (top-level or nested)
+	Error   *wireError `json:"error,omitempty"`
+	Code    string     `json:"code,omitempty"`
+	Message string     `json:"message,omitempty"`
+	Param   string     `json:"param,omitempty"`
 	// usage
 	Usage *wireUsage `json:"usage,omitempty"`
 }
 
 // wireStreamResponse carries the response object in stream events.
 type wireStreamResponse struct {
-	ID          string           `json:"id"`
-	Object      string           `json:"object"`
-	Model       string           `json:"model"`
-	Status      string           `json:"status"`
-	Output      []wireOutputItem `json:"output"`
-	Usage       *wireUsage       `json:"usage,omitempty"`
-	Error       *wireError       `json:"error,omitempty"`
-	ServiceTier string           `json:"service_tier,omitempty"`
+	ID                string                 `json:"id"`
+	Object            string                 `json:"object"`
+	Model             string                 `json:"model"`
+	Status            string                 `json:"status"`
+	IncompleteDetails *wireIncompleteDetails `json:"incomplete_details,omitempty"`
+	Output            []wireOutputItem       `json:"output"`
+	Usage             *wireUsage             `json:"usage,omitempty"`
+	Error             *wireError             `json:"error,omitempty"`
+	ServiceTier       string                 `json:"service_tier,omitempty"`
 }

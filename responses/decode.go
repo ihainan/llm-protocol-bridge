@@ -10,17 +10,19 @@ import (
 
 // StreamDecoder converts Responses API SSE chunks into ir.Events.
 type StreamDecoder struct {
-	env      *ir.Env
-	dia      Dialect
-	names    map[string]ir.ToolRef
-	started  bool
-	terminal bool
-	seqNext  int
+	env          *ir.Env
+	dia          Dialect
+	names        map[string]ir.ToolRef
+	started      bool
+	terminal     bool
+	hasToolCalls bool
 
 	// per-item state keyed by output_index
-	itemType map[int]string // "message" | "function_call" | "reasoning"
-	callID   map[int]string
-	callName map[int]string
+	itemType    map[int]string // "message" | "function_call" | "custom_tool_call" | "reasoning"
+	callID      map[int]string
+	callName    map[int]string
+	callKind    map[int]ir.ToolKind
+	toolStarted map[int]bool
 }
 
 // NewStreamDecoder returns a Responses stream decoder.
@@ -31,17 +33,22 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 	}
 	env.Style = ir.StyleBracket
 	return &StreamDecoder{
-		env:      env,
-		dia:      opts.Dialect,
-		names:    opts.Names,
-		itemType: map[int]string{},
-		callID:   map[int]string{},
-		callName: map[int]string{},
+		env:         env,
+		dia:         opts.Dialect,
+		names:       opts.Names,
+		itemType:    map[int]string{},
+		callID:      map[int]string{},
+		callName:    map[int]string{},
+		callKind:    map[int]ir.ToolKind{},
+		toolStarted: map[int]bool{},
 	}
 }
 
 // Decode converts one SSE event into zero or more IR events.
 func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error) {
+	if d.terminal {
+		return out, nil
+	}
 	if sse.IsDone(ev.Data) {
 		return out, nil
 	}
@@ -61,30 +68,41 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 	case "response.created", "response.in_progress":
 		if !d.started {
 			d.started = true
-			var model string
+			var id, model string
 			if se.Response != nil {
+				id = se.Response.ID
 				model = se.Response.Model
 			}
-			startEv := ir.Event{Type: ir.EvStart, Model: model}
-			out = append(out, startEv)
+			out = append(out, ir.Event{Type: ir.EvStart, ID: id, Model: model})
 		}
 
 	case "response.completed", "response.done":
+		stop := ir.Stop{Reason: ir.StopEndTurn, Raw: "completed"}
+		if d.hasToolCalls {
+			stop.Reason = ir.StopToolUse
+		}
+		out = append(out, ir.Event{Type: ir.EvStop, Stop: &stop})
 		if se.Response != nil && se.Response.Usage != nil {
 			u := decodeResponsesUsage(se.Response.Usage, d.dia)
 			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
 		}
-		// Stop is handled by output_item.done events.
 		d.terminal = true
 
 	case "response.incomplete":
 		stop := ir.Stop{Reason: ir.StopMaxTokens, Raw: "incomplete"}
 		if se.Response != nil {
-			if se.Response.Error != nil {
+			if se.Response.IncompleteDetails != nil && se.Response.IncompleteDetails.Reason == "content_filter" {
+				stop.Reason = ir.StopContentFilter
+				stop.Raw = "content_filter"
+			} else if se.Response.Error != nil {
 				stop.Reason = ir.StopContentFilter
 			}
 		}
 		out = append(out, ir.Event{Type: ir.EvStop, Stop: &stop})
+		if se.Response != nil && se.Response.Usage != nil {
+			u := decodeResponsesUsage(se.Response.Usage, d.dia)
+			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
+		}
 		d.terminal = true
 
 	case "response.failed":
@@ -94,112 +112,200 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 				Code:    se.Response.Error.Code,
 				Message: se.Response.Error.Message,
 				Type:    mapErrorType(se.Response.Error.Type),
+				Raw:     append([]byte(nil), ev.Data...),
 			}
 		} else if se.Error != nil {
 			apiErr = &ir.APIError{
 				Code:    se.Error.Code,
 				Message: se.Error.Message,
 				Type:    mapErrorType(se.Error.Type),
+				Raw:     append([]byte(nil), ev.Data...),
 			}
 		} else {
-			apiErr = &ir.APIError{Type: ir.ErrServer, Message: "response failed"}
+			apiErr = &ir.APIError{Type: ir.ErrServer, Message: "response failed", Raw: append([]byte(nil), ev.Data...)}
 		}
 		out = append(out, ir.Event{Type: ir.EvError, Err: apiErr})
 		d.terminal = true
 
 	case "error":
+		var apiErr *ir.APIError
 		if se.Error != nil {
-			out = append(out, ir.Event{Type: ir.EvError, Err: &ir.APIError{
+			apiErr = &ir.APIError{
 				Code:    se.Error.Code,
 				Message: se.Error.Message,
+				Param:   se.Error.Param,
 				Type:    mapErrorType(se.Error.Type),
-			}})
+				Raw:     append([]byte(nil), ev.Data...),
+			}
+		} else if se.Message != "" || se.Code != "" {
+			apiErr = &ir.APIError{
+				Code:    se.Code,
+				Message: se.Message,
+				Param:   se.Param,
+				Type:    refineType(ir.ErrServer, se.Code, se.Message),
+				Raw:     append([]byte(nil), ev.Data...),
+			}
+		}
+		if apiErr != nil {
+			out = append(out, ir.Event{Type: ir.EvError, Err: apiErr})
 			d.terminal = true
 		}
 
-	case "output_item.added":
+	case "response.output_item.added":
 		if se.Item != nil {
-			d.itemType[se.OutputIndex] = se.Item.Type
-			if se.Item.Type == "function_call" {
-				d.callID[se.OutputIndex] = se.Item.CallID
-				d.callName[se.OutputIndex] = se.Item.Name
+			idx := se.OutputIndex
+			d.itemType[idx] = se.Item.Type
+			switch se.Item.Type {
+			case "function_call":
+				id := se.Item.CallID
+				if id == "" {
+					id = se.Item.ID
+				}
+				d.callID[idx] = id
+				d.callName[idx] = se.Item.Name
+				d.callKind[idx] = ir.ToolFunction
+				d.toolStarted[idx] = true
+				d.hasToolCalls = true
+				out = d.emitToolStart(out, id, se.Item.Name, "", ir.ToolFunction)
+			case "custom_tool_call":
+				id := se.Item.CallID
+				if id == "" {
+					id = se.Item.ID
+				}
+				d.callID[idx] = id
+				d.callName[idx] = se.Item.Name
+				d.callKind[idx] = ir.ToolCustom
+				d.toolStarted[idx] = true
+				d.hasToolCalls = true
+				out = d.emitToolStart(out, id, se.Item.Name, se.Item.Namespace, ir.ToolCustom)
+			case "reasoning":
+				out = append(out, ir.Event{Type: ir.EvReasoningStart, ID: se.Item.ID})
 			}
 		}
 
-	case "output_item.done":
+	case "response.output_item.done":
 		if se.Item != nil {
 			idx := se.OutputIndex
 			switch se.Item.Type {
 			case "message":
-				// Message stop: end_turn.
-				stop := ir.Stop{Reason: ir.StopEndTurn, Raw: "completed"}
-				out = append(out, ir.Event{Type: ir.EvStop, Stop: &stop})
+				// Individual message item done does not end the whole response;
+				// response.completed / response.incomplete emits EvStop.
 			case "function_call":
-				// Final arguments reconcile; tool end already emitted via delta.
-				if se.Item.Arguments != "" {
+				if !d.toolStarted[idx] {
+					id := se.Item.CallID
+					if id == "" {
+						id = se.Item.ID
+					}
+					d.toolStarted[idx] = true
+					d.hasToolCalls = true
+					out = d.emitToolStart(out, id, se.Item.Name, "", ir.ToolFunction)
+				}
+				args := json.RawMessage(se.Item.Arguments)
+				if len(args) == 0 {
+					args = json.RawMessage(`{}`)
+				}
+				out = append(out, ir.Event{Type: ir.EvToolEnd, Arguments: args})
+			case "custom_tool_call":
+				if !d.toolStarted[idx] {
+					id := se.Item.CallID
+					if id == "" {
+						id = se.Item.ID
+					}
+					d.toolStarted[idx] = true
+					d.hasToolCalls = true
+					out = d.emitToolStart(out, id, se.Item.Name, se.Item.Namespace, ir.ToolCustom)
+				}
+				var raw json.RawMessage
+				if se.Item.Input != "" {
+					raw, _ = jsonx.Marshal(se.Item.Input)
+				}
+				out = append(out, ir.Event{Type: ir.EvToolEnd, Arguments: raw})
+			case "reasoning":
+				if se.Item.EncryptedContent != "" {
+					data, _ := jsonx.Marshal(se.Item.EncryptedContent)
 					out = append(out, ir.Event{
-						Type:      ir.EvToolEnd,
-						Arguments: json.RawMessage(se.Item.Arguments),
+						Type: ir.EvSealed,
+						Sealed: &ir.Sealed{
+							Kind:   ir.SealedResponsesEncrypted,
+							Data:   data,
+							Origin: ir.Origin{Format: ir.FormatResponses, Provider: d.env.ProviderID},
+						},
 					})
 				}
-			case "reasoning":
-				// Reasoning item done: nothing extra needed.
-				_ = idx
 			}
 		}
 
-	case "content_part.added":
-		// No action; text arrives via output_text.delta.
+	case "response.content_part.added", "response.content_part.done", "response.output_text.done":
+		// No action; text arrives via response.output_text.delta.
 
-	case "content_part.done":
-		// No action.
-
-	case "output_text.delta":
+	case "response.output_text.delta":
 		out = append(out, ir.Event{Type: ir.EvText, Text: se.Delta})
 
-	case "output_text.done":
-		// Final text: no extra event needed.
-
-	case "refusal.delta":
-		// Refusals forwarded as text.
+	case "response.refusal.delta":
 		out = append(out, ir.Event{Type: ir.EvText, Text: se.Delta})
 
-	case "function_call_arguments.delta":
+	case "response.function_call_arguments.delta":
 		idx := se.OutputIndex
 		if !d.started {
 			d.started = true
 			out = append(out, ir.Event{Type: ir.EvStart})
 		}
-		// Emit ToolStart on first args delta.
-		if _, seen := d.callID[idx]; !seen {
-			d.callID[idx] = ""
+		if !d.toolStarted[idx] {
+			d.toolStarted[idx] = true
+			d.hasToolCalls = true
+			out = d.emitToolStart(out, d.callID[idx], d.callName[idx], "", ir.ToolFunction)
 		}
-		if name, ok := d.callName[idx]; ok && se.Delta != "" {
-			id := d.callID[idx]
-			ns := ""
-			if ref, ok2 := d.names[name]; ok2 {
-				ns = ref.Namespace
-			}
-			// Emit ToolStart only once (first delta).
-			delete(d.callName, idx)
-			out = append(out,
-				ir.Event{Type: ir.EvToolStart, ID: id, Name: name, Namespace: ns, Kind: ir.ToolFunction},
-			)
+		if se.Delta != "" {
+			out = append(out, ir.Event{Type: ir.EvToolArgs, Text: se.Delta})
 		}
-		out = append(out, ir.Event{Type: ir.EvToolArgs, Text: se.Delta})
 
-	case "function_call_arguments.done":
-		// Final arguments; EvToolEnd emitted by output_item.done.
+	case "response.function_call_arguments.done":
+		// Final arguments; EvToolEnd emitted by response.output_item.done.
 
-	case "reasoning_summary_text.delta":
-		// Reasoning summary delta.
+	case "response.custom_tool_call_input.delta":
+		idx := se.OutputIndex
+		if !d.toolStarted[idx] {
+			d.toolStarted[idx] = true
+			d.hasToolCalls = true
+			out = d.emitToolStart(out, d.callID[idx], d.callName[idx], "", ir.ToolCustom)
+		}
+		if se.Delta != "" {
+			out = append(out, ir.Event{Type: ir.EvToolArgs, Text: se.Delta})
+		}
+
+	case "response.custom_tool_call_input.done":
+		// Final input; EvToolEnd emitted by response.output_item.done.
+
+	case "response.reasoning_summary_text.delta":
+		out = append(out, ir.Event{Type: ir.EvReasoning, Text: se.Delta, Summary: true})
+
+	case "response.reasoning_text.delta":
 		out = append(out, ir.Event{Type: ir.EvReasoning, Text: se.Delta})
 
-	case "reasoning_summary_text.done":
+	case "response.reasoning_summary_text.done", "response.reasoning_text.done":
 		// No extra event.
 	}
 
 	return out, nil
+}
+
+func (d *StreamDecoder) emitToolStart(out []ir.Event, id, name, ns string, kind ir.ToolKind) []ir.Event {
+	if ref, ok := d.names[name]; ok {
+		name = ref.Name
+		if ns == "" {
+			ns = ref.Namespace
+		}
+		if ref.Kind != "" {
+			kind = ref.Kind
+		}
+	}
+	return append(out, ir.Event{
+		Type:      ir.EvToolStart,
+		ID:        id,
+		Name:      name,
+		Namespace: ns,
+		Kind:      kind,
+	})
 }
 
 // End signals how the upstream stream ended.
@@ -218,7 +324,6 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 	}
 	env.Style = ir.StyleBracket
 
-	// Check for error envelope.
 	var check struct {
 		Error *wireError `json:"error"`
 	}
@@ -229,6 +334,18 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 	var wr wireResponse
 	if err := json.Unmarshal(body, &wr); err != nil {
 		return nil, ir.Protocol("failed to decode Responses response: " + err.Error())
+	}
+
+	if wr.Status == "failed" {
+		if wr.Error != nil {
+			return nil, &ir.APIError{
+				Code:    wr.Error.Code,
+				Message: wr.Error.Message,
+				Type:    mapErrorType(wr.Error.Type),
+				Raw:     append([]byte(nil), body...),
+			}
+		}
+		return nil, &ir.APIError{Type: ir.ErrServer, Message: "response failed", Raw: append([]byte(nil), body...)}
 	}
 
 	resp := &ir.Response{
@@ -242,33 +359,24 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 	out := ir.Output{}
 	for i, item := range wr.Output {
 		fp := ir.Root.Key("output").At(i)
-		parts, stop, err := outputItemToIR(item, fp, opts.Names, env)
+		parts, _, err := outputItemToIR(item, fp, opts.Names, env)
 		if err != nil {
 			return nil, err
 		}
 		out.Parts = append(out.Parts, parts...)
-		if stop.Reason != ir.StopUnset {
-			out.Stop = stop
-		}
 	}
 
-	// Map status to stop reason when not already set.
-	if out.Stop.Reason == ir.StopUnset {
-		switch wr.Status {
-		case "completed":
-			out.Stop = ir.Stop{Reason: ir.StopEndTurn, Raw: wr.Status}
-		case "incomplete":
+	switch wr.Status {
+	case "completed", "":
+		out.Stop = ir.Stop{Reason: ir.StopEndTurn, Raw: wr.Status}
+	case "incomplete":
+		if wr.IncompleteDetails != nil && wr.IncompleteDetails.Reason == "content_filter" {
+			out.Stop = ir.Stop{Reason: ir.StopContentFilter, Raw: "content_filter"}
+		} else {
 			out.Stop = ir.Stop{Reason: ir.StopMaxTokens, Raw: wr.Status}
-		case "failed":
-			if wr.Error != nil {
-				return nil, &ir.APIError{
-					Code:    wr.Error.Code,
-					Message: wr.Error.Message,
-					Type:    mapErrorType(wr.Error.Type),
-				}
-			}
 		}
 	}
+	out.Stop = ir.FinalStop(out.Stop, out.Parts)
 
 	resp.Outputs = []ir.Output{out}
 	return resp, nil
@@ -286,26 +394,52 @@ func outputItemToIR(item wireOutputItem, p ir.Path, names map[string]ir.ToolRef,
 			}
 			parts = append(parts, part)
 		}
-		stop := statusToStop(item.Status)
-		return parts, stop, nil
+		return parts, statusToStop(item.Status), nil
 
 	case "function_call":
 		args := json.RawMessage(item.Arguments)
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}
+		name := item.Name
 		ns := ""
-		if ref, ok := names[item.Name]; ok {
+		kind := ir.ToolFunction
+		if ref, ok := names[name]; ok {
+			name = ref.Name
 			ns = ref.Namespace
+			if ref.Kind != "" {
+				kind = ref.Kind
+			}
+		}
+		id := item.CallID
+		if id == "" {
+			id = item.ID
 		}
 		part := ir.Part{
 			Type: ir.PartToolCall,
 			Call: &ir.ToolCall{
-				ID:        item.CallID,
-				Name:      item.Name,
+				ID:        id,
+				Name:      name,
 				Namespace: ns,
-				Kind:      ir.ToolFunction,
+				Kind:      kind,
 				Arguments: args,
+			},
+		}
+		return []ir.Part{part}, ir.Stop{}, nil
+
+	case "custom_tool_call":
+		id := item.CallID
+		if id == "" {
+			id = item.ID
+		}
+		part := ir.Part{
+			Type: ir.PartToolCall,
+			Call: &ir.ToolCall{
+				ID:        id,
+				Name:      item.Name,
+				Namespace: item.Namespace,
+				Kind:      ir.ToolCustom,
+				Input:     item.Input,
 			},
 		}
 		return []ir.Part{part}, ir.Stop{}, nil
@@ -313,19 +447,28 @@ func outputItemToIR(item wireOutputItem, p ir.Path, names map[string]ir.ToolRef,
 	case "reasoning":
 		r := &ir.Reasoning{ID: item.ID}
 		if item.EncryptedContent != "" {
-			data, _ := json.Marshal(item.EncryptedContent)
-			r.Sealed = &ir.Sealed{Kind: ir.SealedResponsesEncrypted, Data: data}
-		} else {
-			var sb string
-			for _, sp := range item.Summary {
-				sb += sp.Text
+			data, _ := jsonx.Marshal(item.EncryptedContent)
+			r.Sealed = &ir.Sealed{
+				Kind:   ir.SealedResponsesEncrypted,
+				Data:   data,
+				Origin: ir.Origin{Format: ir.FormatResponses, Provider: env.ProviderID},
 			}
-			r.Text = sb
+		}
+		for _, sp := range item.Summary {
+			r.Summary = append(r.Summary, sp.Text)
+			r.Text += sp.Text
 		}
 		return []ir.Part{{Type: ir.PartReasoning, Reasoning: r}}, ir.Stop{}, nil
 
 	case "web_search_call":
-		return nil, ir.Stop{}, nil
+		return []ir.Part{{
+			Type: ir.PartBuiltinCall,
+			Builtin: &ir.BuiltinActivity{
+				Kind:   ir.BuiltinWebSearch,
+				ID:     item.ID,
+				Origin: ir.FormatResponses,
+			},
+		}}, ir.Stop{}, nil
 	}
 
 	return nil, ir.Stop{}, nil
@@ -354,22 +497,19 @@ func statusToStop(status string) ir.Stop {
 func decodeResponsesUsage(u *wireUsage, dia Dialect) ir.Usage {
 	out := ir.Usage{
 		OutputTokens: u.OutputTokens,
-		Reported:     ir.UInput | ir.UOutput,
+		Reported:     ir.UOutput,
 	}
-	var cached, cacheWrite int
 	if u.InputTokensDetails != nil {
-		cached = u.InputTokensDetails.CachedTokens
-		cacheWrite = u.InputTokensDetails.CacheWriteTokens
+		if u.InputTokensDetails.CachedTokens > 0 {
+			out.CacheReadTokens = u.InputTokensDetails.CachedTokens
+			out.Reported |= ir.UCacheRead
+		}
+		if u.InputTokensDetails.CacheWriteTokens > 0 {
+			out.CacheWriteTokens = u.InputTokensDetails.CacheWriteTokens
+			out.Reported |= ir.UCacheWrite
+		}
 	}
-	out.CacheReadTokens = cached
-	out.CacheWriteTokens = cacheWrite
-	out.InputTokens = u.InputTokens - cached - cacheWrite
-	if cached > 0 {
-		out.Reported |= ir.UCacheRead
-	}
-	if cacheWrite > 0 {
-		out.Reported |= ir.UCacheWrite
-	}
+	out.FromInclusivePrompt(u.InputTokens)
 	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ReasoningTokens > 0 {
 		out.ReasoningTokens = u.OutputTokensDetails.ReasoningTokens
 		out.Reported |= ir.UReasoning

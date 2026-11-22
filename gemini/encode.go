@@ -12,6 +12,7 @@ type StreamEncoder struct {
 	opts    EncodeOptions
 	model   string
 	started bool
+	errored bool
 	// pending accumulates parts for the current candidate before a stop event
 	// flushes them as a chunk.
 	pending []wirePart
@@ -107,14 +108,23 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvError:
 		if ev.Err != nil {
-			dst = BuildStreamError(dst, ev.Err)
+			e.errored = true
+			e.pending = nil
+			if e.opts.AltSSE {
+				dst = BuildStreamErrorSSE(dst, ev.Err)
+			} else {
+				dst = BuildStreamError(dst, ev.Err)
+			}
 		}
 	}
 	return dst, nil
 }
 
-// Close flushes any remaining pending parts.
+// Close flushes any remaining pending parts unless the stream ended with an error.
 func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
+	if e.errored {
+		return dst, nil
+	}
 	if len(e.pending) > 0 {
 		dst = e.flush(dst)
 	}
@@ -212,7 +222,7 @@ func irStopToGemini(s *ir.Stop) string {
 	case ir.StopSequence:
 		return "STOP"
 	case ir.StopToolUse:
-		return "TOOL_CALLS"
+		return "STOP"
 	case ir.StopContentFilter, ir.StopRefusal:
 		return "SAFETY"
 	case ir.StopOther:

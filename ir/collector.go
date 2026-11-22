@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -262,25 +263,21 @@ func (c *Collector) Err() *APIError { return c.err }
 func (c *Collector) Usage() Usage { return c.res.Usage }
 
 // Response returns the reply assembled so far, with stop reasons finalised.
-// The collector may keep receiving events afterwards.
+// The collector may keep receiving events afterwards without losing open state.
 func (c *Collector) Response() *Response {
 	r := c.res
 	r.Outputs = nil
-	max := -1
+	idxs := make([]int, 0, len(c.outs))
 	for i := range c.outs {
-		if i > max {
-			max = i
-		}
+		idxs = append(idxs, i)
 	}
-	for i := 0; i <= max; i++ {
+	sort.Ints(idxs)
+	for _, i := range idxs {
 		o := c.outs[i]
 		if o == nil {
 			continue
 		}
-		o.flushText()
-		o.closeCall()
-		out := o.out
-		out.Parts = append([]Part(nil), o.out.Parts...)
+		out := o.snapshot()
 		out.Stop = FinalStop(out.Stop, out.Parts)
 		r.Outputs = append(r.Outputs, out)
 	}
@@ -288,6 +285,45 @@ func (c *Collector) Response() *Response {
 		r.Outputs = []Output{{Stop: FinalStop(Stop{}, nil)}}
 	}
 	return &r
+}
+
+func (o *collected) snapshot() Output {
+	out := o.out
+	out.Parts = make([]Part, len(o.out.Parts))
+	copy(out.Parts, o.out.Parts)
+	if o.open > 0 && o.open <= len(out.Parts) {
+		p := out.Parts[o.open-1]
+		switch p.Type {
+		case PartReasoning:
+			if p.Reasoning != nil {
+				rc := *p.Reasoning
+				rc.Text += o.text.String()
+				p.Reasoning = &rc
+			}
+		default:
+			p.Text += o.text.String()
+		}
+		out.Parts[o.open-1] = p
+	}
+	if o.call > 0 && o.call <= len(out.Parts) {
+		p := out.Parts[o.call-1]
+		if p.Call != nil {
+			cc := *p.Call
+			s := o.args.String()
+			if cc.Kind == ToolCustom {
+				cc.Input += s
+			} else if len(cc.Arguments) == 0 {
+				t := strings.TrimSpace(s)
+				if t == "" {
+					t = "{}"
+				}
+				cc.Arguments = json.RawMessage(t)
+			}
+			p.Call = &cc
+			out.Parts[o.call-1] = p
+		}
+	}
+	return out
 }
 
 // Empty reports whether no event was added.

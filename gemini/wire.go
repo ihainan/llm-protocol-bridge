@@ -122,9 +122,15 @@ type wireSafetySetting struct {
 
 // wireResponse is the non-streaming generateContent response.
 type wireResponse struct {
-	Candidates    []wireCandidate `json:"candidates"`
-	UsageMetadata *wireUsage      `json:"usageMetadata,omitempty"`
-	ModelVersion  string          `json:"modelVersion,omitempty"`
+	Candidates     []wireCandidate     `json:"candidates"`
+	PromptFeedback *wirePromptFeedback `json:"promptFeedback,omitempty"`
+	UsageMetadata  *wireUsage          `json:"usageMetadata,omitempty"`
+	ModelVersion   string              `json:"modelVersion,omitempty"`
+}
+
+type wirePromptFeedback struct {
+	BlockReason        string `json:"blockReason,omitempty"`
+	BlockReasonMessage string `json:"blockReasonMessage,omitempty"`
 }
 
 // wireCandidate is one response candidate.

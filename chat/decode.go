@@ -28,8 +28,9 @@ type StreamDecoder struct {
 	// Names we've seen, for dedup of call IDs within one response.
 	seenCallIDs map[string]bool
 
-	done     bool
-	terminal bool
+	done      bool
+	sawFinish bool
+	terminal  bool
 }
 
 // openCall tracks one tool call in flight within a candidate.
@@ -259,6 +260,7 @@ func (d *StreamDecoder) finalizeChoice(out []ir.Event, ci int, finish string) []
 
 	stop := stopFromFinish(finish)
 	out = append(out, ir.Event{Type: ir.EvStop, Index: ci, Stop: &stop})
+	d.sawFinish = true
 
 	// Clear call state for this choice so the next choice can start fresh.
 	d.toolCalls = map[int]*openCall{}
@@ -280,10 +282,11 @@ func stopFromFinish(finish string) ir.Stop {
 	return ir.Stop{Reason: ir.StopEndTurn, Raw: finish}
 }
 
-// End finalises the stream. If the upstream ended without a terminal event, an
-// error event is appended (unless we already saw one).
+// End finalises the stream. A stream is complete only if a valid finish_reason
+// or terminal error was received; [DONE] without a finish_reason still reports
+// truncation on EOF/timeout/error.
 func (d *StreamDecoder) End(how ir.EndKind) *ir.Event {
-	if d.terminal {
+	if d.terminal || d.sawFinish {
 		return nil
 	}
 	return ir.EndErrorEvent(how)
@@ -358,13 +361,25 @@ func ParseResponse(body []byte, opts DecodeOptions) (*ir.Response, error) {
 	}
 	env.Style = ir.StyleBracket
 
+	// Check for an error envelope before decoding as a completion response.
+	if jsonx.Kind(body) == '{' {
+		var errEnv struct {
+			Error *wireError `json:"error"`
+		}
+		if json.Unmarshal(body, &errEnv) == nil && errEnv.Error != nil && errEnv.Error.Message != "" {
+			return nil, ParseError(0, body)
+		}
+	}
+
 	var wr wireResponse
 	if json.Unmarshal(body, &wr) != nil {
-		// Maybe an error body.
 		if e := ParseError(0, body); e != nil && e.Message != "" {
 			return nil, e
 		}
 		return nil, ir.Protocol("chat: response body is not a valid object")
+	}
+	if len(wr.Choices) == 0 {
+		return nil, ir.Protocol("chat: response has no choices")
 	}
 
 	resp := &ir.Response{

@@ -56,14 +56,5 @@
       "type": "function"
     }
   ],
-  "unknown_field": {
-    "kept": [
-      1,
-      2,
-      {
-        "x": null
-      }
-    ]
-  },
   "user": "u_1"
 }

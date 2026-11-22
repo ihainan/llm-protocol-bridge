@@ -36,7 +36,7 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 			req.Messages = msgs
 
 		case "systemInstruction":
-			parts, err := parseContentParts(v, fp, env)
+			parts, err := parseSystemInstruction(v, fp, env)
 			if err != nil {
 				return nil, err
 			}
@@ -131,6 +131,33 @@ func parseContent(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 		return ir.Message{}, err
 	}
 	return ir.Message{Role: irRole, Parts: parts}, nil
+}
+
+func parseSystemInstruction(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Part, error) {
+	if jsonx.IsNull(raw) {
+		return nil, nil
+	}
+	switch jsonx.Kind(raw) {
+	case '{':
+		kvs, err := jsonx.Object(raw)
+		if err != nil {
+			return nil, env.Err(ir.Invalid(p, "must be an object"))
+		}
+		for _, kv := range kvs {
+			if kv.Key == "parts" {
+				return parseContentParts(kv.Value, p.Key("parts"), env)
+			}
+		}
+		// Tolerate a single Part object directly (e.g. {"text": "..."}).
+		part, err := parsePart(raw, p, env)
+		if err != nil {
+			return nil, err
+		}
+		return []ir.Part{part}, nil
+	case '[':
+		return parseContentParts(raw, p, env)
+	}
+	return nil, env.Err(ir.Invalid(p, "must be a content object"))
 }
 
 func parseContentParts(raw json.RawMessage, p ir.Path, env *ir.Env) ([]ir.Part, error) {
@@ -470,9 +497,14 @@ func parseGenerationConfig(raw json.RawMessage, p ir.Path, req *ir.Request, env 
 			}
 			switch s {
 			case "text/plain":
-				req.Output.Type = ir.OutputText
+				if req.Output.Type != ir.OutputJSONSchema {
+					req.Output.Type = ir.OutputText
+				}
 			case "application/json":
-				req.Output.Type = ir.OutputJSONObject
+				// Do not downgrade OutputJSONSchema if responseSchema was already parsed.
+				if req.Output.Type != ir.OutputJSONSchema {
+					req.Output.Type = ir.OutputJSONObject
+				}
 			}
 		case "responseSchema":
 			if req.Output == nil {

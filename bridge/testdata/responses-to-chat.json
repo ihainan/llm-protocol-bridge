@@ -43,6 +43,7 @@
     }
   ],
   "model": "m1",
+  "reasoning_effort": "medium",
   "service_tier": "priority",
   "tools": [
     {
