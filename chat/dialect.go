@@ -68,12 +68,17 @@ type Dialect struct {
 // ReasoningReplay controls how a previous reasoning block is re-sent to the
 // upstream in a tool-call follow-up turn.
 type ReasoningReplay struct {
-	// Field is the message field name to use for reasoning replay (e.g. "reasoning").
+	// Field is the message field name to use for reasoning replay (e.g. "reasoning"
+	// or "reasoning_content"). Empty selects based on ReasoningParam.
 	Field string
 	// Placeholder is a fixed string to send instead of the actual text.
 	Placeholder string
-	// MaxChars limits how many characters of reasoning text are replayed; 0 = unlimited.
+	// MaxChars limits how many bytes of reasoning text are replayed; 0 = unlimited.
 	MaxChars int
 	// MaxItems limits how many reasoning blocks are replayed; 0 = unlimited.
 	MaxItems int
+	// RequireVerified, when true, replays only reasoning blocks whose provenance
+	// signature was verified for the Chat upstream (Origin.Matches(FormatChat, ProviderID)),
+	// ignoring unsigned or foreign-provider reasoning blocks.
+	RequireVerified bool
 }

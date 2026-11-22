@@ -11,6 +11,11 @@ type ParseOptions struct {
 type BuildOptions struct {
 	Env     *ir.Env
 	Dialect Dialect
+	// OmitUserID prevents forwarding Request.User into the upstream Responses "user" field.
+	OmitUserID bool
+	// OmitHistoryReasoning prevents forwarding historical assistant reasoning
+	// blocks into upstream Responses input reasoning items.
+	OmitHistoryReasoning bool
 }
 
 // DecodeOptions controls decoding of an upstream Responses response.
@@ -40,6 +45,13 @@ type EncodeOptions struct {
 	// opening a Responses message item (and omits newline-only messages).
 	// Default false preserves model output verbatim.
 	TrimLeadingNewlines bool
+	// SealUnsignedReasoning, when true and the client requested
+	// "reasoning.encrypted_content" in include, seals unsigned reasoning text
+	// into encrypted_content using Env.Sealer().
+	SealUnsignedReasoning bool
+	// UnsignedOrigin is the provenance Origin recorded when SealUnsignedReasoning
+	// seals an unsigned reasoning block (defaults to FormatChat + Env.ProviderID).
+	UnsignedOrigin ir.Origin
 }
 
 // Built is the result of BuildRequest.

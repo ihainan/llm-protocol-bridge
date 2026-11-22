@@ -65,6 +65,10 @@ type Options struct {
 	// opening a Responses assistant message item (and omits newline-only messages
 	// before tool calls). Default false preserves model output verbatim.
 	TrimLeadingNewlines bool
+	// SealUnsignedReasoning, when true, seals unsigned upstream reasoning blocks
+	// via Seal (signature in Anthropic, encrypted_content in Responses when
+	// requested in include) so verified reasoning can be replayed on later turns.
+	SealUnsignedReasoning bool
 
 	IDs            ir.IDSource
 	Clock          func() time.Time
@@ -209,13 +213,22 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 		}
 		body, model, stream, names = built.Body, built.Model, built.Stream, built.Names
 	case ir.FormatResponses:
-		built, err := responses.BuildRequest(buildReq, responses.BuildOptions{Env: env, Dialect: opts.Responses})
+		built, err := responses.BuildRequest(buildReq, responses.BuildOptions{
+			Env:                  env,
+			Dialect:              opts.Responses,
+			OmitUserID:           opts.OmitUserID,
+			OmitHistoryReasoning: opts.OmitHistoryReasoning,
+		})
 		if err != nil {
 			return nil, err
 		}
 		body, model, stream, names = built.Body, built.Model, built.Stream, built.Names
 	case ir.FormatAnthropic:
-		built, err := anthropic.BuildRequest(buildReq, anthropic.BuildOptions{Env: env, Dialect: opts.Anthropic})
+		built, err := anthropic.BuildRequest(buildReq, anthropic.BuildOptions{
+			Env:        env,
+			Dialect:    opts.Anthropic,
+			OmitUserID: opts.OmitUserID,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -628,6 +641,14 @@ type decoder interface {
 	End(how ir.EndKind) *ir.Event
 }
 
+// StreamStats summarises output content observed across all rounds of a Stream
+// (useful for fallback token estimation when an upstream omits usage).
+type StreamStats struct {
+	Text      string
+	ToolCalls int
+	Images    int
+}
+
 // Stream is a live stream converter (decoder + filter pipeline + encoder).
 type Stream struct {
 	plan          *Plan
@@ -640,6 +661,11 @@ type Stream struct {
 	prevLosses    []ir.Loss
 	prevUsage     ir.Usage
 	roundUsage    ir.Usage
+	outText       strings.Builder
+	outToolCalls  int
+	outImages     int
+	toolCallsSeen map[string]bool
+	toolArgsSeen  map[string]bool
 	expectedCands int
 	finishedCands map[int]bool
 	done          bool
@@ -667,6 +693,7 @@ type encodeOpts struct {
 }
 
 func encodeOptions(p *Plan, env *ir.Env) encodeOpts {
+	unsignedOrigin := ir.Origin{Format: p.Upstream, Provider: p.opts.ProviderID}
 	return encodeOpts{
 		chat: chat.EncodeOptions{
 			Env: env, Request: p.Request, Model: p.ClientModel,
@@ -679,12 +706,16 @@ func encodeOptions(p *Plan, env *ir.Env) encodeOpts {
 			GenerateResponseID:    p.opts.GenerateResponseID,
 			RawReasoningAsSummary: p.opts.RawReasoningAsSummary,
 			TrimLeadingNewlines:   p.opts.TrimLeadingNewlines,
+			SealUnsignedReasoning: p.opts.SealUnsignedReasoning,
+			UnsignedOrigin:        unsignedOrigin,
 		},
 		anthropic: anthropic.EncodeOptions{
 			Env: env, Request: p.Request, Model: p.ClientModel,
-			PromptEstimate:     p.opts.PromptEstimate,
-			MaxBufferedBytes:   p.opts.Limits.MaxBufferedBytes,
-			GenerateResponseID: p.opts.GenerateResponseID,
+			PromptEstimate:        p.opts.PromptEstimate,
+			MaxBufferedBytes:      p.opts.Limits.MaxBufferedBytes,
+			GenerateResponseID:    p.opts.GenerateResponseID,
+			SealUnsignedReasoning: p.opts.SealUnsignedReasoning,
+			UnsignedOrigin:        unsignedOrigin,
 		},
 		gemini: gemini.EncodeOptions{
 			Env: env, Request: p.Request, Model: p.ClientModel,
@@ -753,6 +784,7 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 		return dst, err
 	}
 	for _, rawEv := range events {
+		s.recordOutputEvent(rawEv)
 		if rawEv.Usage != nil && (rawEv.Type == ir.EvStart || rawEv.Type == ir.EvUsage) {
 			s.roundUsage.Merge(*rawEv.Usage)
 		}
@@ -838,6 +870,49 @@ func (s *Stream) Usage() ir.Usage {
 	tot := s.prevUsage
 	tot.Add(s.roundUsage)
 	return tot
+}
+
+// Stats returns the cumulative output text, tool-call count, and image count
+// observed from decoded upstream events across all rounds so far.
+func (s *Stream) Stats() StreamStats {
+	return StreamStats{
+		Text:      s.outText.String(),
+		ToolCalls: s.outToolCalls,
+		Images:    s.outImages,
+	}
+}
+
+func (s *Stream) recordOutputEvent(ev ir.Event) {
+	switch ev.Type {
+	case ir.EvText, ir.EvRefusal, ir.EvReasoning:
+		s.outText.WriteString(ev.Text)
+	case ir.EvToolStart:
+		if ev.ID != "" {
+			if s.toolCallsSeen == nil {
+				s.toolCallsSeen = map[string]bool{}
+			}
+			if s.toolCallsSeen[ev.ID] {
+				return
+			}
+			s.toolCallsSeen[ev.ID] = true
+		}
+		s.outToolCalls++
+		s.outText.WriteString(ev.Name)
+	case ir.EvToolArgs:
+		if ev.Text != "" {
+			if s.toolArgsSeen == nil {
+				s.toolArgsSeen = map[string]bool{}
+			}
+			s.toolArgsSeen[ev.ID] = true
+			s.outText.WriteString(ev.Text)
+		}
+	case ir.EvToolEnd:
+		if len(ev.Arguments) > 0 && !s.toolArgsSeen[ev.ID] {
+			s.outText.Write(ev.Arguments)
+		}
+	case ir.EvImage:
+		s.outImages++
+	}
 }
 
 // Losses returns all tolerated lossy conversions recorded during streaming
@@ -930,6 +1005,8 @@ func (s *Stream) NextRound(p *Plan) {
 	}
 	s.expectedCands = expected
 	s.finishedCands = map[int]bool{}
+	s.toolCallsSeen = nil
+	s.toolArgsSeen = nil
 	s.done = false
 }
 

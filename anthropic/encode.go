@@ -930,21 +930,35 @@ func (e *StreamEncoder) closeBlock(dst []byte) []byte {
 		})
 	}
 	idx := e.openBlock
-	if e.openBlockType == "thinking" && e.thinkingSigVal.Len() > 0 {
-		sigVal := e.thinkingSigVal.String()
-		if needsAnthropicSeal(e.thinkingSigOrigin, e.opts.Env) {
-			sigVal = e.opts.Env.Sealer().Seal(ir.SealRecord{
-				Origin:  e.thinkingSigOrigin,
-				Kind:    ir.SealSignature,
-				Value:   sigVal,
-				TextSum: ir.TextSum(e.thinkingTextAccum.String()),
+	if e.openBlockType == "thinking" {
+		if e.thinkingSigVal.Len() > 0 {
+			sigVal := e.thinkingSigVal.String()
+			if needsAnthropicSeal(e.thinkingSigOrigin, e.opts.Env) {
+				sigVal = e.opts.Env.Sealer().Seal(ir.SealRecord{
+					Origin:  e.thinkingSigOrigin,
+					Kind:    ir.SealSignature,
+					Value:   sigVal,
+					TextSum: ir.TextSum(e.thinkingTextAccum.String()),
+				})
+			}
+			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": idx,
+				"delta": map[string]any{"type": "signature_delta", "signature": sigVal},
 			})
+		} else if e.opts.SealUnsignedReasoning && e.thinkingTextAccum.Len() > 0 {
+			origin := e.opts.UnsignedOrigin
+			if origin.Format == "" {
+				origin = ir.Origin{Format: ir.FormatChat, Provider: e.opts.Env.ProviderID}
+			}
+			if sigVal := ir.SealUnsignedReasoning(e.opts.Env, ir.FormatAnthropic, origin, e.thinkingTextAccum.String()); sigVal != "" {
+				dst = e.appendSSE(dst, "content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": idx,
+					"delta": map[string]any{"type": "signature_delta", "signature": sigVal},
+				})
+			}
 		}
-		dst = e.appendSSE(dst, "content_block_delta", map[string]any{
-			"type":  "content_block_delta",
-			"index": idx,
-			"delta": map[string]any{"type": "signature_delta", "signature": sigVal},
-		})
 	}
 	e.thinkingTextAccum.Reset()
 	e.thinkingSigVal.Reset()
@@ -997,7 +1011,7 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 	if out != nil {
 		for i, p := range out.Parts {
 			fp := ir.Root.Key("content").At(i)
-			bs, err := responsePartToBlocks(p, fp, env)
+			bs, err := responsePartToBlocks(p, fp, env, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -1042,7 +1056,7 @@ func needsAnthropicSeal(origin ir.Origin, env *ir.Env) bool {
 	return env != nil && env.ProviderID != ""
 }
 
-func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, error) {
+func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env, opts EncodeOptions) ([]wireContentBlock, error) {
 	if part.Type == ir.PartReasoning && part.Reasoning != nil {
 		r := part.Reasoning
 		var out []wireContentBlock
@@ -1059,6 +1073,12 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 						TextSum: ir.TextSum(r.Text),
 					})
 				}
+			} else if opts.SealUnsignedReasoning {
+				origin := opts.UnsignedOrigin
+				if origin.Format == "" {
+					origin = ir.Origin{Format: ir.FormatChat, Provider: env.ProviderID}
+				}
+				sig = ir.SealUnsignedReasoning(env, ir.FormatAnthropic, origin, r.Text)
 			}
 			out = append(out, wireContentBlock{Type: "thinking", Thinking: r.Text, Signature: &sig})
 		}

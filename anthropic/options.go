@@ -16,6 +16,8 @@ type ParseOptions struct {
 type BuildOptions struct {
 	Env     *ir.Env
 	Dialect Dialect
+	// OmitUserID prevents forwarding Request.User into metadata.user_id.
+	OmitUserID bool
 }
 
 // DecodeOptions controls how an upstream Anthropic response is decoded.
@@ -40,6 +42,12 @@ type EncodeOptions struct {
 	// GenerateResponseID forces a fresh msg_ response ID instead of reusing the
 	// upstream response ID.
 	GenerateResponseID bool
+	// SealUnsignedReasoning, when true, uses Env.Sealer() to stamp unsigned
+	// thinking blocks with a SealUnsigned signature (both streaming and non-streaming).
+	SealUnsignedReasoning bool
+	// UnsignedOrigin is the provenance Origin recorded when SealUnsignedReasoning
+	// seals an unsigned thinking block (defaults to FormatChat + Env.ProviderID).
+	UnsignedOrigin ir.Origin
 }
 
 // Built is the result of BuildRequest.

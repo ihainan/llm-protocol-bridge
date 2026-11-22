@@ -1226,6 +1226,12 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 				Value:  e.reasonSig.Value,
 				Text:   rtext,
 			})
+		} else if enc == "" && e.opts.SealUnsignedReasoning && rtext != "" && wantsEncryptedReasoning(e.opts.Request) {
+			origin := e.opts.UnsignedOrigin
+			if origin.Format == "" {
+				origin = ir.Origin{Format: ir.FormatChat, Provider: e.opts.Env.ProviderID}
+			}
+			enc = ir.SealUnsignedReasoning(e.opts.Env, ir.FormatResponses, origin, rtext)
 		}
 		if enc != "" {
 			doneItem["encrypted_content"] = enc
@@ -1488,6 +1494,18 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env, opts EncodeOptions) 
 				Value:  p.Reasoning.Signature.Value,
 				Text:   p.Reasoning.Text,
 			})
+		} else if opts.SealUnsignedReasoning && wantsEncryptedReasoning(opts.Request) {
+			rtext := p.Reasoning.Text
+			if rtext == "" && len(p.Reasoning.Summary) > 0 {
+				rtext = strings.Join(p.Reasoning.Summary, "\n\n")
+			}
+			if rtext != "" {
+				origin := opts.UnsignedOrigin
+				if origin.Format == "" {
+					origin = ir.Origin{Format: ir.FormatChat, Provider: env.ProviderID}
+				}
+				item.EncryptedContent = ir.SealUnsignedReasoning(env, ir.FormatResponses, origin, rtext)
+			}
 		}
 		if useSummaryMode(opts, len(p.Reasoning.Summary) > 0) {
 			var sum []wireReasoningPart
@@ -1587,6 +1605,18 @@ func webSearchHasLossyDetails(b *ir.BuiltinActivity) bool {
 		return true
 	}
 	return b.Origin != ir.FormatResponses && len(b.Raw) > 0
+}
+
+func wantsEncryptedReasoning(req *ir.Request) bool {
+	if req == nil {
+		return false
+	}
+	for _, inc := range req.Include {
+		if inc == "reasoning.encrypted_content" {
+			return true
+		}
+	}
+	return false
 }
 
 func needsResponsesSeal(origin ir.Origin, env *ir.Env) bool {

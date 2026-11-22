@@ -335,7 +335,16 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		}
 
 	case "response.function_call_arguments.done":
-		// Final arguments; EvToolEnd emitted by response.output_item.done.
+		// Record final arguments in case output_item.done omits item.arguments; EvToolEnd is emitted on output_item.done.
+		idx := se.OutputIndex
+		if se.Arguments != "" {
+			if d.callArgs[idx] == nil {
+				d.callArgs[idx] = &strings.Builder{}
+			}
+			if d.callArgs[idx].Len() == 0 {
+				d.callArgs[idx].WriteString(se.Arguments)
+			}
+		}
 
 	case "response.custom_tool_call_input.delta":
 		idx := se.OutputIndex
@@ -353,7 +362,16 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		}
 
 	case "response.custom_tool_call_input.done":
-		// Final input; EvToolEnd emitted by response.output_item.done.
+		// Record final input in case output_item.done omits item.input; EvToolEnd is emitted on output_item.done.
+		idx := se.OutputIndex
+		if se.Input != "" {
+			if d.callArgs[idx] == nil {
+				d.callArgs[idx] = &strings.Builder{}
+			}
+			if d.callArgs[idx].Len() == 0 {
+				d.callArgs[idx].WriteString(se.Input)
+			}
+		}
 
 	case "response.reasoning_summary_text.delta":
 		out = append(out, ir.Event{Type: ir.EvReasoning, Text: se.Delta, Summary: true})

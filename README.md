@@ -118,12 +118,14 @@ policies while keeping zero-value defaults backward-compatible:
 | Option | Default | Behaviour when enabled |
 |---|---|---|
 | `CheckLoss func(ir.Loss) error` | `nil` | Called for every recorded loss before `DefaultAllowed`/`Allow`/`Deny`; returning a non-nil error rejects the conversion with that error. |
-| `OmitUserID bool` | `false` | Suppresses forwarding `Request.User` (such as Anthropic `metadata.user_id`) to Chat Completions `user`. |
+| `OmitUserID bool` | `false` | Suppresses forwarding `Request.User` (such as Anthropic `metadata.user_id`) to Chat Completions, Responses, and Anthropic upstreams. |
 | `OmitHistoryReasoning bool` | `false` | Omits historical assistant thinking/reasoning text when building Chat Completions requests. |
+| `SealUnsignedReasoning bool` | `false` | Uses `Options.Seal` to stamp unsigned upstream reasoning blocks (`signature` in Anthropic, `encrypted_content` in Responses when requested via `include`) so verified reasoning can be replayed on later turns. |
 | `GenerateResponseID bool` | `false` | Forces freshly generated format-prefixed response IDs (`msg_` for Anthropic, `resp_` for Responses) instead of passing through upstream IDs. |
 | `RawReasoningAsSummary *bool` | `nil` (`true`) | Controls whether raw upstream reasoning text is emitted as Responses `summary_text` when the client requested `reasoning.summary` (`auto`/`concise`/`detailed`); `ir.Ptr(false)` always emits `reasoning_text`. |
 | `TrimLeadingNewlines bool` | `false` | Strips leading `\r`/`\n` characters before opening a Responses assistant message item (and omits newline-only messages before tool calls) for upstreams that emit leading blank lines; default `false` preserves model output verbatim. |
 | `Chat.MidSystem` (`"fold"`) | `""` (in place) | Wraps mid-conversation `system`/`developer` messages in `<system_message>...</system_message>` and folds them into adjacent `user` turns (after any `tool` messages and before lifted tool-result images and user text). |
+| `Chat.ReasoningReplay` | zero value | Configures historical reasoning replay into Chat Completions messages (`Field`, `Placeholder`, rolling `MaxChars` / `MaxItems` budgets, and `RequireVerified` provenance gating). |
 | `Chat.FileParts bool` | `false` | Allows cross-format binary/PDF/`file_id` parts to be forwarded as Chat `type: "file"` parts; when `false`, unsupported cross-format binary files return `CodeUnsupported` (plain-text documents are rendered as text). |
 | `Limits.MaxBufferedBytes` | `8 MiB` | Caps buffered tool arguments and deferred multi-candidate stream events in the filter pipeline and stream encoders. |
 | `Limits.MaxStopSequences` / `MaxStopSequenceBytes` | `0` (unlimited) | Caps stop sequence count and total byte length accepted by `bridge.Build` (e.g. `64` and `16384` under `StopEmulate`). |

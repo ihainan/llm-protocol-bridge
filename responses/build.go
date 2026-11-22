@@ -27,7 +27,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// input items.
-	items, err := buildInputItems(req.Messages, nameMap, env)
+	items, err := buildInputItems(req.Messages, nameMap, env, opts.OmitHistoryReasoning)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if req.ServiceTier != "" {
 		out.Str("service_tier", req.ServiceTier)
 	}
-	if req.User != "" {
+	if req.User != "" && !opts.OmitUserID {
 		out.Str("user", req.User)
 	}
 	if len(req.Metadata) > 0 {
@@ -221,11 +221,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	return &Built{Body: body, Model: req.Model, Stream: req.Stream, Names: names}, nil
 }
 
-func buildInputItems(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env) ([]wireInputItem, error) {
+func buildInputItems(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env, omitHistoryReasoning bool) ([]wireInputItem, error) {
 	var items []wireInputItem
 	for i, msg := range msgs {
 		fp := ir.Root.Key("input").At(i)
-		its, err := messageToItems(msg, fp, nameMap, env)
+		its, err := messageToItems(msg, fp, nameMap, env, omitHistoryReasoning)
 		if err != nil {
 			return nil, err
 		}
@@ -234,10 +234,10 @@ func buildInputItems(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env) ([
 	return items, nil
 }
 
-func messageToItems(msg ir.Message, p ir.Path, nameMap *ir.ToolNameMap, env *ir.Env) ([]wireInputItem, error) {
+func messageToItems(msg ir.Message, p ir.Path, nameMap *ir.ToolNameMap, env *ir.Env, omitHistoryReasoning bool) ([]wireInputItem, error) {
 	switch msg.Role {
 	case ir.RoleAssistant:
-		return assistantPartsToItems(msg.Parts, p, nameMap, env)
+		return assistantPartsToItems(msg.Parts, p, nameMap, env, omitHistoryReasoning)
 	case ir.RoleUser, ir.RoleSystem, ir.RoleDeveloper:
 		role := string(msg.Role)
 		contentParts, toolResults, err := userPartsToContent(msg.Parts, p, env)
@@ -335,7 +335,7 @@ func userPartsToContent(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireContentP
 	return content, results, nil
 }
 
-func assistantPartsToItems(parts []ir.Part, p ir.Path, nameMap *ir.ToolNameMap, env *ir.Env) ([]wireInputItem, error) {
+func assistantPartsToItems(parts []ir.Part, p ir.Path, nameMap *ir.ToolNameMap, env *ir.Env, omitHistoryReasoning bool) ([]wireInputItem, error) {
 	var items []wireInputItem
 	var textParts []wireContentPart
 	flushText := func() {
@@ -364,6 +364,9 @@ func assistantPartsToItems(parts []ir.Part, p ir.Path, nameMap *ir.ToolNameMap, 
 			textParts = append(textParts, wireContentPart{Type: "refusal", Refusal: part.Text})
 
 		case ir.PartReasoning:
+			if omitHistoryReasoning {
+				break
+			}
 			flushText()
 			if part.Reasoning == nil {
 				break

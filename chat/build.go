@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -108,7 +109,8 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		})
 	}
 	// Determine which assistant turns keep historical reasoning when KeepTurns is set.
-	// Consecutive assistant messages (without an intervening user turn) count as one turn.
+	// Consecutive assistant messages and tool-result-only user messages (a tool loop)
+	// count as one assistant turn.
 	keepFromAssistantIdx := -1
 	if !b.omitHistoryReasoning && req.Reasoning != nil && req.Reasoning.KeepTurns != nil {
 		keep := *req.Reasoning.KeepTurns
@@ -125,7 +127,9 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 						inAssistantTurn = true
 					}
 				case ir.RoleUser:
-					inAssistantTurn = false
+					if !isToolResultOnlyMessage(m) {
+						inAssistantTurn = false
+					}
 				}
 			}
 			if len(turnStarts) > keep {
@@ -133,6 +137,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			}
 		}
 	}
+	b.allowedReasoning = selectReplayReasoning(req.Messages, b.omitHistoryReasoning, keepFromAssistantIdx, b.dia.ReasoningReplay, b.env.ProviderID)
 	for i, m := range req.Messages {
 		fp := ir.Root.Key("messages").At(i)
 		if foldMid && (m.Role == ir.RoleSystem || m.Role == ir.RoleDeveloper) {
@@ -156,8 +161,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			prefixNote = formatSystemNote(pendingSystem)
 			pendingSystem = nil
 		}
-		omitReasoning := b.omitHistoryReasoning || (keepFromAssistantIdx >= 0 && i < keepFromAssistantIdx)
-		wms, err := b.buildMessage(m, fp, prefixNote, omitReasoning)
+		wms, err := b.buildMessage(m, i, fp, prefixNote)
 		if err != nil {
 			return nil, err
 		}
@@ -342,6 +346,87 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}, nil
 }
 
+type reasoningPartKey struct {
+	msgIdx  int
+	partIdx int
+}
+
+func isToolResultOnlyMessage(m ir.Message) bool {
+	if m.Role != ir.RoleUser || len(m.Parts) == 0 {
+		return false
+	}
+	for _, pt := range m.Parts {
+		if pt.Type != ir.PartToolResult {
+			return false
+		}
+	}
+	return true
+}
+
+func selectReplayReasoning(msgs []ir.Message, omitAll bool, keepFromAssistantIdx int, cfg ReasoningReplay, providerID string) map[reasoningPartKey]string {
+	if omitAll {
+		return nil
+	}
+	type cand struct {
+		key  reasoningPartKey
+		text string
+	}
+	var cands []cand
+	for i, m := range msgs {
+		if keepFromAssistantIdx >= 0 && i < keepFromAssistantIdx {
+			continue
+		}
+		for j, part := range m.Parts {
+			if part.Type != ir.PartReasoning || part.Reasoning == nil {
+				continue
+			}
+			if cfg.RequireVerified {
+				if part.Reasoning.Signature == nil || !part.Reasoning.Signature.Origin.Matches(ir.FormatChat, providerID) {
+					continue
+				}
+			}
+			txt := part.Reasoning.Text
+			if txt == "" {
+				continue
+			}
+			if cfg.Placeholder != "" {
+				txt = cfg.Placeholder
+			}
+			cands = append(cands, cand{
+				key:  reasoningPartKey{msgIdx: i, partIdx: j},
+				text: txt,
+			})
+		}
+	}
+	if len(cands) == 0 {
+		return nil
+	}
+	start := 0
+	if cfg.MaxChars > 0 || cfg.MaxItems > 0 {
+		sum, count := 0, 0
+		for idx, c := range cands {
+			w := len(c.text)
+			if count > 0 && cands[idx-1].key.msgIdx == c.key.msgIdx {
+				w += 2 // "\n\n" separator between blocks in the same message
+			}
+			switch {
+			case cfg.MaxChars > 0 && len(c.text) > cfg.MaxChars:
+				start, sum, count = idx+1, 0, 0
+			case (cfg.MaxChars > 0 && sum+w > cfg.MaxChars) || (cfg.MaxItems > 0 && count >= cfg.MaxItems):
+				start, sum, count = idx, len(c.text), 1
+			default:
+				sum += w
+				count++
+			}
+		}
+	}
+	out := make(map[reasoningPartKey]string, len(cands)-start)
+	for _, c := range cands[start:] {
+		out[c.key] = c.text
+	}
+	return out
+}
+
 // built is the state used during one BuildRequest call.
 type built struct {
 	env                  *ir.Env
@@ -349,6 +434,7 @@ type built struct {
 	source               ir.Format
 	omitUserID           bool
 	omitHistoryReasoning bool
+	allowedReasoning     map[reasoningPartKey]string
 	names                map[string]ir.ToolRef
 	nameMap              *ir.ToolNameMap
 	losses               []ir.Loss
@@ -416,7 +502,7 @@ func (b *built) buildTool(t ir.Tool, p ir.Path) (wireTool, error) {
 // buildMessage converts an ir.Message to one or more wireMessages.
 // A user message that mixes tool results with other content is split into
 // separate tool-role messages followed by a user-role message.
-func (b *built) buildMessage(m ir.Message, p ir.Path, prefixSystemNote string, omitReasoning bool) ([]wireMessage, error) {
+func (b *built) buildMessage(m ir.Message, msgIdx int, p ir.Path, prefixSystemNote string) ([]wireMessage, error) {
 	wm := wireMessage{Role: string(m.Role), Name: m.Name}
 	// Map IR roles back to Chat roles.
 	switch m.Role {
@@ -521,11 +607,14 @@ func (b *built) buildMessage(m ir.Message, p ir.Path, prefixSystemNote string, o
 						return nil, err
 					}
 				}
-				if !omitReasoning {
-					reasoningText += part.Reasoning.Text
+				if txt, ok := b.allowedReasoning[reasoningPartKey{msgIdx: msgIdx, partIdx: i}]; ok {
+					if reasoningText != "" {
+						reasoningText += "\n\n"
+					}
+					reasoningText += txt
 				}
 			}
-			if part.Signature != nil && !omitReasoning {
+			if part.Signature != nil && !b.omitHistoryReasoning {
 				reasoningSignature = part.Signature.Value
 			}
 
@@ -630,10 +719,17 @@ func (b *built) buildMessage(m ir.Message, p ir.Path, prefixSystemNote string, o
 	}
 
 	if reasoningText != "" {
-		if b.dia.ReasoningParam == "reasoning_content" || b.dia.ReasoningParam == "" {
-			wm.ReasoningContent = reasoningText
-		} else {
+		switch b.dia.ReasoningReplay.Field {
+		case "reasoning":
 			wm.Reasoning = reasoningText
+		case "reasoning_content":
+			wm.ReasoningContent = reasoningText
+		default:
+			if b.dia.ReasoningParam == "reasoning_content" || b.dia.ReasoningParam == "" {
+				wm.ReasoningContent = reasoningText
+			} else {
+				wm.Reasoning = reasoningText
+			}
 		}
 		_ = reasoningSignature
 	}
@@ -682,6 +778,56 @@ func (b *built) buildReasoning(req *ir.Request, out *jsonx.Obj) error {
 			case ir.OffLowestHidden:
 				low := profile.Lowest()
 				out.Str("reasoning_effort", string(low))
+				var patchKW json.RawMessage
+				if len(bytes.TrimSpace(profile.Off.Patch)) > 0 {
+					fields, cfgErr := ir.ParseOffPatch(profile.Off.Patch)
+					if cfgErr != nil {
+						return b.env.Err(cfgErr)
+					}
+					for _, f := range fields {
+						if f.Key == "reasoning_effort" {
+							continue
+						}
+						if f.Key == "chat_template_kwargs" {
+							patchKW = f.Value
+							continue
+						}
+						val := f.Value
+						if req.Source == ir.FormatChat && len(req.Passthrough) > 0 {
+							if ptVal, ok := req.Passthrough[f.Key]; ok {
+								b.consumedPassthrough[f.Key] = true
+								if jsonx.Kind(ptVal) == '{' && jsonx.Kind(val) == '{' {
+									val = mergeJSONObjects(ptVal, val)
+								}
+							}
+						}
+						out.Raw(f.Key, val)
+					}
+				}
+				if len(patchKW) > 0 || (profile.EffortInTemplateKwargs && low != ir.EffortUnset) {
+					var kw json.RawMessage
+					if profile.EffortInTemplateKwargs && low != ir.EffortUnset {
+						kw, _ = jsonx.Marshal(map[string]any{"reasoning_effort": string(low)})
+					}
+					if len(patchKW) > 0 {
+						if len(kw) > 0 && jsonx.Kind(patchKW) == '{' {
+							kw = mergeJSONObjects(kw, patchKW)
+						} else {
+							kw = patchKW
+						}
+					}
+					if req.Source == ir.FormatChat && len(req.Passthrough) > 0 {
+						if ptVal, ok := req.Passthrough["chat_template_kwargs"]; ok {
+							b.consumedPassthrough["chat_template_kwargs"] = true
+							if jsonx.Kind(ptVal) == '{' && jsonx.Kind(kw) == '{' {
+								kw = mergeJSONObjects(kw, ptVal)
+							}
+						}
+					}
+					if len(kw) > 0 {
+						out.Raw("chat_template_kwargs", kw)
+					}
+				}
 				return nil
 			}
 		}

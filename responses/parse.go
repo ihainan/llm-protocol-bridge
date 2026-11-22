@@ -639,6 +639,16 @@ func parseReasoningItem(fields map[string]json.RawMessage, p ir.Path, env *ir.En
 	enc, _ := jsonx.String(fields["encrypted_content"])
 
 	if enc != "" {
+		if origin, text, ok := ir.VerifyUnsignedReasoning(env, ir.FormatResponses, enc, ""); ok {
+			return ir.Part{
+				Type: ir.PartReasoning,
+				Reasoning: &ir.Reasoning{
+					ID:        id,
+					Text:      text,
+					Signature: &ir.Signature{Value: enc, Origin: origin},
+				},
+			}, nil
+		}
 		if rec, ok := env.Sealer().Unseal(enc); ok {
 			switch rec.Kind {
 			case ir.SealRedacted:

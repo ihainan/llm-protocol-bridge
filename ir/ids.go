@@ -179,6 +179,60 @@ func TextSum(text string) string {
 // IsSealed reports whether s looks like an envelope of the default format.
 func IsSealed(s string) bool { return strings.HasPrefix(s, sealPrefix) }
 
+// UnsignedTextSealer is an optional interface a SealCodec may implement when
+// sealing and verifying unsigned reasoning text with a custom wire format (for
+// example, a domain-separated digest or compressed envelope).
+type UnsignedTextSealer interface {
+	SealUnsigned(client Format, origin Origin, text string) string
+	VerifyUnsigned(client Format, sealed, text string) (origin Origin, recoveredText string, ok bool)
+}
+
+// SealUnsignedReasoning seals unsigned reasoning text for client using env's
+// Sealer. For Anthropic clients the default SealRecord stores only TextSum (the
+// text already lives in the thinking block); for Responses clients it carries
+// Text inside the envelope.
+func SealUnsignedReasoning(env *Env, client Format, origin Origin, text string) string {
+	if text == "" {
+		return ""
+	}
+	sealer := env.Sealer()
+	if u, ok := sealer.(UnsignedTextSealer); ok {
+		return u.SealUnsigned(client, origin, text)
+	}
+	rec := SealRecord{Origin: origin, Kind: SealUnsigned}
+	if client == FormatAnthropic {
+		rec.TextSum = TextSum(text)
+	} else {
+		rec.Text = text
+	}
+	return sealer.Seal(rec)
+}
+
+// VerifyUnsignedReasoning checks whether sealed is a verified unsigned
+// reasoning envelope produced by env's Sealer for client (and matching text
+// when provided).
+func VerifyUnsignedReasoning(env *Env, client Format, sealed, text string) (Origin, string, bool) {
+	if sealed == "" {
+		return Origin{}, "", false
+	}
+	sealer := env.Sealer()
+	if u, ok := sealer.(UnsignedTextSealer); ok {
+		return u.VerifyUnsigned(client, sealed, text)
+	}
+	rec, ok := sealer.Unseal(sealed)
+	if !ok || rec.Kind != SealUnsigned {
+		return Origin{}, "", false
+	}
+	if rec.TextSum != "" && rec.TextSum != TextSum(text) {
+		return Origin{}, "", false
+	}
+	outText := text
+	if rec.Text != "" {
+		outText = rec.Text
+	}
+	return rec.Origin, outText, true
+}
+
 // CustomToolWrapperSchema is the standard JSON Schema used to expose a freeform
 // custom tool to formats that only support JSON-schema function tools (design.md §9.2.1).
 var CustomToolWrapperSchema = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string","description":"The raw input for this tool, exactly in the format the tool description requires."}},"required":["input"],"additionalProperties":false}`)

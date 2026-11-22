@@ -306,7 +306,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if req.Stream {
 		out.Bool("stream", true)
 	}
-	if req.User != "" {
+	if req.User != "" && !opts.OmitUserID {
 		mb, _ := jsonx.Marshal(wireMetadata{UserID: req.User})
 		out.Raw("metadata", mb)
 	}

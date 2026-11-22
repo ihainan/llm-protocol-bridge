@@ -542,7 +542,9 @@ func parseContentBlock(raw json.RawMessage, p ir.Path, role ir.Role, allowEmptyT
 		sig, _ := jsonx.String(fields["signature"])
 		r := &ir.Reasoning{Text: thinking}
 		if sig != "" {
-			if rec, ok := env.Sealer().Unseal(sig); ok {
+			if origin, _, ok := ir.VerifyUnsignedReasoning(env, ir.FormatAnthropic, sig, thinking); ok {
+				r.Signature = &ir.Signature{Value: sig, Origin: origin}
+			} else if rec, ok := env.Sealer().Unseal(sig); ok {
 				if rec.TextSum == "" || rec.TextSum == ir.TextSum(thinking) {
 					switch rec.Kind {
 					case ir.SealSignature:
