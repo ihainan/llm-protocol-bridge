@@ -343,6 +343,16 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 
 		case ir.PartReasoning:
 			if part.Reasoning != nil {
+				if part.Reasoning.Sealed != nil {
+					if err := b.env.Lose(ir.LossReasoningSealed, fp, "sealed reasoning block not supported by Chat Completions"); err != nil {
+						return nil, err
+					}
+				}
+				if part.Reasoning.Signature != nil && !part.Reasoning.Signature.Origin.Matches(ir.FormatChat, b.env.ProviderID) {
+					if err := b.env.Lose(ir.LossReasoningSignature, fp, "reasoning signature not supported by Chat Completions"); err != nil {
+						return nil, err
+					}
+				}
 				reasoningText += part.Reasoning.Text
 			}
 			if part.Signature != nil {
@@ -439,49 +449,84 @@ func (b *built) buildMessage(m ir.Message, p ir.Path) ([]wireMessage, error) {
 	return out, nil
 }
 
-// buildReasoning writes reasoning configuration based on the dialect.
+// buildReasoning writes reasoning configuration based on ModelProfile and dialect.
 func (b *built) buildReasoning(req *ir.Request, out *jsonx.Obj) error {
-	if req.Reasoning == nil {
+	profile := b.env.ModelProfileOr(nil)
+	if req.Reasoning == nil && (profile == nil || profile.DefaultEffort == ir.EffortUnset) {
 		return nil
 	}
-	r := req.Reasoning
+	res := profile.Resolve(req.Reasoning)
+	if res.Off {
+		if profile != nil {
+			switch profile.Off.Mode {
+			case ir.OffUnsupported:
+				return b.env.Err(ir.Unsupported(ir.Root.Key("reasoning"), "off", "model does not allow disabling reasoning"))
+			case ir.OffPatch:
+				if len(profile.Off.Patch) > 0 {
+					kvs, err := jsonx.Object(profile.Off.Patch)
+					if err == nil {
+						for _, kv := range kvs {
+							out.Raw(kv.Key, kv.Value)
+						}
+					}
+				}
+				return nil
+			case ir.OffLowestHidden:
+				low := profile.Lowest()
+				out.Str("reasoning_effort", string(low))
+				return nil
+			}
+		}
+		switch b.dia.ReasoningParam {
+		case "", "reasoning_effort":
+			out.Str("reasoning_effort", string(ir.EffortNone))
+		case "enable_thinking":
+			out.Bool("enable_thinking", false)
+		case "thinking":
+			out.Raw("thinking", jsonRaw(`{"type":"disabled"}`))
+		}
+		return nil
+	}
+	if !res.Asked && res.Effort == ir.EffortUnset && res.Budget == nil {
+		return nil
+	}
+	if profile != nil && profile.Style == ir.StyleNone {
+		return nil
+	}
+	effort := res.Effort
+	budget := 0
+	if res.Budget != nil {
+		budget = *res.Budget
+	} else if effort != ir.EffortUnset {
+		budget = profile.EffortBudget(effort)
+	}
 	switch b.dia.ReasoningParam {
 	case "", "reasoning_effort":
-		if r.Effort != "" {
-			out.Str("reasoning_effort", string(r.Effort))
+		if effort != ir.EffortUnset {
+			out.Str("reasoning_effort", string(effort))
 		}
 	case "enable_thinking":
-		enable := r.Mode != ir.ReasoningOff
-		out.Bool("enable_thinking", enable)
-		if r.Budget != nil {
-			out.Int("budget_tokens", int64(*r.Budget))
+		out.Bool("enable_thinking", true)
+		if budget > 0 {
+			out.Int("budget_tokens", int64(budget))
 		}
 	case "thinking":
-		if r.Mode == ir.ReasoningOff {
-			out.Raw("thinking", jsonRaw(`{"type":"disabled"}`))
-		} else {
-			t := wireThinking{Type: "enabled"}
-			if r.Budget != nil {
-				t.BudgetTokens = *r.Budget
-			}
-			tb, _ := jsonx.Marshal(t)
-			out.Raw("thinking", tb)
-		}
+		t := wireThinking{Type: "enabled", BudgetTokens: budget}
+		tb, _ := jsonx.Marshal(t)
+		out.Raw("thinking", tb)
 	case "extra_body":
-		if r.Mode != ir.ReasoningOff {
-			t := wireThinking{Type: "enabled"}
-			if r.Budget != nil {
-				t.BudgetTokens = *r.Budget
-			}
-			tb, _ := jsonx.Marshal(t)
-			// extra_body.google.thinking_config
-			eb, _ := jsonx.Marshal(map[string]any{
-				"google": map[string]any{
-					"thinking_config": json.RawMessage(tb),
-				},
-			})
-			out.Raw("extra_body", eb)
-		}
+		t := wireThinking{Type: "enabled", BudgetTokens: budget}
+		tb, _ := jsonx.Marshal(t)
+		eb, _ := jsonx.Marshal(map[string]any{
+			"google": map[string]any{
+				"thinking_config": json.RawMessage(tb),
+			},
+		})
+		out.Raw("extra_body", eb)
+	}
+	if profile != nil && profile.EffortInTemplateKwargs && effort != ir.EffortUnset {
+		kw, _ := jsonx.Marshal(map[string]any{"reasoning_effort": string(effort)})
+		out.Raw("chat_template_kwargs", kw)
 	}
 	return nil
 }

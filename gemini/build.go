@@ -157,7 +157,11 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 	case ir.PartText:
 		wp := wirePart{Text: part.Text}
 		if part.Signature != nil && part.Signature.Value != "" {
-			wp.ThoughtSignature = part.Signature.Value
+			if part.Signature.Origin.Matches(ir.FormatGemini, env.ProviderID) {
+				wp.ThoughtSignature = part.Signature.Value
+			} else if err := env.Lose(ir.LossReasoningSignature, p, "foreign thought signature dropped for Gemini"); err != nil {
+				return nil, err
+			}
 		}
 		return []wirePart{wp}, nil
 
@@ -165,12 +169,28 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 		if part.Reasoning == nil {
 			return nil, nil
 		}
+		if part.Reasoning.Sealed != nil {
+			if err := env.Lose(ir.LossReasoningSealed, p, "sealed reasoning block not supported by Gemini"); err != nil {
+				return nil, err
+			}
+			if part.Reasoning.Text == "" {
+				return nil, nil
+			}
+		}
 		wp := wirePart{
 			Text:    part.Reasoning.Text,
 			Thought: true,
 		}
-		if part.Signature != nil {
-			wp.ThoughtSignature = part.Signature.Value
+		sig := part.Reasoning.Signature
+		if sig == nil {
+			sig = part.Signature
+		}
+		if sig != nil && sig.Value != "" {
+			if sig.Origin.Matches(ir.FormatGemini, env.ProviderID) {
+				wp.ThoughtSignature = sig.Value
+			} else if err := env.Lose(ir.LossReasoningSignature, p, "foreign reasoning signature dropped for Gemini"); err != nil {
+				return nil, err
+			}
 		}
 		return []wirePart{wp}, nil
 
@@ -233,8 +253,12 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, names m
 			fc.ID = call.ID
 		}
 		wp := wirePart{FunctionCall: fc}
-		if call.Signature != nil {
-			wp.ThoughtSignature = call.Signature.Value
+		if call.Signature != nil && call.Signature.Value != "" {
+			if call.Signature.Origin.Matches(ir.FormatGemini, env.ProviderID) {
+				wp.ThoughtSignature = call.Signature.Value
+			} else if err := env.Lose(ir.LossReasoningSignature, p, "foreign tool call signature dropped for Gemini"); err != nil {
+				return nil, err
+			}
 		}
 		return []wirePart{wp}, nil
 
@@ -416,16 +440,62 @@ func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGene
 			any = true
 		}
 	}
-	if req.Reasoning != nil {
-		tc := &wireThinkingConfig{}
-		if req.Reasoning.Budget != nil {
-			tc.ThinkingBudget = *req.Reasoning.Budget
+	profile := env.ModelProfileOr(nil)
+	if req.Reasoning != nil || (profile != nil && profile.DefaultEffort != ir.EffortUnset) {
+		res := profile.Resolve(req.Reasoning)
+		if res.Off {
+			if profile != nil {
+				switch profile.Off.Mode {
+				case ir.OffUnsupported:
+					return nil, env.Err(ir.Unsupported(ir.Root.Key("reasoning"), "off", "model does not allow disabling reasoning"))
+				case ir.OffLowestHidden:
+					low := profile.Lowest()
+					tc := &wireThinkingConfig{}
+					if profile.Style == ir.StyleLevel {
+						tc.ThinkingLevel = strings.ToUpper(string(low))
+					} else {
+						b := profile.EffortBudget(low)
+						tc.ThinkingBudget = &b
+					}
+					gc.ThinkingConfig = tc
+					any = true
+				default:
+					zero := 0
+					gc.ThinkingConfig = &wireThinkingConfig{ThinkingBudget: &zero}
+					any = true
+				}
+			} else {
+				zero := 0
+				gc.ThinkingConfig = &wireThinkingConfig{ThinkingBudget: &zero}
+				any = true
+			}
+		} else if (res.Asked || res.Effort != ir.EffortUnset || res.Budget != nil) && (profile == nil || profile.Style != ir.StyleNone) {
+			tc := &wireThinkingConfig{}
+			if profile != nil && profile.Style == ir.StyleLevel {
+				if res.Effort != ir.EffortUnset {
+					tc.ThinkingLevel = strings.ToUpper(string(res.Effort))
+				}
+			} else {
+				if res.Budget != nil {
+					b := *res.Budget
+					if profile != nil && profile.MinBudget > 0 && b < profile.MinBudget {
+						b = profile.MinBudget
+					}
+					tc.ThinkingBudget = &b
+				} else if res.Effort != ir.EffortUnset {
+					b := profile.EffortBudget(res.Effort)
+					if profile != nil && profile.MinBudget > 0 && b < profile.MinBudget {
+						b = profile.MinBudget
+					}
+					tc.ThinkingBudget = &b
+				}
+			}
+			if req.Reasoning != nil && (req.Reasoning.Display == "shown" || req.Reasoning.Summary != "") {
+				tc.IncludeThoughts = true
+			}
+			gc.ThinkingConfig = tc
+			any = true
 		}
-		if req.Reasoning.Display == "shown" {
-			tc.IncludeThoughts = true
-		}
-		gc.ThinkingConfig = tc
-		any = true
 	}
 
 	if !any {

@@ -173,7 +173,21 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.outputIndex++
 		e.itemID = "rs_" + e.opts.Env.NewID("", 16)
 		var encStr string
-		_ = json.Unmarshal(ev.Sealed.Data, &encStr)
+		if ev.Sealed.Kind == ir.SealedResponsesEncrypted {
+			_ = json.Unmarshal(ev.Sealed.Data, &encStr)
+		} else if ev.Sealed.Kind == ir.SealedAnthropicRedacted {
+			encStr = e.opts.Env.Sealer().Seal(ir.SealRecord{
+				Origin: ev.Sealed.Origin,
+				Kind:   ir.SealRedacted,
+				Value:  string(ev.Sealed.Data),
+			})
+		} else {
+			encStr = e.opts.Env.Sealer().Seal(ir.SealRecord{
+				Origin: ev.Sealed.Origin,
+				Kind:   ir.SealEncrypted,
+				Value:  string(ev.Sealed.Data),
+			})
+		}
 		item := map[string]any{
 			"type":              "reasoning",
 			"id":                e.itemID,
@@ -719,10 +733,25 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 		if item.ID == "" {
 			item.ID = "rs_" + env.NewID("", 16)
 		}
-		if p.Reasoning.Sealed != nil && p.Reasoning.Sealed.Kind == ir.SealedResponsesEncrypted {
-			var encStr string
-			_ = json.Unmarshal(p.Reasoning.Sealed.Data, &encStr)
-			item.EncryptedContent = encStr
+		if p.Reasoning.Sealed != nil {
+			if p.Reasoning.Sealed.Kind == ir.SealedResponsesEncrypted {
+				var encStr string
+				_ = json.Unmarshal(p.Reasoning.Sealed.Data, &encStr)
+				item.EncryptedContent = encStr
+			} else if p.Reasoning.Sealed.Kind == ir.SealedAnthropicRedacted {
+				item.EncryptedContent = env.Sealer().Seal(ir.SealRecord{
+					Origin: p.Reasoning.Sealed.Origin,
+					Kind:   ir.SealRedacted,
+					Value:  string(p.Reasoning.Sealed.Data),
+				})
+			}
+		} else if p.Reasoning.Signature != nil && p.Reasoning.Signature.Value != "" && !p.Reasoning.Signature.Origin.Matches(ir.FormatResponses, env.ProviderID) {
+			item.EncryptedContent = env.Sealer().Seal(ir.SealRecord{
+				Origin: p.Reasoning.Signature.Origin,
+				Kind:   ir.SealSignature,
+				Value:  p.Reasoning.Signature.Value,
+				Text:   p.Reasoning.Text,
+			})
 		}
 		for _, s := range p.Reasoning.Summary {
 			item.Summary = append(item.Summary, wireReasoningPart{Type: "summary_text", Text: s})

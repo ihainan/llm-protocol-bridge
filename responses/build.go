@@ -124,8 +124,9 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// reasoning.
-	if req.Reasoning != nil {
-		rb, err := buildReasoning(req.Reasoning)
+	profile := env.ModelProfileOr(nil)
+	if req.Reasoning != nil || (profile != nil && profile.DefaultEffort != ir.EffortUnset) {
+		rb, err := buildReasoning(req.Reasoning, profile, env)
 		if err != nil {
 			return nil, err
 		}
@@ -323,20 +324,47 @@ func assistantPartsToItems(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireInput
 
 		case ir.PartReasoning:
 			flushText()
-			item := wireInputItem{Type: "reasoning"}
-			if part.Reasoning != nil {
-				item.ID = part.Reasoning.ID
-				if part.Reasoning.Sealed != nil {
+			if part.Reasoning == nil {
+				break
+			}
+			r := part.Reasoning
+			item := wireInputItem{Type: "reasoning", ID: r.ID}
+			hasContent := false
+			if r.Sealed != nil {
+				if r.Sealed.Kind == ir.SealedResponsesEncrypted && r.Sealed.Origin.Matches(ir.FormatResponses, env.ProviderID) {
 					var enc string
-					_ = json.Unmarshal(part.Reasoning.Sealed.Data, &enc)
-					item.EncryptedContent = enc
-				} else if part.Reasoning.Text != "" {
-					// Summary text becomes a summary array.
-					summaryBytes, _ := jsonx.Marshal([]map[string]string{{"type": "summary_text", "text": part.Reasoning.Text}})
-					item.Summary = summaryBytes
+					_ = json.Unmarshal(r.Sealed.Data, &enc)
+					if enc != "" {
+						item.EncryptedContent = enc
+						hasContent = true
+					}
+				} else {
+					if err := env.Lose(ir.LossReasoningSealed, fp, "foreign sealed reasoning block dropped for Responses"); err != nil {
+						return nil, err
+					}
 				}
 			}
-			items = append(items, item)
+			if r.Signature != nil && !r.Signature.Origin.Matches(ir.FormatResponses, env.ProviderID) {
+				if err := env.Lose(ir.LossReasoningSignature, fp, "foreign reasoning signature dropped for Responses"); err != nil {
+					return nil, err
+				}
+			}
+			if len(r.Summary) > 0 {
+				sp := make([]map[string]string, 0, len(r.Summary))
+				for _, s := range r.Summary {
+					sp = append(sp, map[string]string{"type": "summary_text", "text": s})
+				}
+				summaryBytes, _ := jsonx.Marshal(sp)
+				item.Summary = summaryBytes
+				hasContent = true
+			} else if r.Text != "" {
+				summaryBytes, _ := jsonx.Marshal([]map[string]string{{"type": "summary_text", "text": r.Text}})
+				item.Summary = summaryBytes
+				hasContent = true
+			}
+			if hasContent {
+				items = append(items, item)
+			}
 
 		case ir.PartToolCall:
 			flushText()
@@ -424,15 +452,31 @@ func buildToolChoice(tc ir.ToolChoice, env *ir.Env) (json.RawMessage, error) {
 	return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), string(tc.Mode), "tool choice mode"))
 }
 
-func buildReasoning(rc *ir.ReasoningConfig) (json.RawMessage, error) {
-	if rc == nil {
-		return nil, nil
-	}
+func buildReasoning(rc *ir.ReasoningConfig, profile *ir.ModelProfile, env *ir.Env) (json.RawMessage, error) {
+	res := profile.Resolve(rc)
 	m := map[string]any{}
-	if rc.Effort != "" && rc.Effort != ir.EffortUnset {
-		m["effort"] = string(rc.Effort)
+	if res.Off {
+		if profile != nil {
+			switch profile.Off.Mode {
+			case ir.OffUnsupported:
+				return nil, env.Err(ir.Unsupported(ir.Root.Key("reasoning"), "off", "model does not allow disabling reasoning"))
+			case ir.OffLowestHidden:
+				m["effort"] = string(profile.Lowest())
+			default:
+				m["effort"] = string(ir.EffortNone)
+			}
+		} else {
+			m["effort"] = string(ir.EffortNone)
+		}
+	} else {
+		if profile != nil && profile.Style == ir.StyleNone {
+			return nil, nil
+		}
+		if res.Effort != ir.EffortUnset {
+			m["effort"] = string(res.Effort)
+		}
 	}
-	if rc.Summary != "" {
+	if rc != nil && rc.Summary != "" {
 		m["summary"] = rc.Summary
 	}
 	if len(m) == 0 {

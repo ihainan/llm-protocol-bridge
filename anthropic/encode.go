@@ -135,10 +135,18 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 
 	case ir.EvSignature:
 		if ev.Signature != nil && e.openBlock >= 0 && e.openBlockType == "thinking" {
+			sigVal := ev.Signature.Value
+			if !ev.Signature.Origin.Matches(ir.FormatAnthropic, e.opts.Env.ProviderID) {
+				sigVal = e.opts.Env.Sealer().Seal(ir.SealRecord{
+					Origin: ev.Signature.Origin,
+					Kind:   ir.SealSignature,
+					Value:  ev.Signature.Value,
+				})
+			}
 			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
 				"index": e.openBlock,
-				"delta": map[string]any{"type": "signature_delta", "signature": ev.Signature.Value},
+				"delta": map[string]any{"type": "signature_delta", "signature": sigVal},
 			})
 		}
 
@@ -149,7 +157,15 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			idx := e.blockIdx
 			e.blockIdx++
 			var dataStr string
-			_ = json.Unmarshal(ev.Sealed.Data, &dataStr)
+			if ev.Sealed.Kind == ir.SealedAnthropicRedacted {
+				_ = json.Unmarshal(ev.Sealed.Data, &dataStr)
+			} else {
+				dataStr = e.opts.Env.Sealer().Seal(ir.SealRecord{
+					Origin: ev.Sealed.Origin,
+					Kind:   ir.SealEncrypted,
+					Value:  string(ev.Sealed.Data),
+				})
+			}
 			dst = e.appendSSE(dst, "content_block_start", map[string]any{
 				"type":  "content_block_start",
 				"index": idx,
@@ -436,7 +452,7 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 	if out != nil {
 		for i, p := range out.Parts {
 			fp := ir.Root.Key("content").At(i)
-			bs, err := partToBlocks(p, fp, env)
+			bs, err := responsePartToBlocks(p, fp, env)
 			if err != nil {
 				return nil, err
 			}
@@ -469,6 +485,44 @@ func BuildResponse(resp *ir.Response, opts EncodeOptions) ([]byte, error) {
 		"usage":         buildAnthropicUsage(resp.Usage),
 	}
 	return jsonx.Marshal(wr)
+}
+
+func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, error) {
+	if part.Type == ir.PartReasoning && part.Reasoning != nil {
+		r := part.Reasoning
+		var out []wireContentBlock
+		if r.Text != "" {
+			sig := ""
+			if r.Signature != nil && r.Signature.Value != "" {
+				if r.Signature.Origin.Matches(ir.FormatAnthropic, env.ProviderID) {
+					sig = r.Signature.Value
+				} else {
+					sig = env.Sealer().Seal(ir.SealRecord{
+						Origin:  r.Signature.Origin,
+						Kind:    ir.SealSignature,
+						Value:   r.Signature.Value,
+						TextSum: ir.TextSum(r.Text),
+					})
+				}
+			}
+			out = append(out, wireContentBlock{Type: "thinking", Thinking: r.Text, Signature: sig})
+		}
+		if r.Sealed != nil {
+			var dataStr string
+			if r.Sealed.Kind == ir.SealedAnthropicRedacted {
+				_ = json.Unmarshal(r.Sealed.Data, &dataStr)
+			} else {
+				dataStr = env.Sealer().Seal(ir.SealRecord{
+					Origin: r.Sealed.Origin,
+					Kind:   ir.SealEncrypted,
+					Value:  string(r.Sealed.Data),
+				})
+			}
+			out = append(out, wireContentBlock{Type: "redacted_thinking", Data: dataStr})
+		}
+		return out, nil
+	}
+	return partToBlocks(part, p, env)
 }
 
 func stopToAnthropic(s *ir.Stop) string {

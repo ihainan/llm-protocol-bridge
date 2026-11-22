@@ -17,6 +17,7 @@ type StreamDecoder struct {
 	terminal     bool
 	hasToolCalls map[int]bool
 	callSeqBy    map[int]int
+	inThought    map[int]bool
 }
 
 // NewStreamDecoder returns a Gemini stream decoder.
@@ -32,6 +33,7 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 		names:        opts.Names,
 		hasToolCalls: map[int]bool{},
 		callSeqBy:    map[int]int{},
+		inThought:    map[int]bool{},
 	}
 }
 
@@ -125,6 +127,7 @@ func (d *StreamDecoder) End(how ir.EndKind) *ir.Event {
 func (d *StreamDecoder) decodePart(out []ir.Event, part wirePart, idx int) []ir.Event {
 	switch {
 	case part.FunctionCall != nil:
+		d.inThought[idx] = false
 		fc := part.FunctionCall
 		d.hasToolCalls[idx] = true
 		callIdx := d.callSeqBy[idx]
@@ -173,21 +176,23 @@ func (d *StreamDecoder) decodePart(out []ir.Event, part wirePart, idx int) []ir.
 		out = append(out, ir.Event{Type: ir.EvText, Index: idx, Text: part.CodeExecutionResult.Output})
 
 	case part.Thought:
+		if !d.inThought[idx] {
+			d.inThought[idx] = true
+			out = append(out, ir.Event{Type: ir.EvReasoningStart, Index: idx})
+		}
 		if part.Text != "" {
-			out = append(out,
-				ir.Event{Type: ir.EvReasoningStart, Index: idx},
-				ir.Event{Type: ir.EvReasoning, Index: idx, Text: part.Text},
-			)
+			out = append(out, ir.Event{Type: ir.EvReasoning, Index: idx, Text: part.Text})
 		}
 		if part.ThoughtSignature != "" {
-			sig := &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini}}
+			sig := &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: d.env.ProviderID}}
 			out = append(out, ir.Event{Type: ir.EvSignature, Index: idx, Signature: sig})
 		}
 
 	case part.Text != "":
+		d.inThought[idx] = false
 		out = append(out, ir.Event{Type: ir.EvText, Index: idx, Text: part.Text})
 		if part.ThoughtSignature != "" {
-			sig := &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini}}
+			sig := &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: d.env.ProviderID}}
 			out = append(out, ir.Event{Type: ir.EvSignature, Index: idx, Signature: sig})
 		}
 	}
@@ -307,19 +312,19 @@ func wirePartToIR(part wirePart, p ir.Path, candIdx int, callIdx *int, names map
 		return &ir.Part{Type: ir.PartBuiltinResult, Result: result}, nil
 
 	case part.Thought:
-		rp := &ir.Part{
-			Type:      ir.PartReasoning,
-			Reasoning: &ir.Reasoning{Text: part.Text},
-		}
+		r := &ir.Reasoning{Text: part.Text}
 		if part.ThoughtSignature != "" {
-			rp.Signature = &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini}}
+			r.Signature = &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
 		}
-		return rp, nil
+		return &ir.Part{
+			Type:      ir.PartReasoning,
+			Reasoning: r,
+		}, nil
 
 	case part.Text != "":
 		tp := ir.TextPart(part.Text)
 		if part.ThoughtSignature != "" {
-			tp.Signature = &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini}}
+			tp.Signature = &ir.Signature{Value: part.ThoughtSignature, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
 		}
 		return &tp, nil
 

@@ -435,6 +435,43 @@ func parseReasoningItem(fields map[string]json.RawMessage, p ir.Path, env *ir.En
 	enc, _ := jsonx.String(fields["encrypted_content"])
 
 	if enc != "" {
+		if rec, ok := env.Sealer().Unseal(enc); ok {
+			switch rec.Kind {
+			case ir.SealRedacted:
+				return ir.Part{
+					Type: ir.PartReasoning,
+					Reasoning: &ir.Reasoning{
+						ID: id,
+						Sealed: &ir.Sealed{
+							Kind:   ir.SealedAnthropicRedacted,
+							Data:   json.RawMessage(rec.Value),
+							Origin: rec.Origin,
+						},
+					},
+				}, nil
+			case ir.SealSignature:
+				return ir.Part{
+					Type: ir.PartReasoning,
+					Reasoning: &ir.Reasoning{
+						ID:        id,
+						Text:      rec.Text,
+						Signature: &ir.Signature{Value: rec.Value, Origin: rec.Origin},
+					},
+				}, nil
+			case ir.SealEncrypted:
+				return ir.Part{
+					Type: ir.PartReasoning,
+					Reasoning: &ir.Reasoning{
+						ID: id,
+						Sealed: &ir.Sealed{
+							Kind:   ir.SealedResponsesEncrypted,
+							Data:   json.RawMessage(rec.Value),
+							Origin: rec.Origin,
+						},
+					},
+				}, nil
+			}
+		}
 		// Sealed reasoning: stash the encrypted_content in Reasoning.Sealed.
 		data, _ := json.Marshal(enc)
 		return ir.Part{
@@ -442,8 +479,9 @@ func parseReasoningItem(fields map[string]json.RawMessage, p ir.Path, env *ir.En
 			Reasoning: &ir.Reasoning{
 				ID: id,
 				Sealed: &ir.Sealed{
-					Kind: ir.SealedResponsesEncrypted,
-					Data: data,
+					Kind:   ir.SealedResponsesEncrypted,
+					Data:   data,
+					Origin: ir.Origin{Format: ir.FormatResponses, Provider: env.ProviderID},
 				},
 			},
 		}, nil
@@ -702,14 +740,20 @@ func parseReasoning(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.ReasoningC
 	for _, kv := range kvs {
 		switch kv.Key {
 		case "effort":
-			s, _ := jsonx.String(kv.Value)
-			switch s {
-			case "low":
-				rc.Effort = ir.EffortLow
-			case "medium":
-				rc.Effort = ir.EffortMedium
-			case "high":
-				rc.Effort = ir.EffortHigh
+			if jsonx.IsNull(kv.Value) {
+				break
+			}
+			s, ok := jsonx.String(kv.Value)
+			if !ok {
+				return nil, env.Err(ir.Invalid(p.Key("effort"), "must be a string"))
+			}
+			eff, ok := ir.ParseEffort(s)
+			if !ok {
+				return nil, env.Err(ir.Invalid(p.Key("effort"), "unrecognised reasoning effort: "+s))
+			}
+			rc.Effort = eff
+			if eff == ir.EffortNone {
+				rc.Mode = ir.ReasoningOff
 			}
 		case "summary":
 			s, _ := jsonx.String(kv.Value)

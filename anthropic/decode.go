@@ -80,7 +80,13 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		case "thinking":
 			out = append(out, ir.Event{Type: ir.EvReasoningStart, Index: 0, ID: ""})
 		case "redacted_thinking":
-			out = append(out, ir.Event{Type: ir.EvReasoningStart, Index: 0, ID: ""})
+			data, _ := jsonx.Marshal(se.ContentBlock.Data)
+			sealed := &ir.Sealed{
+				Kind:   ir.SealedAnthropicRedacted,
+				Data:   data,
+				Origin: ir.Origin{Format: ir.FormatAnthropic, Provider: d.env.ProviderID},
+			}
+			out = append(out, ir.Event{Type: ir.EvSealed, Index: 0, Sealed: sealed})
 		case "tool_use":
 			id := ir.AnthropicRawID(se.ContentBlock.ID)
 			name := se.ContentBlock.Name
@@ -143,17 +149,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			out = append(out, ir.Event{Type: ir.EvToolEnd, Index: 0, Part: se.Index, ID: d.blockCallID[se.Index]})
 			delete(d.blockCallID, se.Index)
 		case "redacted_thinking":
-			// The sealed block was delivered at content_block_start (whole).
-			// We already emitted EvReasoningStart; emit a sealed event now.
-			if se.ContentBlock != nil {
-				data, _ := jsonx.Marshal(se.ContentBlock.Data)
-				sealed := &ir.Sealed{
-					Kind:   ir.SealedAnthropicRedacted,
-					Data:   data,
-					Origin: ir.Origin{Format: ir.FormatAnthropic},
-				}
-				out = append(out, ir.Event{Type: ir.EvSealed, Index: 0, Sealed: sealed})
-			}
+			// EvSealed was already emitted at content_block_start where data arrives.
 		}
 		delete(d.openBlocks, se.Index)
 

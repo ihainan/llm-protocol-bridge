@@ -200,17 +200,19 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 	switch {
 	case fields["text"] != nil:
 		text, _ := jsonx.String(fields["text"])
-		part := ir.TextPart(text)
-		if sig, ok := jsonx.String(fields["thoughtSignature"]); ok && sig != "" {
-			part.Signature = &ir.Signature{Value: sig, Origin: ir.Origin{Format: ir.FormatGemini}}
+		var sig *ir.Signature
+		if s, ok := jsonx.String(fields["thoughtSignature"]); ok && s != "" {
+			sig = &ir.Signature{Value: s, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
 		}
 		if b, ok := jsonx.Bool(fields["thought"]); ok && b {
-			// A thought part: becomes reasoning.
+			// A thought part: becomes reasoning, preserving thoughtSignature.
 			return ir.Part{
 				Type:      ir.PartReasoning,
-				Reasoning: &ir.Reasoning{Text: text},
+				Reasoning: &ir.Reasoning{Text: text, Signature: sig},
 			}, nil
 		}
+		part := ir.TextPart(text)
+		part.Signature = sig
 		return part, nil
 
 	case fields["inlineData"] != nil:
@@ -263,7 +265,7 @@ func parsePart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, error) {
 		}
 		sig, _ := jsonx.String(fields["thoughtSignature"])
 		if sig != "" {
-			call.Signature = &ir.Signature{Value: sig, Origin: ir.Origin{Format: ir.FormatGemini}}
+			call.Signature = &ir.Signature{Value: sig, Origin: ir.Origin{Format: ir.FormatGemini, Provider: env.ProviderID}}
 		}
 		return ir.Part{Type: ir.PartToolCall, Call: call}, nil
 
@@ -559,6 +561,19 @@ func parseThinkingConfig(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.Reaso
 			if ok {
 				ni := int(n)
 				rc.Budget = &ni
+				if ni == 0 {
+					rc.Mode = ir.ReasoningOff
+				}
+			}
+		case "thinkingLevel":
+			s, ok := jsonx.String(kv.Value)
+			if ok && s != "" {
+				if eff, ok2 := ir.ParseEffort(s); ok2 {
+					rc.Effort = eff
+					if eff == ir.EffortNone {
+						rc.Mode = ir.ReasoningOff
+					}
+				}
 			}
 		case "includeThoughts":
 			b, ok := jsonx.Bool(kv.Value)

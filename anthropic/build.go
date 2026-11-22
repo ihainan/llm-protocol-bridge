@@ -19,9 +19,12 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	names := map[string]ir.ToolRef{}
 
 	// max_tokens: required by Anthropic.
+	profile := env.ModelProfileOr(nil)
 	maxTok := 0
 	if req.MaxOutputTokens != nil {
 		maxTok = *req.MaxOutputTokens
+	} else if profile != nil && profile.DefaultMaxTokens > 0 {
+		maxTok = profile.DefaultMaxTokens
 	} else if dia.DefaultMaxTokens > 0 {
 		maxTok = dia.DefaultMaxTokens
 	} else {
@@ -38,6 +41,8 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	var err error
 	var tcRaw json.RawMessage
 	var thinkingRaw json.RawMessage
+	var thinkingEnabled bool
+	var adaptiveEffort ir.Effort
 	messages, err := buildMessages(req.Messages, names, env, dia)
 	if err != nil {
 		return nil, err
@@ -65,11 +70,26 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		}
 	}
 
-	// Thinking config.
-	if req.Reasoning != nil {
-		thinkingRaw, err = buildThinking(req.Reasoning, env)
+	// Thinking config resolved via ModelProfile.
+	if req.Reasoning != nil || (profile != nil && profile.DefaultEffort != ir.EffortUnset) {
+		var budget int
+		thinkingRaw, thinkingEnabled, budget, adaptiveEffort, err = buildThinking(req.Reasoning, profile, env)
 		if err != nil {
 			return nil, err
+		}
+		if thinkingEnabled && budget > 0 && maxTok <= budget {
+			minBudget := 1024
+			if profile != nil && profile.MinBudget > 0 {
+				minBudget = profile.MinBudget
+			}
+			if req.MaxOutputTokens == nil {
+				maxTok = budget + 4096
+			} else if maxTok > minBudget {
+				budget = maxTok - 1
+				thinkingRaw, _ = jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: budget})
+			} else {
+				maxTok = budget + 1024
+			}
 		}
 	}
 
@@ -101,25 +121,48 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if thinkingRaw != nil {
 		out.Raw("thinking", thinkingRaw)
 	}
+	if adaptiveEffort != ir.EffortUnset {
+		ocBytes, _ := jsonx.Marshal(map[string]any{"effort": string(adaptiveEffort)})
+		out.Raw("output_config", ocBytes)
+	}
 
-	// Sampling parameters.
+	// Sampling parameters (Anthropic forbids non-default temperature/top_p/top_k when thinking is enabled).
+	allowSampling := !thinkingEnabled || (profile != nil && profile.SamplingWithReasoning)
 	if req.Temperature != nil {
 		t := *req.Temperature
-		if t > 1.0 {
-			if err := env.Lose(ir.LossSamplingClamp, ir.Root.Key("temperature"), "clamped to 1.0 (Anthropic max)"); err != nil {
+		if !allowSampling && t != 1.0 {
+			if err := env.Lose(ir.LossSamplingClamp, ir.Root.Key("temperature"), "omitted because Anthropic thinking forbids non-default temperature"); err != nil {
 				return nil, err
 			}
-			t = 1.0
+		} else {
+			if t > 1.0 {
+				if err := env.Lose(ir.LossSamplingClamp, ir.Root.Key("temperature"), "clamped to 1.0 (Anthropic max)"); err != nil {
+					return nil, err
+				}
+				t = 1.0
+			}
+			tb, _ := jsonx.Marshal(t)
+			out.Raw("temperature", tb)
 		}
-		tb, _ := jsonx.Marshal(t)
-		out.Raw("temperature", tb)
 	}
 	if req.TopP != nil {
-		tb, _ := jsonx.Marshal(*req.TopP)
-		out.Raw("top_p", tb)
+		if !allowSampling {
+			if err := env.Lose(ir.LossSamplingClamp, ir.Root.Key("top_p"), "omitted when Anthropic thinking is enabled"); err != nil {
+				return nil, err
+			}
+		} else {
+			tb, _ := jsonx.Marshal(*req.TopP)
+			out.Raw("top_p", tb)
+		}
 	}
 	if req.TopK != nil {
-		out.Int("top_k", int64(*req.TopK))
+		if !allowSampling {
+			if err := env.Lose(ir.LossSamplingTopK, ir.Root.Key("top_k"), "omitted when Anthropic thinking is enabled"); err != nil {
+				return nil, err
+			}
+		} else {
+			out.Int("top_k", int64(*req.TopK))
+		}
 	}
 	// Anthropic does not support presence/frequency penalty.
 	if req.PresencePenalty != nil && *req.PresencePenalty != 0 {
@@ -292,18 +335,25 @@ func partToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBlock, err
 			return nil, nil
 		}
 		r := part.Reasoning
-		if r.Sealed != nil && r.Sealed.Kind == ir.SealedAnthropicRedacted {
-			// Re-send the redacted_thinking block as received.
-			var dataStr string
-			_ = json.Unmarshal(r.Sealed.Data, &dataStr)
-			return []wireContentBlock{{Type: "redacted_thinking", Data: dataStr}}, nil
+		if r.Sealed != nil {
+			if r.Sealed.Kind == ir.SealedAnthropicRedacted && r.Sealed.Origin.Matches(ir.FormatAnthropic, env.ProviderID) {
+				var dataStr string
+				_ = json.Unmarshal(r.Sealed.Data, &dataStr)
+				return []wireContentBlock{{Type: "redacted_thinking", Data: dataStr}}, nil
+			}
+			if err := env.Lose(ir.LossReasoningSealed, p, "foreign sealed reasoning block dropped for Anthropic"); err != nil {
+				return nil, err
+			}
+			return nil, nil
 		}
 		if r.Text != "" {
-			sig := ""
-			if r.Signature != nil {
-				sig = r.Signature.Value
+			if r.Signature != nil && r.Signature.Value != "" && r.Signature.Origin.Matches(ir.FormatAnthropic, env.ProviderID) {
+				return []wireContentBlock{{Type: "thinking", Thinking: r.Text, Signature: r.Signature.Value}}, nil
 			}
-			return []wireContentBlock{{Type: "thinking", Thinking: r.Text, Signature: sig}}, nil
+			if err := env.Lose(ir.LossReasoningSignature, p, "unsigned or foreign reasoning block dropped for Anthropic"); err != nil {
+				return nil, err
+			}
+			return nil, nil
 		}
 		return nil, nil
 
@@ -431,15 +481,53 @@ func buildToolChoice(tc ir.ToolChoice, parallelToolCalls *bool, env *ir.Env) (js
 	return nil, nil
 }
 
-func buildThinking(rc *ir.ReasoningConfig, env *ir.Env) (json.RawMessage, error) {
-	if rc.Mode == ir.ReasoningOff {
-		return jsonx.Marshal(wireThinkingConfig{Type: "disabled"})
+func buildThinking(rc *ir.ReasoningConfig, profile *ir.ModelProfile, env *ir.Env) (raw json.RawMessage, enabled bool, budget int, adaptiveEffort ir.Effort, err error) {
+	res := profile.Resolve(rc)
+	if res.Off {
+		if profile != nil {
+			switch profile.Off.Mode {
+			case ir.OffUnsupported:
+				return nil, false, 0, "", env.Err(ir.Unsupported(ir.Root.Key("reasoning"), "off", "model does not allow disabling reasoning"))
+			case ir.OffLowestHidden:
+				low := profile.Lowest()
+				b := profile.EffortBudget(low)
+				if b < 1024 {
+					b = 1024
+				}
+				rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: b})
+				return rb, true, b, "", nil
+			}
+		}
+		rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "disabled"})
+		return rb, false, 0, "", nil
 	}
-	t := wireThinkingConfig{Type: "enabled"}
-	if rc.Budget != nil {
-		t.BudgetTokens = *rc.Budget
+	if !res.Asked && res.Effort == ir.EffortUnset && res.Budget == nil {
+		return nil, false, 0, "", nil
 	}
-	return jsonx.Marshal(t)
+	if profile != nil && profile.Style == ir.StyleNone {
+		return nil, false, 0, "", nil
+	}
+	if res.Adaptive || (profile != nil && profile.Style == ir.StyleAdaptive) {
+		rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "adaptive"})
+		return rb, true, 0, res.Effort, nil
+	}
+	b := 0
+	if res.Budget != nil {
+		b = *res.Budget
+	} else if res.Effort != ir.EffortUnset {
+		b = profile.EffortBudget(res.Effort)
+	} else {
+		b = ir.DefaultEffortToBudget[ir.EffortMedium]
+	}
+	minBudget := 1024
+	if profile != nil && profile.MinBudget > 0 {
+		minBudget = profile.MinBudget
+	}
+	if b < minBudget {
+		b = minBudget
+	}
+	rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: b})
+	return rb, true, b, "", nil
 }
 
 func irCacheToWire(cc *ir.CacheControl) *wireCacheControl {

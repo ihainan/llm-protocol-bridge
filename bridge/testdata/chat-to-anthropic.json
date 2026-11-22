@@ -1,5 +1,5 @@
 {
-  "max_tokens": 16384,
+  "max_tokens": 28096,
   "messages": [
     {
       "content": [
@@ -56,6 +56,7 @@
   "system": "be brief",
   "temperature": 1,
   "thinking": {
+    "budget_tokens": 24000,
     "type": "enabled"
   },
   "tool_choice": {

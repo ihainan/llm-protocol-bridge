@@ -16,5 +16,8 @@
     }
   ],
   "max_output_tokens": 64,
-  "model": "m1"
+  "model": "m1",
+  "reasoning": {
+    "effort": "none"
+  }
 }

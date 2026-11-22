@@ -347,16 +347,54 @@ func parseContentBlock(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, er
 	case "thinking":
 		thinking, _ := jsonx.String(fields["thinking"])
 		sig, _ := jsonx.String(fields["signature"])
+		r := &ir.Reasoning{Text: thinking}
+		if sig != "" {
+			if rec, ok := env.Sealer().Unseal(sig); ok {
+				if rec.TextSum == "" || rec.TextSum == ir.TextSum(thinking) {
+					switch rec.Kind {
+					case ir.SealSignature:
+						r.Signature = &ir.Signature{Value: rec.Value, Origin: rec.Origin}
+					case ir.SealEncrypted:
+						r.Sealed = &ir.Sealed{Kind: ir.SealedResponsesEncrypted, Data: json.RawMessage(rec.Value), Origin: rec.Origin}
+					}
+				}
+			} else {
+				r.Signature = &ir.Signature{Value: sig, Origin: ir.Origin{Format: ir.FormatAnthropic, Provider: env.ProviderID}}
+			}
+		}
 		return ir.Part{
-			Type: ir.PartReasoning,
-			Reasoning: &ir.Reasoning{
-				Text:      thinking,
-				Signature: &ir.Signature{Value: sig, Origin: ir.Origin{Format: ir.FormatAnthropic}},
-			},
+			Type:      ir.PartReasoning,
+			Reasoning: r,
 		}, nil
 
 	case "redacted_thinking":
 		data, _ := jsonx.String(fields["data"])
+		if rec, ok := env.Sealer().Unseal(data); ok {
+			switch rec.Kind {
+			case ir.SealEncrypted:
+				return ir.Part{
+					Type: ir.PartReasoning,
+					Reasoning: &ir.Reasoning{
+						Sealed: &ir.Sealed{
+							Kind:   ir.SealedResponsesEncrypted,
+							Data:   json.RawMessage(rec.Value),
+							Origin: rec.Origin,
+						},
+					},
+				}, nil
+			case ir.SealRedacted:
+				return ir.Part{
+					Type: ir.PartReasoning,
+					Reasoning: &ir.Reasoning{
+						Sealed: &ir.Sealed{
+							Kind:   ir.SealedAnthropicRedacted,
+							Data:   json.RawMessage(rec.Value),
+							Origin: rec.Origin,
+						},
+					},
+				}, nil
+			}
+		}
 		rawData, _ := jsonx.Marshal(data)
 		return ir.Part{
 			Type: ir.PartReasoning,
