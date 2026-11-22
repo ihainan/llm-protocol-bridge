@@ -10,11 +10,11 @@ import (
 
 // StreamEncoder converts ir.Events into Chat Completions SSE chunks.
 type StreamEncoder struct {
-	opts      EncodeOptions
-	id        string
-	model     string
-	created   int64
-	started   bool
+	opts    EncodeOptions
+	id      string
+	model   string
+	created int64
+	started bool
 	// seqByIdx tracks the number of tool call objects emitted for each choice
 	// index, for assigning the streaming tool_calls[].index field.
 	callIdxBy map[int]int
@@ -48,8 +48,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			e.started = true
 			chunk := e.baseChunk(0)
 			chunk["choices"] = []map[string]any{{
-				"index": 0,
-				"delta": map[string]any{"role": "assistant", "content": ""},
+				"index":         0,
+				"delta":         map[string]any{"role": "assistant", "content": ""},
 				"finish_reason": nil,
 			}}
 			dst = e.appendChunk(dst, chunk)
@@ -58,8 +58,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	case ir.EvText:
 		chunk := e.baseChunk(ev.Index)
 		chunk["choices"] = []map[string]any{{
-			"index": ev.Index,
-			"delta": map[string]any{"content": ev.Text},
+			"index":         ev.Index,
+			"delta":         map[string]any{"content": ev.Text},
 			"finish_reason": nil,
 		}}
 		dst = e.appendChunk(dst, chunk)
@@ -67,8 +67,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	case ir.EvReasoning:
 		chunk := e.baseChunk(ev.Index)
 		chunk["choices"] = []map[string]any{{
-			"index": ev.Index,
-			"delta": map[string]any{"reasoning_content": ev.Text},
+			"index":         ev.Index,
+			"delta":         map[string]any{"reasoning_content": ev.Text},
 			"finish_reason": nil,
 		}}
 		dst = e.appendChunk(dst, chunk)
@@ -87,8 +87,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			},
 		}
 		chunk["choices"] = []map[string]any{{
-			"index":        ev.Index,
-			"delta":        map[string]any{"tool_calls": []any{tc}},
+			"index":         ev.Index,
+			"delta":         map[string]any{"tool_calls": []any{tc}},
 			"finish_reason": nil,
 		}}
 		dst = e.appendChunk(dst, chunk)
@@ -106,8 +106,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			},
 		}
 		chunk["choices"] = []map[string]any{{
-			"index":        ev.Index,
-			"delta":        map[string]any{"tool_calls": []any{tc}},
+			"index":         ev.Index,
+			"delta":         map[string]any{"tool_calls": []any{tc}},
 			"finish_reason": nil,
 		}}
 		dst = e.appendChunk(dst, chunk)
@@ -116,8 +116,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		finish := finishFromStop(ev.Stop)
 		chunk := e.baseChunk(ev.Index)
 		chunk["choices"] = []map[string]any{{
-			"index":        ev.Index,
-			"delta":        map[string]any{},
+			"index":         ev.Index,
+			"delta":         map[string]any{},
 			"finish_reason": finish,
 		}}
 		dst = e.appendChunk(dst, chunk)

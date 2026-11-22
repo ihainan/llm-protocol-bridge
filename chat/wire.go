@@ -11,31 +11,31 @@ type wireRequest struct {
 	Messages []wireMessage `json:"messages"`
 
 	// Tools
-	Tools       []wireTool      `json:"tools,omitempty"`
-	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
-	ParallelTC  *bool           `json:"parallel_tool_calls,omitempty"`
+	Tools      []wireTool      `json:"tools,omitempty"`
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
+	ParallelTC *bool           `json:"parallel_tool_calls,omitempty"`
 
 	// Generation
-	MaxTokens           *int     `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int     `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64 `json:"temperature,omitempty"`
-	TopP                *float64 `json:"top_p,omitempty"`
-	N                   *int     `json:"n,omitempty"`
-	Stream              *bool    `json:"stream,omitempty"`
-	Stop                json.RawMessage `json:"stop,omitempty"`
-	PresencePenalty     *float64 `json:"presence_penalty,omitempty"`
-	FrequencyPenalty    *float64 `json:"frequency_penalty,omitempty"`
-	Logprobs            *bool    `json:"logprobs,omitempty"`
-	TopLogprobs         *int     `json:"top_logprobs,omitempty"`
-	Seed                *int64   `json:"seed,omitempty"`
+	MaxTokens           *int                `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64            `json:"temperature,omitempty"`
+	TopP                *float64            `json:"top_p,omitempty"`
+	N                   *int                `json:"n,omitempty"`
+	Stream              *bool               `json:"stream,omitempty"`
+	Stop                json.RawMessage     `json:"stop,omitempty"`
+	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`
+	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`
+	Logprobs            *bool               `json:"logprobs,omitempty"`
+	TopLogprobs         *int                `json:"top_logprobs,omitempty"`
+	Seed                *int64              `json:"seed,omitempty"`
 	ResponseFormat      *wireResponseFormat `json:"response_format,omitempty"`
 	StreamOptions       *wireStreamOptions  `json:"stream_options,omitempty"`
 
 	// Reasoning (dialect-dependent, some are mutually exclusive)
-	ReasoningEffort *string         `json:"reasoning_effort,omitempty"`
-	EnableThinking  *bool           `json:"enable_thinking,omitempty"`
-	BudgetTokens    *int            `json:"budget_tokens,omitempty"`
-	Thinking        *wireThinking   `json:"thinking,omitempty"`
+	ReasoningEffort *string       `json:"reasoning_effort,omitempty"`
+	EnableThinking  *bool         `json:"enable_thinking,omitempty"`
+	BudgetTokens    *int          `json:"budget_tokens,omitempty"`
+	Thinking        *wireThinking `json:"thinking,omitempty"`
 
 	// Identity / metadata
 	User        string          `json:"user,omitempty"`
@@ -50,7 +50,7 @@ type wireRequest struct {
 // wireMessage is one conversation turn in a Chat Completions request or response.
 type wireMessage struct {
 	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content,omitempty"`   // string | []wireContentPart | null
+	Content    json.RawMessage `json:"content,omitempty"` // string | []wireContentPart | null
 	Name       string          `json:"name,omitempty"`
 	ToolCalls  []wireToolCall  `json:"tool_calls,omitempty"`
 	ToolCallID string          `json:"tool_call_id,omitempty"`
@@ -63,12 +63,12 @@ type wireMessage struct {
 
 // wireContentPart is one element of a multi-part message content array.
 type wireContentPart struct {
-	Type     string          `json:"type"`
-	Text     string          `json:"text,omitempty"`
-	ImageURL *wireImageURL   `json:"image_url,omitempty"`
-	File     *wireFilePart   `json:"file,omitempty"`
+	Type       string        `json:"type"`
+	Text       string        `json:"text,omitempty"`
+	ImageURL   *wireImageURL `json:"image_url,omitempty"`
+	File       *wireFilePart `json:"file,omitempty"`
 	InputAudio *wireAudio    `json:"input_audio,omitempty"`
-	Refusal  string          `json:"refusal,omitempty"`
+	Refusal    string        `json:"refusal,omitempty"`
 	// Reasoning / thinking (some providers)
 	Thinking  string `json:"thinking,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
@@ -93,8 +93,8 @@ type wireAudio struct {
 
 // wireTool is a tool definition in a Chat Completions request.
 type wireTool struct {
-	Type     string           `json:"type"`
-	Function wireFunctionDef  `json:"function"`
+	Type     string          `json:"type"`
+	Function wireFunctionDef `json:"function"`
 }
 
 type wireFunctionDef struct {
@@ -153,47 +153,47 @@ type wireThinking struct {
 
 // wireResponse is the non-streaming Chat Completions response body.
 type wireResponse struct {
-	ID                string         `json:"id"`
-	Object            string         `json:"object"`
-	Created           int64          `json:"created"`
-	Model             string         `json:"model"`
-	Choices           []wireChoice   `json:"choices"`
-	Usage             *wireUsage     `json:"usage,omitempty"`
-	SystemFingerprint string         `json:"system_fingerprint,omitempty"`
+	ID                string       `json:"id"`
+	Object            string       `json:"object"`
+	Created           int64        `json:"created"`
+	Model             string       `json:"model"`
+	Choices           []wireChoice `json:"choices"`
+	Usage             *wireUsage   `json:"usage,omitempty"`
+	SystemFingerprint string       `json:"system_fingerprint,omitempty"`
 }
 
 // wireChunk is one streaming chunk.
 type wireChunk struct {
-	ID                string            `json:"id"`
-	Object            string            `json:"object"`
-	Created           int64             `json:"created"`
-	Model             string            `json:"model"`
-	Choices           []wireStreamChoice `json:"choices"`
-	Usage             *wireUsage        `json:"usage,omitempty"`
+	ID      string             `json:"id"`
+	Object  string             `json:"object"`
+	Created int64              `json:"created"`
+	Model   string             `json:"model"`
+	Choices []wireStreamChoice `json:"choices"`
+	Usage   *wireUsage         `json:"usage,omitempty"`
 	// Bare error from some providers
 	Error *wireError `json:"error,omitempty"`
 }
 
 // wireChoice is one candidate in a non-streaming response.
 type wireChoice struct {
-	Index        int          `json:"index"`
-	Message      wireMessage  `json:"message"`
-	FinishReason string       `json:"finish_reason,omitempty"`
+	Index        int         `json:"index"`
+	Message      wireMessage `json:"message"`
+	FinishReason string      `json:"finish_reason,omitempty"`
 }
 
 // wireStreamChoice is one candidate delta in a streaming chunk.
 type wireStreamChoice struct {
-	Index        int          `json:"index"`
-	Delta        wireMessage  `json:"delta"`
-	FinishReason string       `json:"finish_reason,omitempty"`
+	Index        int         `json:"index"`
+	Delta        wireMessage `json:"delta"`
+	FinishReason string      `json:"finish_reason,omitempty"`
 }
 
 // wireUsage is the usage object in a response.
 type wireUsage struct {
-	PromptTokens            int                       `json:"prompt_tokens"`
-	CompletionTokens        int                       `json:"completion_tokens"`
-	TotalTokens             int                       `json:"total_tokens"`
-	PromptTokensDetails     *wirePromptTokensDetails  `json:"prompt_tokens_details,omitempty"`
+	PromptTokens            int                          `json:"prompt_tokens"`
+	CompletionTokens        int                          `json:"completion_tokens"`
+	TotalTokens             int                          `json:"total_tokens"`
+	PromptTokensDetails     *wirePromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *wireCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 

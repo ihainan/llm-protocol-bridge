@@ -30,15 +30,39 @@ func benchConvert(b *testing.B, client, upstream ir.Format, body []byte) {
 	}
 }
 
-func BenchmarkConvert_ChatToAnthropic(b *testing.B)    { benchConvert(b, ir.FormatChat, ir.FormatAnthropic, chatBody) }
-func BenchmarkConvert_ChatToResponses(b *testing.B)    { benchConvert(b, ir.FormatChat, ir.FormatResponses, chatBody) }
-func BenchmarkConvert_ChatToGemini(b *testing.B)       { benchConvert(b, ir.FormatChat, ir.FormatGemini, chatBody) }
-func BenchmarkConvert_AnthropicToChat(b *testing.B)    { benchConvert(b, ir.FormatAnthropic, ir.FormatChat, anthropicBody) }
-func BenchmarkConvert_AnthropicToResponses(b *testing.B) { benchConvert(b, ir.FormatAnthropic, ir.FormatResponses, anthropicBody) }
-func BenchmarkConvert_AnthropicToGemini(b *testing.B)  { benchConvert(b, ir.FormatAnthropic, ir.FormatGemini, anthropicBody) }
-func BenchmarkConvert_ResponsesToChat(b *testing.B)    { benchConvert(b, ir.FormatResponses, ir.FormatChat, responsesBody) }
-func BenchmarkConvert_ResponsesToAnthropic(b *testing.B) { benchConvert(b, ir.FormatResponses, ir.FormatAnthropic, responsesBody) }
-func BenchmarkConvert_ResponsesToGemini(b *testing.B)  { benchConvert(b, ir.FormatResponses, ir.FormatGemini, responsesBody) }
-func BenchmarkConvert_GeminiToChat(b *testing.B)       { benchConvert(b, ir.FormatGemini, ir.FormatChat, geminiBody) }
-func BenchmarkConvert_GeminiToAnthropic(b *testing.B)  { benchConvert(b, ir.FormatGemini, ir.FormatAnthropic, geminiBody) }
-func BenchmarkConvert_GeminiToResponses(b *testing.B)  { benchConvert(b, ir.FormatGemini, ir.FormatResponses, geminiBody) }
+func BenchmarkConvert_ChatToAnthropic(b *testing.B) {
+	benchConvert(b, ir.FormatChat, ir.FormatAnthropic, chatBody)
+}
+func BenchmarkConvert_ChatToResponses(b *testing.B) {
+	benchConvert(b, ir.FormatChat, ir.FormatResponses, chatBody)
+}
+func BenchmarkConvert_ChatToGemini(b *testing.B) {
+	benchConvert(b, ir.FormatChat, ir.FormatGemini, chatBody)
+}
+func BenchmarkConvert_AnthropicToChat(b *testing.B) {
+	benchConvert(b, ir.FormatAnthropic, ir.FormatChat, anthropicBody)
+}
+func BenchmarkConvert_AnthropicToResponses(b *testing.B) {
+	benchConvert(b, ir.FormatAnthropic, ir.FormatResponses, anthropicBody)
+}
+func BenchmarkConvert_AnthropicToGemini(b *testing.B) {
+	benchConvert(b, ir.FormatAnthropic, ir.FormatGemini, anthropicBody)
+}
+func BenchmarkConvert_ResponsesToChat(b *testing.B) {
+	benchConvert(b, ir.FormatResponses, ir.FormatChat, responsesBody)
+}
+func BenchmarkConvert_ResponsesToAnthropic(b *testing.B) {
+	benchConvert(b, ir.FormatResponses, ir.FormatAnthropic, responsesBody)
+}
+func BenchmarkConvert_ResponsesToGemini(b *testing.B) {
+	benchConvert(b, ir.FormatResponses, ir.FormatGemini, responsesBody)
+}
+func BenchmarkConvert_GeminiToChat(b *testing.B) {
+	benchConvert(b, ir.FormatGemini, ir.FormatChat, geminiBody)
+}
+func BenchmarkConvert_GeminiToAnthropic(b *testing.B) {
+	benchConvert(b, ir.FormatGemini, ir.FormatAnthropic, geminiBody)
+}
+func BenchmarkConvert_GeminiToResponses(b *testing.B) {
+	benchConvert(b, ir.FormatGemini, ir.FormatResponses, geminiBody)
+}

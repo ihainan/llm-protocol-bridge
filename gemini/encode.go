@@ -241,4 +241,3 @@ func irUsageToWire(u *ir.Usage) *wireUsage {
 	}
 	return w
 }
-

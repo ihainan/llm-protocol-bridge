@@ -11,9 +11,9 @@ import (
 
 // StreamDecoder converts Chat Completions streaming chunks into ir.Event.
 type StreamDecoder struct {
-	env     *ir.Env
-	dia     Dialect
-	names   map[string]ir.ToolRef
+	env   *ir.Env
+	dia   Dialect
+	names map[string]ir.ToolRef
 
 	// State per stream.
 	started    bool
@@ -62,11 +62,11 @@ func NewStreamDecoder(opts DecodeOptions) *StreamDecoder {
 	}
 	env.Style = ir.StyleBracket
 	return &StreamDecoder{
-		env:        env,
-		dia:        opts.Dialect,
-		names:      opts.Names,
-		candidates: map[int]*chatCandidate{},
-		toolCalls:  map[int]*openCall{},
+		env:         env,
+		dia:         opts.Dialect,
+		names:       opts.Names,
+		candidates:  map[int]*chatCandidate{},
+		toolCalls:   map[int]*openCall{},
 		seenCallIDs: map[string]bool{},
 	}
 }

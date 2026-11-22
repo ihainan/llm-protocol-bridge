@@ -6,12 +6,12 @@ import "encoding/json"
 
 // wireRequest is the JSON body for generateContent / streamGenerateContent.
 type wireRequest struct {
-	Contents          []wireContent          `json:"contents"`
-	SystemInstruction *wireContent           `json:"systemInstruction,omitempty"`
-	Tools             []wireToolDef          `json:"tools,omitempty"`
-	ToolConfig        *wireToolConfig        `json:"toolConfig,omitempty"`
-	GenerationConfig  *wireGenerationConfig  `json:"generationConfig,omitempty"`
-	SafetySettings    []wireSafetySetting    `json:"safetySettings,omitempty"`
+	Contents          []wireContent         `json:"contents"`
+	SystemInstruction *wireContent          `json:"systemInstruction,omitempty"`
+	Tools             []wireToolDef         `json:"tools,omitempty"`
+	ToolConfig        *wireToolConfig       `json:"toolConfig,omitempty"`
+	GenerationConfig  *wireGenerationConfig `json:"generationConfig,omitempty"`
+	SafetySettings    []wireSafetySetting   `json:"safetySettings,omitempty"`
 }
 
 // wireContent is one conversation turn.
@@ -36,8 +36,8 @@ type wirePart struct {
 	Thought          bool   `json:"thought,omitempty"`
 	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 	// executableCode / codeExecutionResult (builtins)
-	ExecutableCode       *wireExecutableCode       `json:"executableCode,omitempty"`
-	CodeExecutionResult  *wireCodeExecutionResult  `json:"codeExecutionResult,omitempty"`
+	ExecutableCode      *wireExecutableCode      `json:"executableCode,omitempty"`
+	CodeExecutionResult *wireCodeExecutionResult `json:"codeExecutionResult,omitempty"`
 }
 
 type wireBlob struct {
@@ -98,21 +98,21 @@ type wireFunctionCallingConfig struct {
 
 // wireGenerationConfig holds sampling and output format parameters.
 type wireGenerationConfig struct {
-	Temperature       *float64        `json:"temperature,omitempty"`
-	TopP              *float64        `json:"topP,omitempty"`
-	TopK              *int            `json:"topK,omitempty"`
-	MaxOutputTokens   *int            `json:"maxOutputTokens,omitempty"`
-	CandidateCount    *int            `json:"candidateCount,omitempty"`
-	StopSequences     []string        `json:"stopSequences,omitempty"`
-	Seed              *int64          `json:"seed,omitempty"`
-	ResponseMimeType  string          `json:"responseMimeType,omitempty"`
-	ResponseSchema    json.RawMessage `json:"responseSchema,omitempty"`
-	ThinkingConfig    *wireThinkingConfig `json:"thinkingConfig,omitempty"`
+	Temperature      *float64            `json:"temperature,omitempty"`
+	TopP             *float64            `json:"topP,omitempty"`
+	TopK             *int                `json:"topK,omitempty"`
+	MaxOutputTokens  *int                `json:"maxOutputTokens,omitempty"`
+	CandidateCount   *int                `json:"candidateCount,omitempty"`
+	StopSequences    []string            `json:"stopSequences,omitempty"`
+	Seed             *int64              `json:"seed,omitempty"`
+	ResponseMimeType string              `json:"responseMimeType,omitempty"`
+	ResponseSchema   json.RawMessage     `json:"responseSchema,omitempty"`
+	ThinkingConfig   *wireThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 
 type wireThinkingConfig struct {
-	ThinkingBudget int    `json:"thinkingBudget,omitempty"`
-	IncludeThoughts bool   `json:"includeThoughts,omitempty"`
+	ThinkingBudget  int  `json:"thinkingBudget,omitempty"`
+	IncludeThoughts bool `json:"includeThoughts,omitempty"`
 }
 
 type wireSafetySetting struct {
@@ -122,17 +122,17 @@ type wireSafetySetting struct {
 
 // wireResponse is the non-streaming generateContent response.
 type wireResponse struct {
-	Candidates     []wireCandidate  `json:"candidates"`
-	UsageMetadata  *wireUsage       `json:"usageMetadata,omitempty"`
-	ModelVersion   string           `json:"modelVersion,omitempty"`
+	Candidates    []wireCandidate `json:"candidates"`
+	UsageMetadata *wireUsage      `json:"usageMetadata,omitempty"`
+	ModelVersion  string          `json:"modelVersion,omitempty"`
 }
 
 // wireCandidate is one response candidate.
 type wireCandidate struct {
-	Index          int              `json:"index"`
-	Content        wireContent      `json:"content"`
-	FinishReason   string           `json:"finishReason,omitempty"`
-	SafetyRatings  []wireSafetyRating `json:"safetyRatings,omitempty"`
+	Index             int                `json:"index"`
+	Content           wireContent        `json:"content"`
+	FinishReason      string             `json:"finishReason,omitempty"`
+	SafetyRatings     []wireSafetyRating `json:"safetyRatings,omitempty"`
 	GroundingMetadata *wireGroundingMeta `json:"groundingMetadata,omitempty"`
 }
 
@@ -142,8 +142,8 @@ type wireSafetyRating struct {
 }
 
 type wireGroundingMeta struct {
-	WebSearchQueries []string            `json:"webSearchQueries,omitempty"`
-	GroundingChunks  []wireGroundChunk   `json:"groundingChunks,omitempty"`
+	WebSearchQueries []string          `json:"webSearchQueries,omitempty"`
+	GroundingChunks  []wireGroundChunk `json:"groundingChunks,omitempty"`
 }
 
 type wireGroundChunk struct {

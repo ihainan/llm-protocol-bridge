@@ -10,12 +10,12 @@ import (
 
 // StreamEncoder converts ir.Events into Anthropic Messages SSE chunks.
 type StreamEncoder struct {
-	opts      EncodeOptions
-	id        string
-	model     string
-	started   bool
+	opts    EncodeOptions
+	id      string
+	model   string
+	started bool
 	// blockIdx is the next content block index to assign.
-	blockIdx  int
+	blockIdx int
 	// openBlock is the index of the currently open content block (-1 = none).
 	openBlock int
 	// openBlockType is the type string of the open block.
@@ -189,12 +189,12 @@ func (e *StreamEncoder) emitMessageStart(dst []byte, ev ir.Event) []byte {
 		model = e.opts.Model
 	}
 	msg := map[string]any{
-		"id":           e.id,
-		"type":         "message",
-		"role":         "assistant",
-		"model":        model,
-		"content":      []any{},
-		"stop_reason":  nil,
+		"id":            e.id,
+		"type":          "message",
+		"role":          "assistant",
+		"model":         model,
+		"content":       []any{},
+		"stop_reason":   nil,
 		"stop_sequence": nil,
 		"usage": map[string]any{
 			"input_tokens":  promptTokens,

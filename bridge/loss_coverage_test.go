@@ -82,7 +82,7 @@ func TestLossCoverage(t *testing.T) {
 	cases := []cas{
 		// --- temperature ---
 		{name: "temperature→anthropic mapped", upstream: ir.FormatAnthropic,
-			req: func() *ir.Request { r := base(); r.Temperature = floatV(0.5); return r }(),
+			req:      func() *ir.Request { r := base(); r.Temperature = floatV(0.5); return r }(),
 			wantBody: "temperature"},
 		{name: "temperature=1.8→anthropic clamp loss", upstream: ir.FormatAnthropic,
 			req:  func() *ir.Request { r := base(); r.Temperature = floatV(1.8); return r }(),
@@ -92,18 +92,18 @@ func TestLossCoverage(t *testing.T) {
 			opts:    deny(ir.LossSamplingClamp),
 			wantErr: true},
 		{name: "temperature→chat mapped", upstream: ir.FormatChat,
-			req: func() *ir.Request { r := base(); r.Temperature = floatV(0.5); return r }(),
+			req:      func() *ir.Request { r := base(); r.Temperature = floatV(0.5); return r }(),
 			wantBody: "temperature"},
 		{name: "temperature→gemini mapped", upstream: ir.FormatGemini,
-			req: func() *ir.Request { r := base(); r.Temperature = floatV(0.5); return r }(),
+			req:      func() *ir.Request { r := base(); r.Temperature = floatV(0.5); return r }(),
 			wantBody: "generationConfig"},
 		{name: "temperature→responses mapped", upstream: ir.FormatResponses,
-			req: func() *ir.Request { r := base(); r.Temperature = floatV(0.5); return r }(),
+			req:      func() *ir.Request { r := base(); r.Temperature = floatV(0.5); return r }(),
 			wantBody: "temperature"},
 
 		// --- top_k ---
 		{name: "top_k→anthropic mapped", upstream: ir.FormatAnthropic,
-			req: func() *ir.Request { r := base(); r.TopK = intV(5); return r }(),
+			req:      func() *ir.Request { r := base(); r.TopK = intV(5); return r }(),
 			wantBody: "top_k"},
 		{name: "top_k→chat loss", upstream: ir.FormatChat,
 			req:      func() *ir.Request { r := base(); r.TopK = intV(5); return r }(),
@@ -118,7 +118,7 @@ func TestLossCoverage(t *testing.T) {
 			opts:     allow(ir.LossSamplingTopK),
 			wantLoss: "sampling.top_k"},
 		{name: "top_k→gemini mapped", upstream: ir.FormatGemini,
-			req: func() *ir.Request { r := base(); r.TopK = intV(5); return r }(),
+			req:      func() *ir.Request { r := base(); r.TopK = intV(5); return r }(),
 			wantBody: "generationConfig"},
 
 		// --- penalties ---
@@ -187,18 +187,24 @@ func TestLossCoverage(t *testing.T) {
 		// --- stop limit ---
 		{name: "6 stops→anthropic mapped", upstream: ir.FormatAnthropic,
 			req: func() *ir.Request {
-				r := base(); r.Stop = []string{"a", "b", "c", "d", "e", "f"}; return r
+				r := base()
+				r.Stop = []string{"a", "b", "c", "d", "e", "f"}
+				return r
 			}(),
 			wantBody: "stop_sequences"},
 		{name: "6 stops→chat loss", upstream: ir.FormatChat,
 			req: func() *ir.Request {
-				r := base(); r.Stop = []string{"a", "b", "c", "d", "e", "f"}; return r
+				r := base()
+				r.Stop = []string{"a", "b", "c", "d", "e", "f"}
+				return r
 			}(),
 			opts:     allow(ir.LossStopLimit),
 			wantLoss: "stop.limit"},
 		{name: "6 stops→chat error", upstream: ir.FormatChat,
 			req: func() *ir.Request {
-				r := base(); r.Stop = []string{"a", "b", "c", "d", "e", "f"}; return r
+				r := base()
+				r.Stop = []string{"a", "b", "c", "d", "e", "f"}
+				return r
 			}(),
 			opts:    deny(ir.LossStopLimit),
 			wantErr: true},

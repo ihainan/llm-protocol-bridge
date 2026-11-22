@@ -6,11 +6,11 @@ import "encoding/json"
 
 // wireRequest is the JSON shape of an Anthropic Messages request.
 type wireRequest struct {
-	Model    string         `json:"model"`
-	Messages []wireMessage  `json:"messages"`
+	Model    string          `json:"model"`
+	Messages []wireMessage   `json:"messages"`
 	System   json.RawMessage `json:"system,omitempty"` // string | []wireContentBlock
 
-	MaxTokens   int     `json:"max_tokens"`
+	MaxTokens   int      `json:"max_tokens"`
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"top_p,omitempty"`
 	TopK        *int     `json:"top_k,omitempty"`
@@ -30,13 +30,13 @@ type wireMetadata struct {
 }
 
 type wireThinkingConfig struct {
-	Type         string `json:"type"`          // "enabled" | "disabled"
+	Type         string `json:"type"` // "enabled" | "disabled"
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 // wireMessage is one conversation turn.
 type wireMessage struct {
-	Role    string          `json:"role"` // user | assistant
+	Role    string          `json:"role"`    // user | assistant
 	Content json.RawMessage `json:"content"` // string | []wireContentBlock
 }
 
@@ -67,7 +67,7 @@ type wireContentBlock struct {
 }
 
 type wireImageSource struct {
-	Type      string `json:"type"`       // base64 | url | file
+	Type      string `json:"type"` // base64 | url | file
 	MediaType string `json:"media_type,omitempty"`
 	Data      string `json:"data,omitempty"`
 	URL       string `json:"url,omitempty"`
@@ -75,16 +75,16 @@ type wireImageSource struct {
 }
 
 type wireCacheControl struct {
-	Type string `json:"type"` // ephemeral
+	Type string `json:"type"`          // ephemeral
 	TTL  string `json:"ttl,omitempty"` // 5m | 1h
 }
 
 // wireTool is a tool definition.
 type wireTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema"`
-	Type        string          `json:"type,omitempty"` // "custom" for custom tools
+	Name         string            `json:"name"`
+	Description  string            `json:"description,omitempty"`
+	InputSchema  json.RawMessage   `json:"input_schema"`
+	Type         string            `json:"type,omitempty"` // "custom" for custom tools
 	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
 }
 
@@ -117,26 +117,26 @@ type wireResponse struct {
 
 // wireUsage is the usage object.
 type wireUsage struct {
-	InputTokens                  int `json:"input_tokens"`
-	OutputTokens                 int `json:"output_tokens"`
-	CacheReadInputTokens         int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens     int `json:"cache_creation_input_tokens,omitempty"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // wireStreamEvent is one SSE event in a streamed Anthropic response.
 // The type field selects which other fields are present.
 type wireStreamEvent struct {
-	Type  string          `json:"type"`
-	Index int             `json:"index"`
-	Delta *wireDelta      `json:"delta,omitempty"`
+	Type  string     `json:"type"`
+	Index int        `json:"index"`
+	Delta *wireDelta `json:"delta,omitempty"`
 	// message_start
 	Message *wireResponse `json:"message,omitempty"`
 	// content_block_start
 	ContentBlock *wireContentBlock `json:"content_block,omitempty"`
 	// message_delta
-	Usage    *wireUsage    `json:"usage,omitempty"`
+	Usage *wireUsage `json:"usage,omitempty"`
 	// error
-	Error    *wireAPIError `json:"error,omitempty"`
+	Error *wireAPIError `json:"error,omitempty"`
 }
 
 type wireDelta struct {

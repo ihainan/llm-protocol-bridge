@@ -536,4 +536,3 @@ func errorCodeToType(c ir.ErrorCode) ir.ErrorType {
 	}
 	return ir.ErrServer
 }
-

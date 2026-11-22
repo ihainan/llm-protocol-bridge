@@ -1,3 +1,7 @@
+// Test fixtures in testdata/{anthropic,anthropic-group,anthropic-image,
+// anthropic-thinking,chat,chat-group,responses,responses-string}.json are
+// copied from yetone/magpie (MIT, commit d4ad1d83afb66328863e3bd53e540a837c8c6892);
+// see THIRD_PARTY_NOTICES and testdata/README.md.
 package bridge_test
 
 import (
@@ -8,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/ihainan/llm-protocol-bridge/bridge"
-	"github.com/ihainan/llm-protocol-bridge/ir"
 	"github.com/ihainan/llm-protocol-bridge/internal/testkit"
+	"github.com/ihainan/llm-protocol-bridge/ir"
 )
 
 var updateGolden = flag.Bool("update.golden", false, "regenerate golden fixture files from current output")

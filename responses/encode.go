@@ -10,11 +10,11 @@ import (
 
 // StreamEncoder converts ir.Events into Responses API SSE chunks.
 type StreamEncoder struct {
-	opts     EncodeOptions
-	id       string
-	model    string
-	started  bool
-	seq      int
+	opts    EncodeOptions
+	id      string
+	model   string
+	started bool
+	seq     int
 
 	// Per-output-item index tracking.
 	outputIndex int
@@ -93,7 +93,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			e.itemID = "rs_" + e.opts.Env.NewID("", 16)
 			dst = e.appendEvent(dst, "output_item.added", map[string]any{
 				"sequence_number": e.nextSeq(),
-				"output_index":   e.outputIndex,
+				"output_index":    e.outputIndex,
 				"item": map[string]any{
 					"type": "reasoning",
 					"id":   e.itemID,
@@ -170,8 +170,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		dst = e.appendEvent(dst, "function_call_arguments.delta", map[string]any{
 			"sequence_number": e.nextSeq(),
 			"output_index":    e.outputIndex,
-			"item_id":          e.itemID,
-			"delta":            ev.Text,
+			"item_id":         e.itemID,
+			"delta":           ev.Text,
 		})
 
 	case ir.EvToolEnd:
@@ -185,8 +185,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		dst = e.appendEvent(dst, "function_call_arguments.done", map[string]any{
 			"sequence_number": e.nextSeq(),
 			"output_index":    e.outputIndex,
-			"item_id":          e.itemID,
-			"arguments":        args,
+			"item_id":         e.itemID,
+			"arguments":       args,
 		})
 		dst = e.appendEvent(dst, "output_item.done", map[string]any{
 			"sequence_number": e.nextSeq(),
@@ -250,17 +250,17 @@ func (e *StreamEncoder) ensureMessageOpen(dst []byte) []byte {
 		"sequence_number": e.nextSeq(),
 		"output_index":    e.outputIndex,
 		"item": map[string]any{
-			"type":   "message",
-			"id":     e.itemID,
-			"role":   "assistant",
-			"status": "in_progress",
+			"type":    "message",
+			"id":      e.itemID,
+			"role":    "assistant",
+			"status":  "in_progress",
 			"content": []any{},
 		},
 	})
 	dst = e.appendEvent(dst, "content_part.added", map[string]any{
 		"sequence_number": e.nextSeq(),
 		"output_index":    e.outputIndex,
-		"content_index":  0,
+		"content_index":   0,
 		"part": map[string]any{
 			"type": "output_text",
 			"text": "",
@@ -280,7 +280,7 @@ func (e *StreamEncoder) closeItem(dst []byte) []byte {
 		dst = e.appendEvent(dst, "content_part.done", map[string]any{
 			"sequence_number": e.nextSeq(),
 			"output_index":    e.outputIndex,
-			"content_index":  0,
+			"content_index":   0,
 			"part": map[string]any{
 				"type": "output_text",
 				"text": e.textAccum,
@@ -410,20 +410,20 @@ func irPartToOutputItem(p ir.Part, fp ir.Path, env *ir.Env) ([]wireOutputItem, e
 	case ir.PartText:
 		id := "msg_" + env.NewID("", 16)
 		return []wireOutputItem{{
-			Type:   "message",
-			ID:     id,
-			Role:   "assistant",
-			Status: "completed",
+			Type:    "message",
+			ID:      id,
+			Role:    "assistant",
+			Status:  "completed",
 			Content: []wireOutputPart{{Type: "output_text", Text: p.Text}},
 		}}, nil
 
 	case ir.PartRefusal:
 		id := "msg_" + env.NewID("", 16)
 		return []wireOutputItem{{
-			Type:   "message",
-			ID:     id,
-			Role:   "assistant",
-			Status: "completed",
+			Type:    "message",
+			ID:      id,
+			Role:    "assistant",
+			Status:  "completed",
 			Content: []wireOutputPart{{Type: "refusal", Refusal: p.Text}},
 		}}, nil
 
@@ -514,7 +514,7 @@ func irUsageToWire(u *ir.Usage) *wireUsage {
 	}
 	if u.Has(ir.UCacheRead) || u.Has(ir.UCacheWrite) {
 		w.InputTokensDetails = &wireInputDetails{
-			CachedTokens:    u.CacheReadTokens,
+			CachedTokens:     u.CacheReadTokens,
 			CacheWriteTokens: u.CacheWriteTokens,
 		}
 	}

@@ -112,4 +112,3 @@ func codeJSON(code string) json.RawMessage {
 	b, _ := jsonx.Marshal(code)
 	return b
 }
-
