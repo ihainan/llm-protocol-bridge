@@ -50,11 +50,12 @@ type StreamEncoder struct {
 	activeCallCand int
 	callID         string
 	// wireCallID is the wire call_id emitted to the client (may carry sealed Gemini signature).
-	wireCallID   string
-	callName     string
-	callNS       string
-	pendingTools []*pendingRespTool
-	pendingByKey map[respCallKey]*pendingRespTool
+	wireCallID        string
+	callName          string
+	callNS            string
+	pendingTools      []*pendingRespTool
+	pendingByKey      map[respCallKey]*pendingRespTool
+	deferredOtherCand []ir.Event
 
 	textAccum       strings.Builder
 	textAnnotations []map[string]any
@@ -93,6 +94,15 @@ func (e *StreamEncoder) ensureStarted(dst []byte) []byte {
 func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	if e.errored {
 		return dst, nil
+	}
+	// If another candidate emits non-tool content while a tool item is actively
+	// streaming, defer it until the open tool item finishes instead of aborting it.
+	if (e.openItemType == "function_call" || e.openItemType == "custom_tool_call") && ev.Index != e.activeCallCand {
+		switch ev.Type {
+		case ir.EvText, ir.EvRefusal, ir.EvCitation, ir.EvReasoningStart, ir.EvReasoning, ir.EvSignature, ir.EvSealed, ir.EvBuiltin:
+			e.deferredOtherCand = append(e.deferredOtherCand, ev)
+			return dst, nil
+		}
 	}
 	switch ev.Type {
 	case ir.EvStart:
@@ -386,6 +396,13 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			break
 		}
 		dst = e.drainPendingTools(dst)
+		if !e.errored && e.openItemType == "" && len(e.pendingTools) == 0 && len(e.deferredOtherCand) > 0 {
+			var err error
+			dst, err = e.replayDeferredOtherCand(dst)
+			if err != nil {
+				return dst, err
+			}
+		}
 
 	case ir.EvBuiltin:
 		if ev.Builtin == nil {
@@ -514,6 +531,20 @@ func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 	dst = e.flushAllPendingTools(dst)
 	if e.errored {
 		return dst, nil
+	}
+	if len(e.deferredOtherCand) > 0 {
+		var err error
+		dst, err = e.replayDeferredOtherCand(dst)
+		if err != nil {
+			return dst, err
+		}
+		if e.errored {
+			return dst, nil
+		}
+		dst = e.closeItem(dst)
+		if e.errored {
+			return dst, nil
+		}
 	}
 	status := stopToResponsesStatus(e.stop)
 	evName := "response.completed"
@@ -704,6 +735,7 @@ func (e *StreamEncoder) failStream(dst []byte, msg string) []byte {
 	e.errored = true
 	e.pendingTools = nil
 	e.pendingByKey = map[respCallKey]*pendingRespTool{}
+	e.deferredOtherCand = nil
 	respObj := e.buildResponseObject("failed", false)
 	respObj["error"] = map[string]any{
 		"code":    "server_error",
@@ -713,6 +745,19 @@ func (e *StreamEncoder) failStream(dst []byte, msg string) []byte {
 		"sequence_number": e.nextSeq(),
 		"response":        respObj,
 	})
+}
+
+func (e *StreamEncoder) replayDeferredOtherCand(dst []byte) ([]byte, error) {
+	evs := e.deferredOtherCand
+	e.deferredOtherCand = nil
+	for _, ev := range evs {
+		var err error
+		dst, err = e.Encode(dst, ev)
+		if err != nil || e.errored {
+			return dst, err
+		}
+	}
+	return dst, nil
 }
 
 func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
@@ -753,14 +798,13 @@ func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 }
 
 func (e *StreamEncoder) flushAllPendingTools(dst []byte) []byte {
-	for len(e.pendingTools) > 0 {
-		if !e.pendingTools[0].done {
+	for _, pt := range e.pendingTools {
+		if !pt.done {
 			return e.failStream(dst, "pending tool call never completed")
 		}
+	}
+	if len(e.pendingTools) > 0 {
 		dst = e.drainPendingTools(dst)
-		if e.errored {
-			return dst
-		}
 	}
 	return dst
 }

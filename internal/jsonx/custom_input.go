@@ -1,6 +1,7 @@
 package jsonx
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -66,10 +67,13 @@ func ReconcileFunctionArgs(sent, final string) (full, suffix string, ok bool) {
 	if strings.HasPrefix(finalTrim, sent) {
 		return finalTrim, finalTrim[len(sent):], true
 	}
-	sentTrim := strings.TrimSpace(sent)
-	if strings.HasPrefix(finalTrim, sentTrim) {
-		return finalTrim, finalTrim[len(sentTrim):], true
+	// Strip only leading outer whitespace so significant trailing whitespace
+	// inside an unclosed JSON string (e.g. ` {"x":"a `) is preserved intact.
+	sentTrimLeft := strings.TrimLeft(sent, " \t\r\n")
+	if strings.HasPrefix(finalTrim, sentTrimLeft) {
+		return finalTrim, finalTrim[len(sentTrimLeft):], true
 	}
+	sentTrim := strings.TrimSpace(sent)
 	if json.Valid([]byte(sentTrim)) && equalJSON([]byte(sentTrim), bFinal) {
 		return finalTrim, "", true
 	}
@@ -78,7 +82,14 @@ func ReconcileFunctionArgs(sent, final string) (full, suffix string, ok bool) {
 
 func equalJSON(a, b []byte) bool {
 	var va, vb any
-	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+	da := json.NewDecoder(bytes.NewReader(a))
+	da.UseNumber()
+	if da.Decode(&va) != nil {
+		return false
+	}
+	db := json.NewDecoder(bytes.NewReader(b))
+	db.UseNumber()
+	if db.Decode(&vb) != nil {
 		return false
 	}
 	return reflect.DeepEqual(va, vb)

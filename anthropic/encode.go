@@ -55,6 +55,7 @@ type StreamEncoder struct {
 	activeToolFinished bool
 	pendingTools       []*pendingTool
 	pendingByKey       map[toolCallKey]*pendingTool
+	deferredOtherCand  []ir.Event
 	stop               *ir.Stop
 	usage              *ir.Usage
 }
@@ -88,6 +89,13 @@ func (e *StreamEncoder) ensureStarted(dst []byte) []byte {
 func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 	if e.errored {
 		return dst, nil
+	}
+	if e.openBlock >= 0 && e.openBlockType == "tool_use" && ev.Index != e.activeCallCand {
+		switch ev.Type {
+		case ir.EvText, ir.EvRefusal, ir.EvCitation, ir.EvReasoningStart, ir.EvReasoning, ir.EvSignature, ir.EvSealed, ir.EvBuiltin:
+			e.deferredOtherCand = append(e.deferredOtherCand, ev)
+			return dst, nil
+		}
 	}
 	switch ev.Type {
 	case ir.EvStart:
@@ -329,6 +337,13 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		e.activeToolFinished = true
 		dst = e.closeBlock(dst)
 		dst = e.drainPendingTools(dst)
+		if !e.errored && e.openBlock < 0 && len(e.pendingTools) == 0 && len(e.deferredOtherCand) > 0 {
+			var err error
+			dst, err = e.replayDeferredOtherCand(dst)
+			if err != nil {
+				return dst, err
+			}
+		}
 
 	case ir.EvBuiltin:
 		if ev.Builtin == nil {
@@ -477,6 +492,20 @@ func (e *StreamEncoder) Close(dst []byte) ([]byte, error) {
 	if e.errored {
 		return dst, nil
 	}
+	if len(e.deferredOtherCand) > 0 {
+		var err error
+		dst, err = e.replayDeferredOtherCand(dst)
+		if err != nil {
+			return dst, err
+		}
+		if e.errored {
+			return dst, nil
+		}
+		dst = e.closeBlock(dst)
+		if e.errored {
+			return dst, nil
+		}
+	}
 	reason := stopToAnthropic(e.stop)
 	seq := ""
 	if e.stop != nil {
@@ -620,6 +649,7 @@ func (e *StreamEncoder) abortOpenTool(dst []byte, err *ir.APIError) []byte {
 	e.activeToolFinished = false
 	e.pendingTools = nil
 	e.pendingByKey = map[toolCallKey]*pendingTool{}
+	e.deferredOtherCand = nil
 	e.errored = true
 	if err == nil {
 		err = &ir.APIError{Status: 502, Type: ir.ErrServer, Message: "tool call aborted"}
@@ -758,9 +788,21 @@ func (e *StreamEncoder) finishCustomInput(dst []byte, final json.RawMessage) ([]
 	}), true
 }
 
+func (e *StreamEncoder) replayDeferredOtherCand(dst []byte) ([]byte, error) {
+	evs := e.deferredOtherCand
+	e.deferredOtherCand = nil
+	for _, ev := range evs {
+		var err error
+		dst, err = e.Encode(dst, ev)
+		if err != nil || e.errored {
+			return dst, err
+		}
+	}
+	return dst, nil
+}
+
 func (e *StreamEncoder) flushAllPendingTools(dst []byte) []byte {
-	for len(e.pendingTools) > 0 {
-		pt := e.pendingTools[0]
+	for _, pt := range e.pendingTools {
 		if !pt.done {
 			// Uncompleted pending tool call at stream close: abort rather than
 			// fabricating completion of truncated arguments.
@@ -770,10 +812,9 @@ func (e *StreamEncoder) flushAllPendingTools(dst []byte) []byte {
 				Message: "pending tool_use block never completed",
 			})
 		}
+	}
+	if len(e.pendingTools) > 0 {
 		dst = e.drainPendingTools(dst)
-		if e.errored {
-			return dst
-		}
 	}
 	return dst
 }

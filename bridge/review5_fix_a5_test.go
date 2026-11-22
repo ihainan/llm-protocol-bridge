@@ -546,3 +546,98 @@ func TestReview5_04_HorizontalMatrix_ResponsesAndGeminiGaps(t *testing.T) {
 		})
 	}
 }
+
+// Codex fixA5 P2 follow-ups (#1 leading-only whitespace trim, #2 exact big-int
+// JSON equality, #3 other-candidate text deferred during open tool call, #4
+// Close fails when any queued pending tool is unfinished).
+func TestReview5_05_CodexFixA5_P2Fixes(t *testing.T) {
+	// #1: Leading whitespace in sent must not strip significant trailing space inside a JSON string.
+	t.Run("trailing_space_inside_json_string_not_duplicated", func(t *testing.T) {
+		enc := chat.NewStreamEncoder(chat.EncodeOptions{Env: &ir.Env{}, Model: "m"})
+		var dst []byte
+		for _, ev := range []ir.Event{
+			{Type: ir.EvToolStart, Index: 0, ID: "c1", Name: "f", Kind: ir.ToolFunction},
+			{Type: ir.EvToolArgs, Index: 0, ID: "c1", Text: ` {"x":"a `},
+			{Type: ir.EvToolEnd, Index: 0, ID: "c1", Arguments: json.RawMessage(`{"x":"a b"}`)},
+			{Type: ir.EvStop, Index: 0, Stop: &ir.Stop{Reason: ir.StopToolUse}},
+		} {
+			dst, _ = enc.Encode(dst, ev)
+		}
+		dst, _ = enc.Close(dst)
+		argsBySlot, sawDone, sawErr := parseChatToolArgs(t, string(dst))
+		if sawErr || !sawDone {
+			t.Fatalf("expected clean [DONE], got sawErr=%v sawDone=%v:\n%s", sawErr, sawDone, string(dst))
+		}
+		var got map[string]any
+		if err := json.Unmarshal([]byte(argsBySlot[0]), &got); err != nil || got["x"] != "a b" {
+			t.Fatalf("expected x=\"a b\" (single space), got %q (parsed=%v, err=%v)", argsBySlot[0], got["x"], err)
+		}
+	})
+
+	// #2: Distinct large integers (2^53 vs 2^53+1) must NOT compare equal via float64.
+	t.Run("large_integer_mismatch_not_treated_as_equal", func(t *testing.T) {
+		enc := chat.NewStreamEncoder(chat.EncodeOptions{Env: &ir.Env{}, Model: "m"})
+		var dst []byte
+		for _, ev := range []ir.Event{
+			{Type: ir.EvToolStart, Index: 0, ID: "c1", Name: "f", Kind: ir.ToolFunction},
+			{Type: ir.EvToolArgs, Index: 0, ID: "c1", Text: `{"x":9007199254740992}`},
+			{Type: ir.EvToolEnd, Index: 0, ID: "c1", Arguments: json.RawMessage(`{"x":9007199254740993}`)},
+			{Type: ir.EvStop, Index: 0, Stop: &ir.Stop{Reason: ir.StopToolUse}},
+		} {
+			dst, _ = enc.Encode(dst, ev)
+		}
+		dst, _ = enc.Close(dst)
+		_, sawDone, sawErr := parseChatToolArgs(t, string(dst))
+		if !sawErr || sawDone {
+			t.Fatalf("expected mismatch error for 9007199254740992 vs 9007199254740993, got sawErr=%v sawDone=%v:\n%s", sawErr, sawDone, string(dst))
+		}
+	})
+
+	// #3: Candidate 1 text arriving while Candidate 0 has an open tool call must not abort Candidate 0's tool.
+	t.Run("other_candidate_text_does_not_abort_open_responses_tool", func(t *testing.T) {
+		enc := responses.NewStreamEncoder(responses.EncodeOptions{Env: &ir.Env{}, Model: "m"})
+		var dst []byte
+		for _, ev := range []ir.Event{
+			{Type: ir.EvToolStart, Index: 0, ID: "a", Name: "f", Kind: ir.ToolFunction},
+			{Type: ir.EvToolArgs, Index: 0, ID: "a", Text: `{"x":`},
+			{Type: ir.EvText, Index: 1, Text: "ok"},
+			{Type: ir.EvToolArgs, Index: 0, ID: "a", Text: `1}`},
+			{Type: ir.EvToolEnd, Index: 0, ID: "a", Arguments: json.RawMessage(`{"x":1}`)},
+			{Type: ir.EvStop, Index: 0, Stop: &ir.Stop{Reason: ir.StopToolUse}},
+			{Type: ir.EvStop, Index: 1, Stop: &ir.Stop{Reason: ir.StopEndTurn}},
+		} {
+			dst, _ = enc.Encode(dst, ev)
+		}
+		dst, _ = enc.Close(dst)
+		s := string(dst)
+		if strings.Contains(s, `"response.failed"`) || !strings.Contains(s, `"response.completed"`) {
+			t.Fatalf("other candidate text aborted valid Responses tool call:\n%s", s)
+		}
+		if !strings.Contains(s, `"arguments":"{\"x\":1}"`) || !strings.Contains(s, `"text":"ok"`) {
+			t.Fatalf("expected both completed tool call and deferred text, got:\n%s", s)
+		}
+	})
+
+	// #4: Responses Close() must fail when queue contains [done B, unfinished C] after A is aborted.
+	t.Run("responses_close_fails_when_later_queued_tool_unfinished", func(t *testing.T) {
+		enc := responses.NewStreamEncoder(responses.EncodeOptions{Env: &ir.Env{}, Model: "m"})
+		var dst []byte
+		for _, ev := range []ir.Event{
+			{Type: ir.EvToolStart, Index: 0, ID: "A", Name: "fa", Kind: ir.ToolFunction},
+			{Type: ir.EvToolStart, Index: 0, ID: "B", Name: "fb", Kind: ir.ToolFunction},
+			{Type: ir.EvToolStart, Index: 0, ID: "C", Name: "fc", Kind: ir.ToolFunction},
+			{Type: ir.EvToolEnd, Index: 0, ID: "B", Arguments: json.RawMessage(`{}`)},
+			{Type: ir.EvToolEnd, Index: 0, ID: "A", Err: &ir.APIError{Message: "cancelled"}},
+		} {
+			dst, _ = enc.Encode(dst, ev)
+		}
+		dst, _ = enc.Close(dst)
+		s := string(dst)
+		if strings.Contains(s, `"response.completed"`) {
+			t.Fatalf("Close() emitted response.completed with unfinished queued tool C:\n%s", s)
+		}
+		if !strings.Contains(s, `"response.failed"`) {
+			t.Fatalf("expected response.failed when queued tool C never completed:\n%s", s)
+		}
+	})
+}
