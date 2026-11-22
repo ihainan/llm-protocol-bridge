@@ -484,3 +484,129 @@ func TestReview4_04_AnthropicMultiCandidateSameCallIDIsolated(t *testing.T) {
 		})
 	}
 }
+
+// FixA4 follow-up (#1 P1 & #2 P2): Non-streaming Gemini & Anthropic responses
+// (and streaming Gemini responses) must preserve ToolCustom Input (including
+// empty string "") wrapped as {"input": "..."} instead of outputting {}.
+func TestReview4_05_NonStreamAndGeminiCustomToolPreservesInputAndEmptyWrapper(t *testing.T) {
+	newReq := func(stream bool) *ir.Request {
+		return &ir.Request{
+			Model: "m", Stream: stream,
+			Messages: []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{{Type: ir.PartText, Text: "go"}}}},
+			Tools:    []ir.Tool{{Name: "exec", Kind: ir.ToolCustom}},
+		}
+	}
+
+	// 1. Non-streaming Gemini client <- Gemini / Anthropic upstream ("hello" and "").
+	for _, tc := range []struct {
+		name     string
+		upstream ir.Format
+		body     string
+		want     string
+	}{
+		{"gemini_to_gemini_hello", ir.FormatGemini, `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"exec","args":{"input":"hello"}}}]},"finishReason":"STOP"}]}`, "hello"},
+		{"gemini_to_gemini_empty", ir.FormatGemini, `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"exec","args":{"input":""}}}]},"finishReason":"STOP"}]}`, ""},
+		{"anthropic_to_gemini_hello", ir.FormatAnthropic, `{"id":"m1","type":"message","role":"assistant","model":"m","content":[{"type":"tool_use","id":"toolu_1","name":"exec","input":{"input":"hello"}}],"stop_reason":"tool_use"}`, "hello"},
+		{"anthropic_to_gemini_empty", ir.FormatAnthropic, `{"id":"m1","type":"message","role":"assistant","model":"m","content":[{"type":"tool_use","id":"toolu_1","name":"exec","input":{"input":""}}],"stop_reason":"tool_use"}`, ""},
+	} {
+		t.Run("nonstream_gemini/"+tc.name, func(t *testing.T) {
+			plan, err := bridge.Build(newReq(false), ir.FormatGemini, tc.upstream, bridge.Options{})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			out, _, err := plan.ConvertResponse([]byte(tc.body))
+			if err != nil {
+				t.Fatalf("ConvertResponse: %v", err)
+			}
+			var doc struct {
+				Candidates []struct {
+					Content struct {
+						Parts []struct {
+							FunctionCall *struct {
+								Name string         `json:"name"`
+								Args map[string]any `json:"args"`
+							} `json:"functionCall"`
+						} `json:"parts"`
+					} `json:"content"`
+				} `json:"candidates"`
+			}
+			if err := json.Unmarshal(out, &doc); err != nil {
+				t.Fatalf("unmarshal: %v\n%s", err, string(out))
+			}
+			fc := doc.Candidates[0].Content.Parts[0].FunctionCall
+			if fc == nil {
+				t.Fatalf("missing functionCall: %s", string(out))
+			}
+			rawVal, exists := fc.Args["input"]
+			if !exists {
+				t.Fatalf("missing required 'input' field in Gemini functionCall.args: %s", string(out))
+			}
+			if got, _ := rawVal.(string); got != tc.want {
+				t.Fatalf("want input=%q, got %q (%s)", tc.want, got, string(out))
+			}
+		})
+	}
+
+	// 2. Non-streaming Anthropic client <- Anthropic / Gemini upstream (including empty {"input":""}).
+	for _, tc := range []struct {
+		name     string
+		upstream ir.Format
+		body     string
+		want     string
+	}{
+		{"anthropic_to_anthropic_empty", ir.FormatAnthropic, `{"id":"m1","type":"message","role":"assistant","model":"m","content":[{"type":"tool_use","id":"toolu_1","name":"exec","input":{"input":""}}],"stop_reason":"tool_use"}`, ""},
+		{"gemini_to_anthropic_empty", ir.FormatGemini, `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"exec","args":{"input":""}}}]},"finishReason":"STOP"}]}`, ""},
+		{"gemini_to_anthropic_hello", ir.FormatGemini, `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"exec","args":{"input":"hello"}}}]},"finishReason":"STOP"}]}`, "hello"},
+	} {
+		t.Run("nonstream_anthropic/"+tc.name, func(t *testing.T) {
+			plan, err := bridge.Build(newReq(false), ir.FormatAnthropic, tc.upstream, bridge.Options{})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			out, _, err := plan.ConvertResponse([]byte(tc.body))
+			if err != nil {
+				t.Fatalf("ConvertResponse: %v", err)
+			}
+			var doc struct {
+				Content []struct {
+					Type  string         `json:"type"`
+					Input map[string]any `json:"input"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal(out, &doc); err != nil {
+				t.Fatalf("unmarshal: %v\n%s", err, string(out))
+			}
+			rawVal, exists := doc.Content[0].Input["input"]
+			if !exists {
+				t.Fatalf("missing required 'input' field in Anthropic tool_use.input: %s", string(out))
+			}
+			if got, _ := rawVal.(string); got != tc.want {
+				t.Fatalf("want input=%q, got %q (%s)", tc.want, got, string(out))
+			}
+		})
+	}
+
+	// 3. Streaming Gemini client <- Gemini upstream across all 4 release modes.
+	for _, rm := range allReleaseModes {
+		t.Run("stream_gemini/"+rm.name, func(t *testing.T) {
+			plan, err := bridge.Build(newReq(true), ir.FormatGemini, ir.FormatGemini, bridge.Options{ToolRelease: rm.rel, AltSSE: true})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			st := plan.NewStream()
+			chunk := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"exec","args":{"input":"hello"}}}]},"finishReason":"STOP"}]}`)
+			var out []byte
+			out, err = st.Feed(out, sse.Event{Data: chunk})
+			if err != nil {
+				t.Fatalf("Feed: %v", err)
+			}
+			out, err = st.End(out, ir.EndEOF)
+			if err != nil {
+				t.Fatalf("End: %v", err)
+			}
+			if !strings.Contains(string(out), `"args":{"input":"hello"}`) {
+				t.Fatalf("release %s: expected wrapped Gemini functionCall.args, got:\n%s", rm.name, string(out))
+			}
+		})
+	}
+}

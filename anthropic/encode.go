@@ -994,7 +994,7 @@ func responsePartToBlocks(part ir.Part, p ir.Path, env *ir.Env) ([]wireContentBl
 	if part.Type == ir.PartToolCall && part.Call != nil {
 		call := part.Call
 		args := call.Arguments
-		if call.Kind == ir.ToolCustom && len(args) == 0 && call.Input != "" {
+		if call.Kind == ir.ToolCustom && len(args) == 0 {
 			args, _ = jsonx.Marshal(map[string]string{"input": call.Input})
 		}
 		if len(args) == 0 {

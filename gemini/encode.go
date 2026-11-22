@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
 	"github.com/ihainan/llm-protocol-bridge/ir"
 	"github.com/ihainan/llm-protocol-bridge/sse"
 )
@@ -13,6 +14,7 @@ import (
 type pendingGeminiCall struct {
 	id        string
 	name      string
+	kind      ir.ToolKind
 	args      strings.Builder
 	signature string
 	order     int
@@ -138,6 +140,7 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		pc := &pendingGeminiCall{
 			id:    ev.ID,
 			name:  ev.Name,
+			kind:  ev.Kind,
 			order: c.callSeq,
 		}
 		if ev.Signature != nil && ev.Signature.Value != "" {
@@ -315,18 +318,30 @@ func (e *StreamEncoder) flushPendingCalls(dst []byte, idx int, c *geminiCand) []
 }
 
 func (e *StreamEncoder) emitCall(dst []byte, idx int, pc *pendingGeminiCall, finalArgs json.RawMessage) []byte {
-	argsStr := strings.TrimSpace(string(finalArgs))
-	if argsStr == "" {
-		argsStr = strings.TrimSpace(pc.args.String())
-	}
-	if argsStr == "" || !json.Valid([]byte(argsStr)) {
-		argsStr = "{}"
+	var argsRaw json.RawMessage
+	if pc.kind == ir.ToolCustom {
+		var in string
+		if len(finalArgs) > 0 && jsonx.Kind(finalArgs) == '"' {
+			_ = json.Unmarshal(finalArgs, &in)
+		} else {
+			in = pc.args.String()
+		}
+		argsRaw, _ = jsonx.Marshal(map[string]string{"input": in})
+	} else {
+		argsStr := strings.TrimSpace(string(finalArgs))
+		if argsStr == "" {
+			argsStr = strings.TrimSpace(pc.args.String())
+		}
+		if argsStr == "" || !json.Valid([]byte(argsStr)) {
+			argsStr = "{}"
+		}
+		argsRaw = json.RawMessage(argsStr)
 	}
 	wp := wirePart{
 		FunctionCall: &wireFunctionCall{
 			ID:   pc.id,
 			Name: pc.name,
-			Args: json.RawMessage(argsStr),
+			Args: argsRaw,
 		},
 		ThoughtSignature: pc.signature,
 	}
