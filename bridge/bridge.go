@@ -20,6 +20,12 @@ type Options struct {
 	ProviderID string
 	Profile    *ir.ModelProfile
 
+	// Client-side metadata that lives outside the JSON body in some formats
+	// (e.g., Gemini URL path model name, stream mode, and alt=sse query param).
+	Model  string
+	Stream bool
+	AltSSE bool
+
 	// Upstream dialect overrides.
 	Chat      chat.Dialect
 	Anthropic anthropic.Dialect
@@ -61,31 +67,61 @@ type Plan struct {
 
 // Convert parses a client request and builds an upstream request in one step.
 func Convert(client, upstream Format, body []byte, opts Options) (*Plan, error) {
-	req, err := Parse(client, body, opts)
+	parseEnv := clientEnv(opts, client)
+	req, err := parseWithEnv(client, body, opts, parseEnv)
 	if err != nil {
 		return nil, err
 	}
-	return Build(req, client, upstream, opts)
+	plan, err := Build(req, client, upstream, opts)
+	if err != nil {
+		return nil, err
+	}
+	if pl := parseEnv.Losses(); len(pl) > 0 {
+		merged := make([]ir.Loss, 0, len(pl)+len(plan.Losses))
+		merged = append(merged, pl...)
+		merged = append(merged, plan.Losses...)
+		plan.Losses = merged
+	}
+	return plan, nil
 }
 
 // Parse decodes a client request body into an ir.Request.
 func Parse(client Format, body []byte, opts Options) (*ir.Request, error) {
-	env := clientEnv(opts, client)
+	return parseWithEnv(client, body, opts, clientEnv(opts, client))
+}
+
+func parseWithEnv(client Format, body []byte, opts Options, env *ir.Env) (*ir.Request, error) {
+	var req *ir.Request
+	var err error
 	switch client {
 	case ir.FormatChat:
-		return chat.ParseRequest(body, chat.ParseOptions{Env: env})
+		req, err = chat.ParseRequest(body, chat.ParseOptions{Env: env})
 	case ir.FormatResponses:
-		return responses.ParseRequest(body, responses.ParseOptions{Env: env})
+		req, err = responses.ParseRequest(body, responses.ParseOptions{Env: env})
 	case ir.FormatAnthropic:
-		return anthropic.ParseRequest(body, anthropic.ParseOptions{Env: env})
+		req, err = anthropic.ParseRequest(body, anthropic.ParseOptions{Env: env})
 	case ir.FormatGemini:
-		return gemini.ParseRequest(body, gemini.ParseOptions{Env: env})
+		req, err = gemini.ParseRequest(body, gemini.ParseOptions{Env: env, Model: opts.Model, Stream: opts.Stream})
+	default:
+		return nil, ir.Invalid(ir.Root, "unknown client format: "+string(client))
 	}
-	return nil, ir.Invalid(ir.Root, "unknown client format: "+string(client))
+	if err != nil {
+		return nil, err
+	}
+	if opts.Model != "" && req.Model == "" {
+		req.Model = opts.Model
+	}
+	if opts.Stream && !req.Stream {
+		req.Stream = true
+	}
+	return req, nil
 }
 
 // Build serialises an ir.Request into an upstream body and returns a Plan.
 func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error) {
+	if len(opts.Repair) > 0 {
+		repairHistory(req, opts.Repair)
+	}
 	env := upstreamEnv(opts, upstream)
 	var body []byte
 	var model string
@@ -289,14 +325,16 @@ type decoder interface {
 	End(how ir.EndKind) *ir.Event
 }
 
-// Stream is a live stream converter (decoder + encoder).
+// Stream is a live stream converter (decoder + filter pipeline + encoder).
 type Stream struct {
-	plan      *Plan
-	dec       decoder
-	enc       encoder
-	collector *ir.Collector
-	usage     ir.Usage
-	done      bool
+	plan       *Plan
+	dec        decoder
+	enc        encoder
+	filter     *streamFilter
+	collector  *ir.Collector
+	prevUsage  ir.Usage
+	roundUsage ir.Usage
+	done       bool
 }
 
 func newStream(p *Plan, collect bool) *Stream {
@@ -333,6 +371,7 @@ func encodeOptions(p *Plan, env *ir.Env) encodeOpts {
 		gemini: gemini.EncodeOptions{
 			Env: env, Request: p.Request, Model: p.ClientModel,
 			PromptEstimate: p.opts.PromptEstimate,
+			AltSSE:         p.opts.AltSSE,
 		},
 	}
 }
@@ -367,7 +406,7 @@ func newStreamWithEncoder(p *Plan, eo encodeOpts) *Stream {
 		dec = chat.NewStreamDecoder(chat.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Chat, Names: p.names})
 	}
 
-	return &Stream{plan: p, dec: dec, enc: enc}
+	return &Stream{plan: p, dec: dec, enc: enc, filter: newStreamFilter(p)}
 }
 
 // Feed processes one upstream SSE event and appends any client bytes to dst.
@@ -378,22 +417,29 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 	if err != nil {
 		return dst, err
 	}
-	for _, e := range events {
-		if e.Usage != nil && (e.Type == ir.EvStart || e.Type == ir.EvUsage) {
-			s.usage.Merge(*e.Usage)
+	for _, rawEv := range events {
+		if rawEv.Usage != nil && (rawEv.Type == ir.EvStart || rawEv.Type == ir.EvUsage) {
+			s.roundUsage.Merge(*rawEv.Usage)
 		}
-		if e.Type == ir.EvError {
-			s.done = true
-		}
-		if e.Type == ir.EvStop {
-			s.done = true
-		}
-		if s.collector != nil {
-			s.collector.Add(e)
-		} else {
-			dst, err = s.enc.Encode(dst, e)
-			if err != nil {
-				return dst, err
+		filtered := s.filter.process(rawEv)
+		for _, e := range filtered {
+			if e.Type == ir.EvError {
+				s.done = true
+			}
+			if e.Type == ir.EvStop {
+				s.done = true
+			}
+			if e.Type == ir.EvUsage && s.prevUsage.Any() {
+				tot := s.Usage()
+				e.Usage = &tot
+			}
+			if s.collector != nil {
+				s.collector.Add(e)
+			} else {
+				dst, err = s.enc.Encode(dst, e)
+				if err != nil {
+					return dst, err
+				}
 			}
 		}
 	}
@@ -402,16 +448,27 @@ func (s *Stream) Feed(dst []byte, ev sse.Event) ([]byte, error) {
 
 // End signals how the upstream ended and flushes any final client bytes.
 func (s *Stream) End(dst []byte, how ir.EndKind) ([]byte, error) {
-	if ev := s.dec.End(how); ev != nil {
-		if s.collector != nil {
-			s.collector.Add(*ev)
-		} else {
-			var err error
-			dst, err = s.enc.Encode(dst, *ev)
-			if err != nil {
-				return dst, err
+	if !s.filter.stopTriggered {
+		if ev := s.dec.End(how); ev != nil {
+			for _, e := range s.filter.process(*ev) {
+				if e.Type == ir.EvError || e.Type == ir.EvStop {
+					s.done = true
+				}
+				if s.collector != nil {
+					s.collector.Add(e)
+				} else {
+					var err error
+					dst, err = s.enc.Encode(dst, e)
+					if err != nil {
+						return dst, err
+					}
+				}
 			}
 		}
+	}
+	// If intercepted tool calls are pending, keep the client stream open for NextRound.
+	if len(s.filter.intercepted) > 0 {
+		return dst, nil
 	}
 	if s.collector == nil {
 		return s.enc.Close(dst)
@@ -425,12 +482,11 @@ func (s *Stream) Done() bool { return s.done }
 // Keepalive sends a format-appropriate keepalive to the client.
 func (s *Stream) Keepalive(dst []byte) []byte { return s.enc.Keepalive(dst) }
 
-// Usage returns the usage collected so far.
+// Usage returns the cumulative usage collected across all rounds so far.
 func (s *Stream) Usage() ir.Usage {
-	if s.collector != nil {
-		return s.collector.Usage()
-	}
-	return s.usage
+	tot := s.prevUsage
+	tot.Add(s.roundUsage)
+	return tot
 }
 
 // Result returns the collected client JSON response (collector mode only).
@@ -442,6 +498,7 @@ func (s *Stream) Result() ([]byte, *ir.Response, error) {
 		return nil, nil, err
 	}
 	resp := s.collector.Response()
+	resp.Usage = s.Usage()
 	var out []byte
 	var err error
 	env := clientEnv(s.plan.opts, s.plan.Client)
@@ -458,11 +515,22 @@ func (s *Stream) Result() ([]byte, *ir.Response, error) {
 	return out, resp, err
 }
 
-// Intercepted returns tool calls for caller-owned tools (not yet implemented).
-func (s *Stream) Intercepted() []ir.ToolCall { return nil }
+// Intercepted returns tool calls withheld for caller execution in the current round.
+func (s *Stream) Intercepted() []ir.ToolCall {
+	if s.filter == nil || len(s.filter.intercepted) == 0 {
+		return nil
+	}
+	out := make([]ir.ToolCall, len(s.filter.intercepted))
+	copy(out, s.filter.intercepted)
+	return out
+}
 
-// NextRound swaps in a fresh decoder for a tool-round continuation.
+// NextRound swaps in a fresh decoder for a tool-round continuation while keeping
+// the client encoder open and summing usage across rounds.
 func (s *Stream) NextRound(p *Plan) {
+	s.prevUsage.Add(s.roundUsage)
+	s.roundUsage = ir.Usage{}
+	s.plan = p
 	upstreamEnv := upstreamEnv(p.opts, p.Upstream)
 	switch p.Upstream {
 	case ir.FormatChat:
@@ -473,6 +541,9 @@ func (s *Stream) NextRound(p *Plan) {
 		s.dec = anthropic.NewStreamDecoder(anthropic.DecodeOptions{Env: upstreamEnv, Names: p.names})
 	case ir.FormatGemini:
 		s.dec = gemini.NewStreamDecoder(gemini.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Gemini, Names: p.names})
+	}
+	if s.filter != nil {
+		s.filter.resetRound()
 	}
 	s.done = false
 }
