@@ -771,3 +771,60 @@ func TestReview3_A3_24_ResponseLossesReadableWithoutOnLoss(t *testing.T) {
 		}
 	})
 }
+
+// Review3 A4e P2-1: a custom tool built directly in the IR for an Anthropic
+// client must reach the client as a valid {"input": string} tool_use input in
+// every release mode, including two calls where the second one is queued
+// behind the first.
+func TestReview3_A4e_01_AnthropicClientCustomToolInputWrapped(t *testing.T) {
+	newReq := func() *ir.Request {
+		return &ir.Request{
+			Model: "m", Stream: true,
+			Messages: []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{{Type: ir.PartText, Text: "go"}}}},
+			Tools:    []ir.Tool{{Name: "exec", Kind: ir.ToolCustom}},
+		}
+	}
+	raw := "data: " + `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"exec","args":{"input":"echo \"a\"\nb"}}},{"functionCall":{"name":"exec","args":{"input":"second"}}}]},"finishReason":"STOP"}]}` + "\n\n"
+	for _, rel := range []ir.ToolRelease{ir.ToolReleaseDefault, ir.ToolReleaseBuffered, ir.ToolReleaseLiveFirst, ir.ToolReleaseStream} {
+		plan, err := bridge.Build(newReq(), ir.FormatAnthropic, ir.FormatGemini, bridge.Options{ToolRelease: rel})
+		if err != nil {
+			t.Fatalf("release %d: %v", rel, err)
+		}
+		out := string(feedSSE(t, plan.NewStream(), raw))
+		inputs := map[int]*strings.Builder{}
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, "input_json_delta") {
+				continue
+			}
+			var ev struct {
+				Index int `json:"index"`
+				Delta struct {
+					PartialJSON string `json:"partial_json"`
+				} `json:"delta"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+				t.Fatalf("release %d: bad event %q: %v", rel, line, err)
+			}
+			if inputs[ev.Index] == nil {
+				inputs[ev.Index] = &strings.Builder{}
+			}
+			inputs[ev.Index].WriteString(ev.Delta.PartialJSON)
+		}
+		var got []string
+		for i := 0; i < 8; i++ {
+			b, ok := inputs[i]
+			if !ok {
+				continue
+			}
+			var args map[string]any
+			if err := json.Unmarshal([]byte(b.String()), &args); err != nil {
+				t.Fatalf("release %d: tool_use input is not a JSON object: %q\n%s", rel, b.String(), out)
+			}
+			s, _ := args["input"].(string)
+			got = append(got, s)
+		}
+		if len(got) != 2 || got[0] != "echo \"a\"\nb" || got[1] != "second" {
+			t.Fatalf("release %d: want two wrapped inputs, got %q\n%s", rel, got, out)
+		}
+	}
+}

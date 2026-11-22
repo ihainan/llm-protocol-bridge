@@ -13,6 +13,7 @@ type pendingTool struct {
 	id        string
 	name      string
 	sig       *ir.Signature
+	kind      ir.ToolKind
 	args      strings.Builder
 	finalArgs json.RawMessage
 	done      bool
@@ -35,10 +36,15 @@ type StreamEncoder struct {
 	thinkingSigVal    strings.Builder
 	thinkingSigOrigin ir.Origin
 	activeCallID      string
-	pendingTools      []*pendingTool
-	pendingByID       map[string]*pendingTool
-	stop              *ir.Stop
-	usage             *ir.Usage
+	// activeKind is the kind of the open tool_use block's call. A custom tool's
+	// input arrives as raw text and is wrapped into {"input": "..."} here;
+	// activeCustomOpened records that the wrapper prefix was already written.
+	activeKind         ir.ToolKind
+	activeCustomOpened bool
+	pendingTools       []*pendingTool
+	pendingByID        map[string]*pendingTool
+	stop               *ir.Stop
+	usage              *ir.Usage
 }
 
 // NewStreamEncoder returns an Anthropic stream encoder.
@@ -215,14 +221,14 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 		dst = e.ensureStarted(dst)
 		if e.openBlock >= 0 && e.openBlockType == "tool_use" {
 			// Another tool call is already streaming; queue this one until the active block closes.
-			pt := &pendingTool{id: ev.ID, name: ev.Name, sig: ev.Signature}
+			pt := &pendingTool{id: ev.ID, name: ev.Name, sig: ev.Signature, kind: ev.Kind}
 			e.pendingTools = append(e.pendingTools, pt)
 			if ev.ID != "" {
 				e.pendingByID[ev.ID] = pt
 			}
 			break
 		}
-		dst = e.openToolBlock(dst, ev.ID, ev.Name, ev.Signature)
+		dst = e.openToolBlock(dst, ev.ID, ev.Name, ev.Signature, ev.Kind)
 
 	case ir.EvToolArgs:
 		if ev.ID != "" && ev.ID != e.activeCallID {
@@ -232,10 +238,15 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 			}
 		}
 		if e.openBlock >= 0 && e.openBlockType == "tool_use" && ev.Text != "" {
+			partial := ev.Text
+			if e.activeKind == ir.ToolCustom {
+				partial = customInputDelta(ev.Text, !e.activeCustomOpened)
+				e.activeCustomOpened = true
+			}
 			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
 				"index": e.openBlock,
-				"delta": map[string]any{"type": "input_json_delta", "partial_json": ev.Text},
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": partial},
 			})
 		}
 
@@ -259,6 +270,8 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 				e.openBlock = -1
 				e.openBlockType = ""
 				e.activeCallID = ""
+				e.activeKind = ""
+				e.activeCustomOpened = false
 				e.pendingTools = nil
 				e.pendingByID = map[string]*pendingTool{}
 				e.errored = true
@@ -272,6 +285,9 @@ func (e *StreamEncoder) Encode(dst []byte, ev ir.Event) ([]byte, error) {
 				pt.done = true
 				break
 			}
+		}
+		if e.openBlock >= 0 && e.openBlockType == "tool_use" && e.activeKind == ir.ToolCustom {
+			dst = e.finishCustomInput(dst, ev.Arguments)
 		}
 		dst = e.closeBlock(dst)
 		e.activeCallID = ""
@@ -489,13 +505,15 @@ func (e *StreamEncoder) ensureTextBlock(dst []byte) []byte {
 	})
 }
 
-func (e *StreamEncoder) openToolBlock(dst []byte, id, name string, sig *ir.Signature) []byte {
+func (e *StreamEncoder) openToolBlock(dst []byte, id, name string, sig *ir.Signature, kind ir.ToolKind) []byte {
 	dst = e.closeBlock(dst)
 	idx := e.blockIdx
 	e.blockIdx++
 	e.openBlock = idx
 	e.openBlockType = "tool_use"
 	e.activeCallID = id
+	e.activeKind = kind
+	e.activeCustomOpened = false
 	wireID := ir.AnthropicSafeID(ir.EncodeCallSignatureID(e.opts.Env, id, sig))
 	return e.appendSSE(dst, "content_block_start", map[string]any{
 		"type":  "content_block_start",
@@ -516,8 +534,20 @@ func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 		if pt.id != "" {
 			delete(e.pendingByID, pt.id)
 		}
-		dst = e.openToolBlock(dst, pt.id, pt.name, pt.sig)
-		if s := pt.args.String(); s != "" {
+		dst = e.openToolBlock(dst, pt.id, pt.name, pt.sig, pt.kind)
+		if pt.kind == ir.ToolCustom {
+			if s := pt.args.String(); s != "" {
+				dst = e.appendSSE(dst, "content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": e.openBlock,
+					"delta": map[string]any{"type": "input_json_delta", "partial_json": customInputDelta(s, true)},
+				})
+				e.activeCustomOpened = true
+			}
+			if pt.done {
+				dst = e.finishCustomInput(dst, pt.finalArgs)
+			}
+		} else if s := pt.args.String(); s != "" {
 			dst = e.appendSSE(dst, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
 				"index": e.openBlock,
@@ -539,6 +569,43 @@ func (e *StreamEncoder) drainPendingTools(dst []byte) []byte {
 		break
 	}
 	return dst
+}
+
+// customInputDelta escapes a chunk of a custom tool's raw input for an
+// input_json_delta, starting the {"input":" wrapper when first is true.
+func customInputDelta(text string, first bool) string {
+	var sb strings.Builder
+	if first {
+		sb.WriteString(`{"input":"`)
+	}
+	if b, err := jsonx.Marshal(text); err == nil && len(b) >= 2 {
+		sb.Write(b[1 : len(b)-1])
+	}
+	return sb.String()
+}
+
+// finishCustomInput completes the open custom tool block's input. When part of
+// the wrapper was already streamed it closes the string and object; otherwise
+// it writes the whole {"input": ...} object from the final input, which the
+// pipeline delivers as a JSON string.
+func (e *StreamEncoder) finishCustomInput(dst []byte, final json.RawMessage) []byte {
+	var tail string
+	if e.activeCustomOpened {
+		tail = `"}`
+	} else {
+		var in string
+		if len(final) > 0 {
+			_ = json.Unmarshal(final, &in)
+		}
+		b, _ := jsonx.Marshal(map[string]string{"input": in})
+		tail = string(b)
+	}
+	e.activeCustomOpened = true
+	return e.appendSSE(dst, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": e.openBlock,
+		"delta": map[string]any{"type": "input_json_delta", "partial_json": tail},
+	})
 }
 
 func (e *StreamEncoder) flushAllPendingTools(dst []byte) []byte {
