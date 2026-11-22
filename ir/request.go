@@ -266,6 +266,7 @@ type Tool struct {
 	Description string          `json:"description,omitempty"`
 	Kind        ToolKind        `json:"kind,omitempty"`
 	Schema      json.RawMessage `json:"schema,omitempty"`
+	SchemaJSON  bool            `json:"schema_json,omitempty"`
 	Strict      *bool           `json:"strict,omitempty"`
 	Grammar     *Grammar        `json:"grammar,omitempty"`
 	Deferred    bool            `json:"deferred,omitempty"`

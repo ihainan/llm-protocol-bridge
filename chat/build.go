@@ -23,11 +23,12 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	nameMap := ir.BuildToolNameMap(req.Tools)
 	names := map[string]ir.ToolRef{}
 	b := &built{
-		env:     env,
-		dia:     opts.Dialect,
-		names:   names,
-		nameMap: nameMap,
-		losses:  nil,
+		env:                 env,
+		dia:                 opts.Dialect,
+		names:               names,
+		nameMap:             nameMap,
+		losses:              nil,
+		consumedPassthrough: map[string]bool{},
 	}
 
 	// 1. Tools (filter when ToolChoiceAllowed is set)
@@ -234,10 +235,13 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		}
 	}
 
-	// passthrough (identity builds only, deterministic key order)
+	// passthrough (identity builds only, deterministic key order, skipping keys merged with OffPatch/kwargs)
 	if req.Source == ir.FormatChat && len(req.Passthrough) > 0 {
 		pkeys := make([]string, 0, len(req.Passthrough))
 		for k := range req.Passthrough {
+			if b.consumedPassthrough[k] {
+				continue
+			}
 			pkeys = append(pkeys, k)
 		}
 		sort.Strings(pkeys)
@@ -257,11 +261,12 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 // built is the state used during one BuildRequest call.
 type built struct {
-	env     *ir.Env
-	dia     Dialect
-	names   map[string]ir.ToolRef
-	nameMap *ir.ToolNameMap
-	losses  []ir.Loss
+	env                 *ir.Env
+	dia                 Dialect
+	names               map[string]ir.ToolRef
+	nameMap             *ir.ToolNameMap
+	losses              []ir.Loss
+	consumedPassthrough map[string]bool
 }
 
 var customToolSchema = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}`)
@@ -534,7 +539,16 @@ func (b *built) buildReasoning(req *ir.Request, out *jsonx.Obj) error {
 					return b.env.Err(cfgErr)
 				}
 				for _, f := range fields {
-					out.Raw(f.Key, f.Value)
+					val := f.Value
+					if req.Source == ir.FormatChat && len(req.Passthrough) > 0 {
+						if ptVal, ok := req.Passthrough[f.Key]; ok {
+							b.consumedPassthrough[f.Key] = true
+							if jsonx.Kind(ptVal) == '{' && jsonx.Kind(val) == '{' {
+								val = mergeJSONObjects(ptVal, val)
+							}
+						}
+					}
+					out.Raw(f.Key, val)
 				}
 				return nil
 			case ir.OffLowestHidden:
@@ -596,9 +610,49 @@ func (b *built) buildReasoning(req *ir.Request, out *jsonx.Obj) error {
 	}
 	if profile != nil && profile.EffortInTemplateKwargs && effort != ir.EffortUnset {
 		kw, _ := jsonx.Marshal(map[string]any{"reasoning_effort": string(effort)})
+		if req.Source == ir.FormatChat && len(req.Passthrough) > 0 {
+			if ptVal, ok := req.Passthrough["chat_template_kwargs"]; ok {
+				b.consumedPassthrough["chat_template_kwargs"] = true
+				if jsonx.Kind(ptVal) == '{' {
+					// Client keys win inside nested objects per design.md §9.3.2.
+					kw = mergeJSONObjects(kw, ptVal)
+				}
+			}
+		}
 		out.Raw("chat_template_kwargs", kw)
 	}
 	return nil
+}
+
+func mergeJSONObjects(base, overlay json.RawMessage) json.RawMessage {
+	bkvs, err1 := jsonx.Object(base)
+	okvs, err2 := jsonx.Object(overlay)
+	if err1 != nil || err2 != nil {
+		return overlay
+	}
+	m := map[string]json.RawMessage{}
+	order := make([]string, 0, len(bkvs)+len(okvs))
+	for _, kv := range bkvs {
+		m[kv.Key] = kv.Value
+		order = append(order, kv.Key)
+	}
+	for _, kv := range okvs {
+		if prev, ok := m[kv.Key]; ok {
+			if jsonx.Kind(prev) == '{' && jsonx.Kind(kv.Value) == '{' {
+				m[kv.Key] = mergeJSONObjects(prev, kv.Value)
+			} else {
+				m[kv.Key] = kv.Value
+			}
+		} else {
+			m[kv.Key] = kv.Value
+			order = append(order, kv.Key)
+		}
+	}
+	out := jsonx.Start(nil)
+	for _, k := range order {
+		out.Raw(k, m[k])
+	}
+	return out.End()
 }
 
 // buildToolChoice serialises ir.ToolChoice to JSON.

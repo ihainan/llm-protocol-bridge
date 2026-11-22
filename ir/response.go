@@ -9,6 +9,8 @@ type Response struct {
 	Outputs []Output `json:"outputs"`
 	Usage   Usage    `json:"usage"`
 	Created int64    `json:"created,omitempty"`
+	// Losses records any tolerated lossy conversions during response decoding/encoding.
+	Losses []Loss `json:"-"`
 }
 
 // Output is one candidate of a reply.

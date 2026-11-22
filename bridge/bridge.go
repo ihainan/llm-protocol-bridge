@@ -259,6 +259,12 @@ func (p *Plan) ConvertResponse(body []byte) ([]byte, *ir.Response, error) {
 		return nil, nil, ir.Invalid(ir.Root, "unknown client format: "+string(p.Client))
 	}
 	_ = encOpts
+	if err == nil && irResp != nil {
+		var respLosses []ir.Loss
+		respLosses = append(respLosses, env.Losses()...)
+		respLosses = append(respLosses, clientEnv.Losses()...)
+		irResp.Losses = respLosses
+	}
 	return out, irResp, err
 }
 
@@ -272,7 +278,7 @@ func (p *Plan) StreamResponse(dst, body []byte) ([]byte, error) {
 	evs := ir.EventsOf(irResp)
 	env := clientEnv(p.opts, p.Client)
 	encOpts := encodeOptions(p, env)
-	s := newStreamWithEncoder(p, encOpts)
+	s := newStreamWithEncoder(p, env, encOpts)
 	for _, ev := range evs {
 		for _, fe := range s.filter.process(ev) {
 			dst, err = s.enc.Encode(dst, fe)
@@ -521,6 +527,9 @@ type Stream struct {
 	enc           encoder
 	filter        *streamFilter
 	collector     *ir.Collector
+	upEnv         *ir.Env
+	clEnv         *ir.Env
+	prevLosses    []ir.Loss
 	prevUsage     ir.Usage
 	roundUsage    ir.Usage
 	expectedCands int
@@ -532,7 +541,7 @@ type Stream struct {
 func newStream(p *Plan, collect bool) *Stream {
 	env := clientEnv(p.opts, p.Client)
 	encOpts := encodeOptions(p, env)
-	s := newStreamWithEncoder(p, encOpts)
+	s := newStreamWithEncoder(p, env, encOpts)
 	if collect {
 		s.collector = ir.NewCollector()
 		// Collector assembles a whole JSON response; always buffer calls so truncated
@@ -571,7 +580,7 @@ func encodeOptions(p *Plan, env *ir.Env) encodeOpts {
 	}
 }
 
-func newStreamWithEncoder(p *Plan, eo encodeOpts) *Stream {
+func newStreamWithEncoder(p *Plan, clEnv *ir.Env, eo encodeOpts) *Stream {
 	var enc encoder
 	switch p.Client {
 	case ir.FormatChat:
@@ -586,23 +595,23 @@ func newStreamWithEncoder(p *Plan, eo encodeOpts) *Stream {
 		enc = chat.NewStreamEncoder(eo.chat)
 	}
 
-	upstreamEnv := upstreamEnv(p.opts, p.Upstream)
+	upEnv := upstreamEnv(p.opts, p.Upstream)
 	var dec decoder
 	switch p.Upstream {
 	case ir.FormatChat:
-		dec = chat.NewStreamDecoder(chat.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Chat, Names: p.names})
+		dec = chat.NewStreamDecoder(chat.DecodeOptions{Env: upEnv, Dialect: p.opts.Chat, Names: p.names})
 	case ir.FormatResponses:
-		dec = responses.NewStreamDecoder(responses.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Responses, Names: p.names})
+		dec = responses.NewStreamDecoder(responses.DecodeOptions{Env: upEnv, Dialect: p.opts.Responses, Names: p.names})
 	case ir.FormatAnthropic:
 		dec = anthropic.NewStreamDecoder(anthropic.DecodeOptions{
-			Env:              upstreamEnv,
+			Env:              upEnv,
 			Names:            p.names,
 			MaxBufferedBytes: p.opts.Limits.MaxBufferedBytes,
 		})
 	case ir.FormatGemini:
-		dec = gemini.NewStreamDecoder(gemini.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Gemini, Names: p.names})
+		dec = gemini.NewStreamDecoder(gemini.DecodeOptions{Env: upEnv, Dialect: p.opts.Gemini, Names: p.names})
 	default:
-		dec = chat.NewStreamDecoder(chat.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Chat, Names: p.names})
+		dec = chat.NewStreamDecoder(chat.DecodeOptions{Env: upEnv, Dialect: p.opts.Chat, Names: p.names})
 	}
 
 	expected := 1
@@ -614,6 +623,8 @@ func newStreamWithEncoder(p *Plan, eo encodeOpts) *Stream {
 		dec:           dec,
 		enc:           enc,
 		filter:        newStreamFilter(p),
+		upEnv:         upEnv,
+		clEnv:         clEnv,
 		expectedCands: expected,
 		finishedCands: map[int]bool{},
 	}
@@ -715,6 +726,20 @@ func (s *Stream) Usage() ir.Usage {
 	return tot
 }
 
+// Losses returns all tolerated lossy conversions recorded during streaming
+// response decoding and encoding across all rounds so far.
+func (s *Stream) Losses() []ir.Loss {
+	var out []ir.Loss
+	out = append(out, s.prevLosses...)
+	if s.upEnv != nil {
+		out = append(out, s.upEnv.Losses()...)
+	}
+	if s.clEnv != nil {
+		out = append(out, s.clEnv.Losses()...)
+	}
+	return out
+}
+
 // Result returns the collected client JSON response (collector mode only).
 func (s *Stream) Result() ([]byte, *ir.Response, error) {
 	if s.collector == nil {
@@ -738,6 +763,11 @@ func (s *Stream) Result() ([]byte, *ir.Response, error) {
 	case ir.FormatGemini:
 		out, err = gemini.BuildResponse(resp, gemini.EncodeOptions{Env: env, Request: s.plan.Request, Model: s.plan.ClientModel})
 	}
+	if err == nil && resp != nil {
+		losses := s.Losses()
+		losses = append(losses, env.Losses()...)
+		resp.Losses = losses
+	}
 	return out, resp, err
 }
 
@@ -756,17 +786,25 @@ func (s *Stream) Intercepted() []ir.ToolCall {
 func (s *Stream) NextRound(p *Plan) {
 	s.prevUsage.Add(s.roundUsage)
 	s.roundUsage = ir.Usage{}
+	if s.upEnv != nil {
+		s.prevLosses = append(s.prevLosses, s.upEnv.Losses()...)
+	}
 	s.plan = p
-	upstreamEnv := upstreamEnv(p.opts, p.Upstream)
+	upEnv := upstreamEnv(p.opts, p.Upstream)
+	s.upEnv = upEnv
 	switch p.Upstream {
 	case ir.FormatChat:
-		s.dec = chat.NewStreamDecoder(chat.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Chat, Names: p.names})
+		s.dec = chat.NewStreamDecoder(chat.DecodeOptions{Env: upEnv, Dialect: p.opts.Chat, Names: p.names})
 	case ir.FormatResponses:
-		s.dec = responses.NewStreamDecoder(responses.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Responses, Names: p.names})
+		s.dec = responses.NewStreamDecoder(responses.DecodeOptions{Env: upEnv, Dialect: p.opts.Responses, Names: p.names})
 	case ir.FormatAnthropic:
-		s.dec = anthropic.NewStreamDecoder(anthropic.DecodeOptions{Env: upstreamEnv, Names: p.names})
+		s.dec = anthropic.NewStreamDecoder(anthropic.DecodeOptions{
+			Env:              upEnv,
+			Names:            p.names,
+			MaxBufferedBytes: p.opts.Limits.MaxBufferedBytes,
+		})
 	case ir.FormatGemini:
-		s.dec = gemini.NewStreamDecoder(gemini.DecodeOptions{Env: upstreamEnv, Dialect: p.opts.Gemini, Names: p.names})
+		s.dec = gemini.NewStreamDecoder(gemini.DecodeOptions{Env: upEnv, Dialect: p.opts.Gemini, Names: p.names})
 	}
 	if s.filter != nil {
 		s.filter.resetRoundForPlan(p)

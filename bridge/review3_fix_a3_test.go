@@ -616,3 +616,158 @@ func TestReview3_A3_19_WebSearchConfigMappedOrRejectedCrossFormat(t *testing.T) 
 		}
 	})
 }
+
+// Review3 A3 #20 (Gemini): parametersJsonSchema constraints such as
+// additionalProperties:false must be preserved on same-format Gemini builds,
+// and OpenAPI downgrade must record a loss when schema constraints are dropped.
+func TestReview3_A3_20_GeminiParametersJsonSchemaPreservedAndDowngradeLoss(t *testing.T) {
+	t.Run("same_format_gemini_preserves_parametersJsonSchema_additionalProperties", func(t *testing.T) {
+		reqBody := []byte(`{
+			"contents":[{"role":"user","parts":[{"text":"hi"}]}],
+			"tools":[{"functionDeclarations":[{
+				"name":"lookup",
+				"parametersJsonSchema":{"type":"object","properties":{"q":{"type":"string"}},"additionalProperties":false}
+			}]}]
+		}`)
+		plan, err := bridge.Convert(ir.FormatGemini, ir.FormatGemini, reqBody, bridge.Options{Model: "gemini-2.5-flash"})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if !strings.Contains(string(plan.Body), `"parametersJsonSchema"`) || !strings.Contains(string(plan.Body), `"additionalProperties":false`) {
+			t.Fatalf("same-format Gemini build dropped parametersJsonSchema or additionalProperties:false:\n%s", string(plan.Body))
+		}
+	})
+
+	t.Run("cross_format_openapi_downgrade_records_loss", func(t *testing.T) {
+		reqBody := []byte(`{
+			"model":"gemini-2.5-flash",
+			"messages":[{"role":"user","content":"hi"}],
+			"tools":[{"type":"function","function":{
+				"name":"lookup",
+				"parameters":{"type":"object","properties":{"q":{"type":"string"}},"additionalProperties":false}
+			}}]
+		}`)
+		plan, err := bridge.Convert(ir.FormatChat, ir.FormatGemini, reqBody, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		hasSchemaLoss := false
+		for _, l := range plan.Losses {
+			if l.Kind == ir.LossToolSchema {
+				hasSchemaLoss = true
+			}
+		}
+		if !hasSchemaLoss {
+			t.Fatalf("expected LossToolSchema when Gemini ToOpenAPI drops additionalProperties:false, got losses=%v (body=%s)", plan.Losses, string(plan.Body))
+		}
+		if _, err := bridge.Convert(ir.FormatChat, ir.FormatGemini, reqBody, bridge.Options{
+			Deny: ir.LossSet{ir.LossToolSchema: true},
+		}); err == nil {
+			t.Fatalf("expected Deny[LossToolSchema] to reject OpenAPI schema downgrade")
+		}
+	})
+}
+
+// Review3 A3 #21: Gemini OffPatch must be applied to the built request body,
+// and Chat OffPatch merging with a client passthrough object must produce a
+// single merged top-level key without duplicate JSON keys.
+func TestReview3_A3_21_OffPatchAppliedInGeminiAndMergedInChat(t *testing.T) {
+	t.Run("gemini_applies_valid_off_patch", func(t *testing.T) {
+		reqBody := []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
+		plan, err := bridge.Convert(ir.FormatChat, ir.FormatGemini, reqBody, bridge.Options{
+			Profile: &ir.ModelProfile{
+				Off: ir.OffRule{
+					Mode:  ir.OffPatch,
+					Patch: json.RawMessage(`{"enable_thinking":false}`),
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if !strings.Contains(string(plan.Body), `"enable_thinking":false`) {
+			t.Fatalf("Gemini build ignored valid OffPatch:\n%s", string(plan.Body))
+		}
+	})
+
+	t.Run("chat_merges_off_patch_with_passthrough_no_duplicate_keys", func(t *testing.T) {
+		reqBody := []byte(`{
+			"model":"qwen",
+			"messages":[{"role":"user","content":"hi"}],
+			"reasoning_effort":"none",
+			"chat_template_kwargs":{"custom_flag":true,"enable_thinking":true}
+		}`)
+		plan, err := bridge.Convert(ir.FormatChat, ir.FormatChat, reqBody, bridge.Options{
+			Profile: &ir.ModelProfile{
+				Off: ir.OffRule{
+					Mode:  ir.OffPatch,
+					Patch: json.RawMessage(`{"chat_template_kwargs":{"enable_thinking":false}}`),
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		bodyStr := string(plan.Body)
+		if strings.Count(bodyStr, `"chat_template_kwargs"`) != 1 {
+			t.Fatalf("Chat build emitted duplicate chat_template_kwargs key:\n%s", bodyStr)
+		}
+		var doc struct {
+			Kwargs map[string]any `json:"chat_template_kwargs"`
+		}
+		if err := json.Unmarshal(plan.Body, &doc); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if doc.Kwargs["enable_thinking"] != false || doc.Kwargs["custom_flag"] != true {
+			t.Fatalf("expected merged chat_template_kwargs {enable_thinking:false, custom_flag:true}, got %v (body=%s)", doc.Kwargs, bodyStr)
+		}
+	})
+}
+
+// Review3 A3 #24: Response-phase losses must be readable without OnLoss via
+// ir.Response.Losses (ConvertResponse / NewCollector) and Stream.Losses().
+func TestReview3_A3_24_ResponseLossesReadableWithoutOnLoss(t *testing.T) {
+	reqBody := []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"draw"}]}`)
+	plan, err := bridge.Convert(ir.FormatChat, ir.FormatGemini, reqBody, bridge.Options{})
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+
+	t.Run("nonstream_ConvertResponse_populates_irResp_Losses", func(t *testing.T) {
+		upBody := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"AQ=="}},{"text":"done"}]},"finishReason":"STOP"}],"modelVersion":"gemini-2.5-flash"}`)
+		_, irResp, err := plan.ConvertResponse(upBody)
+		if err != nil {
+			t.Fatalf("ConvertResponse: %v", err)
+		}
+		found := false
+		for _, l := range irResp.Losses {
+			if l.Kind == ir.LossOutputMedia {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected LossOutputMedia in irResp.Losses without OnLoss, got %v", irResp.Losses)
+		}
+	})
+
+	t.Run("streaming_Stream_Losses_exposes_response_losses", func(t *testing.T) {
+		streamReq := []byte(`{"model":"gemini-2.5-flash","stream":true,"messages":[{"role":"user","content":"draw"}]}`)
+		sPlan, err := bridge.Convert(ir.FormatChat, ir.FormatGemini, streamReq, bridge.Options{})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		s := sPlan.NewStream()
+		raw := "data: " + `{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"AQ=="}},{"text":"done"}]},"finishReason":"STOP"}],"modelVersion":"gemini-2.5-flash"}` + "\n\n"
+		_ = feedSSE(t, s, raw)
+		losses := s.Losses()
+		found := false
+		for _, l := range losses {
+			if l.Kind == ir.LossOutputMedia {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected LossOutputMedia in s.Losses() without OnLoss, got %v", losses)
+		}
+	})
+}

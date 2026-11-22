@@ -120,9 +120,16 @@ var openAPIKeys = map[string]bool{
 // "null" become nullable, keywords outside the subset are dropped, local $refs
 // are inlined.
 func ToOpenAPI(raw json.RawMessage) json.RawMessage {
+	out, _ := ToOpenAPIWithLoss(raw)
+	return out
+}
+
+// ToOpenAPIWithLoss converts JSON Schema into Gemini's OpenAPI subset and
+// returns the sorted list of validation constraint keywords that were dropped.
+func ToOpenAPIWithLoss(raw json.RawMessage) (json.RawMessage, []string) {
 	var v any
 	if json.Unmarshal(raw, &v) != nil {
-		return raw
+		return raw, nil
 	}
 	root, _ := v.(map[string]any)
 	defs := map[string]any{}
@@ -133,19 +140,39 @@ func ToOpenAPI(raw json.RawMessage) json.RawMessage {
 			}
 		}
 	}
-	out, err := jsonx.Marshal(toOpenAPI(v, defs, 0))
+	droppedSet := map[string]bool{}
+	out, err := jsonx.Marshal(toOpenAPI(v, defs, 0, droppedSet))
 	if err != nil {
-		return raw
+		return raw, nil
 	}
-	return out
+	var dropped []string
+	for k := range droppedSet {
+		dropped = append(dropped, k)
+	}
+	sort.Strings(dropped)
+	return out, dropped
 }
 
-func toOpenAPI(v any, defs map[string]any, depth int) any {
+var nonConstraintMetaKeys = map[string]bool{
+	"$schema":     true,
+	"$id":         true,
+	"$defs":       true,
+	"definitions": true,
+	"$ref":        true,
+	"$comment":    true,
+	"title":       true,
+	"examples":    true,
+	"default":     true,
+	"oneOf":       true,
+	"const":       true,
+}
+
+func toOpenAPI(v any, defs map[string]any, depth int, dropped map[string]bool) any {
 	switch x := v.(type) {
 	case map[string]any:
 		if ref, ok := x["$ref"].(string); ok && depth < 16 {
 			if d, ok := defs[ref]; ok {
-				return toOpenAPI(d, defs, depth+1)
+				return toOpenAPI(d, defs, depth+1, dropped)
 			}
 		}
 		m := make(map[string]any, len(x))
@@ -158,10 +185,11 @@ func toOpenAPI(v any, defs map[string]any, depth int) any {
 			val := x[k]
 			if !openAPIKeys[k] {
 				if k == "oneOf" {
-					m["anyOf"] = toOpenAPI(val, defs, depth+1)
-				}
-				if k == "const" {
+					m["anyOf"] = toOpenAPI(val, defs, depth+1, dropped)
+				} else if k == "const" {
 					m["enum"] = []any{val}
+				} else if dropped != nil && !nonConstraintMetaKeys[k] {
+					dropped[k] = true
 				}
 				continue
 			}
@@ -192,7 +220,7 @@ func toOpenAPI(v any, defs map[string]any, depth int) any {
 				if pm, ok := val.(map[string]any); ok {
 					pp := make(map[string]any, len(pm))
 					for pk, pv := range pm {
-						pp[pk] = toOpenAPI(pv, defs, depth+1)
+						pp[pk] = toOpenAPI(pv, defs, depth+1, dropped)
 					}
 					m[k] = pp
 					continue
@@ -201,14 +229,14 @@ func toOpenAPI(v any, defs map[string]any, depth int) any {
 			case "enum", "required", "propertyOrdering", "example", "default":
 				m[k] = val
 			default:
-				m[k] = toOpenAPI(val, defs, depth+1)
+				m[k] = toOpenAPI(val, defs, depth+1, dropped)
 			}
 		}
 		return m
 	case []any:
 		out := make([]any, len(x))
 		for i := range x {
-			out[i] = toOpenAPI(x[i], defs, depth+1)
+			out[i] = toOpenAPI(x[i], defs, depth+1, dropped)
 		}
 		return out
 	}

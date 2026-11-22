@@ -503,6 +503,7 @@ func parseFunctionDecl(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, er
 			t.Schema = s
 		case "parametersJsonSchema":
 			t.Schema = append(json.RawMessage(nil), kv.Value...)
+			t.SchemaJSON = true
 		}
 	}
 	if t.Name == "" {

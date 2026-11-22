@@ -60,7 +60,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		var decls []wireFunctionDecl
 		for i, t := range req.Tools {
 			fp := ir.Root.Key("tools").At(i)
-			d, err := buildFunctionDecl(t, fp, env, nameMap)
+			d, err := buildFunctionDecl(t, fp, req.Source == ir.FormatGemini, dia, env, nameMap)
 			if err != nil {
 				return nil, err
 			}
@@ -108,7 +108,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// Generation config.
-	gc, err := buildGenerationConfig(req, dia, env)
+	gc, offPatchFields, err := buildGenerationConfig(req, dia, env)
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +157,12 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(offPatchFields) > 0 {
+		body, err = mergeTopLevelPatch(body, offPatchFields)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return &Built{
 		Body:   body,
@@ -164,6 +170,67 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		Stream: req.Stream,
 		Names:  names,
 	}, nil
+}
+
+func mergeTopLevelPatch(base []byte, patch []ir.OffPatchField) ([]byte, error) {
+	kvs, err := jsonx.Object(base)
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]json.RawMessage{}
+	order := make([]string, 0, len(kvs)+len(patch))
+	for _, kv := range kvs {
+		m[kv.Key] = kv.Value
+		order = append(order, kv.Key)
+	}
+	for _, f := range patch {
+		if existing, ok := m[f.Key]; ok {
+			if jsonx.Kind(existing) == '{' && jsonx.Kind(f.Value) == '{' {
+				m[f.Key] = mergeJSONObjects(existing, f.Value)
+			} else {
+				m[f.Key] = f.Value
+			}
+		} else {
+			m[f.Key] = f.Value
+			order = append(order, f.Key)
+		}
+	}
+	out := jsonx.Start(nil)
+	for _, k := range order {
+		out.Raw(k, m[k])
+	}
+	return out.End(), nil
+}
+
+func mergeJSONObjects(base, overlay json.RawMessage) json.RawMessage {
+	bkvs, err1 := jsonx.Object(base)
+	okvs, err2 := jsonx.Object(overlay)
+	if err1 != nil || err2 != nil {
+		return overlay
+	}
+	m := map[string]json.RawMessage{}
+	order := make([]string, 0, len(bkvs)+len(okvs))
+	for _, kv := range bkvs {
+		m[kv.Key] = kv.Value
+		order = append(order, kv.Key)
+	}
+	for _, kv := range okvs {
+		if prev, ok := m[kv.Key]; ok {
+			if jsonx.Kind(prev) == '{' && jsonx.Kind(kv.Value) == '{' {
+				m[kv.Key] = mergeJSONObjects(prev, kv.Value)
+			} else {
+				m[kv.Key] = kv.Value
+			}
+		} else {
+			m[kv.Key] = kv.Value
+			order = append(order, kv.Key)
+		}
+	}
+	out := jsonx.Start(nil)
+	for _, k := range order {
+		out.Raw(k, m[k])
+	}
+	return out.End()
 }
 
 func irMessageToWireContent(msg ir.Message, p ir.Path, env *ir.Env, dia Dialect, nameMap *ir.ToolNameMap, callNames map[string]string) (wireContent, error) {
@@ -416,7 +483,7 @@ func toolResultText(parts []ir.Part) string {
 	return sb.String()
 }
 
-func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env, nameMap *ir.ToolNameMap) (wireFunctionDecl, error) {
+func buildFunctionDecl(t ir.Tool, p ir.Path, sameFormat bool, dia Dialect, env *ir.Env, nameMap *ir.ToolNameMap) (wireFunctionDecl, error) {
 	if t.Name == "" {
 		return wireFunctionDecl{}, env.Err(ir.Invalid(p.Key("name"), "tool name is required"))
 	}
@@ -449,7 +516,17 @@ func buildFunctionDecl(t ir.Tool, p ir.Path, env *ir.Env, nameMap *ir.ToolNameMa
 		Description: desc,
 	}
 	if len(params) > 0 {
-		d.Parameters = schema.ToOpenAPI(params)
+		if (sameFormat && t.SchemaJSON) || dia.SchemaField == "parametersJsonSchema" {
+			d.ParametersJsonSchema = params
+		} else {
+			converted, dropped := schema.ToOpenAPIWithLoss(params)
+			if len(dropped) > 0 {
+				if err := env.Lose(ir.LossToolSchema, p.Key("parameters"), "OpenAPI schema downgrade dropped constraints: "+strings.Join(dropped, ", ")); err != nil {
+					return wireFunctionDecl{}, err
+				}
+			}
+			d.Parameters = converted
+		}
 	}
 	return d, nil
 }
@@ -484,8 +561,9 @@ func buildToolConfig(tc ir.ToolChoice, nameMap *ir.ToolNameMap, env *ir.Env) (*w
 	return cfg, nil
 }
 
-func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGenerationConfig, error) {
+func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGenerationConfig, []ir.OffPatchField, error) {
 	gc := &wireGenerationConfig{}
+	var offPatchFields []ir.OffPatchField
 	any := false
 
 	if req.Temperature != nil {
@@ -513,7 +591,7 @@ func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGene
 		stops := req.Stop
 		if len(stops) > geminiMaxStop {
 			if err := env.Lose(ir.LossStopLimit, ir.Root.Key("stop"), "Gemini accepts at most 5 stop sequences; extras truncated"); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			stops = stops[:geminiMaxStop]
 		}
@@ -527,18 +605,18 @@ func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGene
 	// Gemini does not support presence/frequency penalty.
 	if req.PresencePenalty != nil && *req.PresencePenalty != 0 {
 		if err := env.Lose(ir.LossSamplingPenalty, ir.Root.Key("presence_penalty"), "not supported by Gemini"); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if req.FrequencyPenalty != nil && *req.FrequencyPenalty != 0 {
 		if err := env.Lose(ir.LossSamplingPenalty, ir.Root.Key("frequency_penalty"), "not supported by Gemini"); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	// Gemini does not support logprobs.
 	if req.Logprobs != nil && *req.Logprobs {
 		if err := env.Lose(ir.LossSamplingLogprobs, ir.Root.Key("logprobs"), "not supported by Gemini"); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if req.Output != nil {
@@ -570,12 +648,13 @@ func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGene
 			if profile != nil {
 				switch profile.Off.Mode {
 				case ir.OffUnsupported:
-					return nil, env.Err(ir.Unsupported(ir.Root.Key("reasoning"), "off", "model does not allow disabling reasoning"))
+					return nil, nil, env.Err(ir.Unsupported(ir.Root.Key("reasoning"), "off", "model does not allow disabling reasoning"))
 				case ir.OffPatch:
-					if _, cfgErr := ir.ParseOffPatch(profile.Off.Patch); cfgErr != nil {
-						return nil, env.Err(cfgErr)
+					fields, cfgErr := ir.ParseOffPatch(profile.Off.Patch)
+					if cfgErr != nil {
+						return nil, nil, env.Err(cfgErr)
 					}
-					// Valid OffPatch validated; omit thinkingConfig for Gemini.
+					offPatchFields = fields
 				case ir.OffLowestHidden:
 					low := profile.Lowest()
 					tc := &wireThinkingConfig{}
@@ -630,7 +709,7 @@ func buildGenerationConfig(req *ir.Request, dia Dialect, env *ir.Env) (*wireGene
 	}
 
 	if !any {
-		return nil, nil
+		return nil, offPatchFields, nil
 	}
-	return gc, nil
+	return gc, offPatchFields, nil
 }

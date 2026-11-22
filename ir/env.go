@@ -25,6 +25,7 @@ const (
 	LossCacheMarker        LossKind = "cache.marker"
 	LossImageDetail        LossKind = "image.detail"
 	LossToolStrict         LossKind = "tool.strict"
+	LossToolSchema         LossKind = "tool.schema"
 	LossToolParallel       LossKind = "tool.parallel"
 	LossToolDeferred       LossKind = "tool.deferred"
 	LossCachedWebSearch    LossKind = "tool.cached_web_search"
@@ -57,6 +58,7 @@ var DefaultAllowed = LossSet{
 	LossCacheMarker:        true,
 	LossImageDetail:        true,
 	LossToolStrict:         true,
+	LossToolSchema:         true,
 	LossToolParallel:       true,
 	LossToolDeferred:       true,
 	LossCachedWebSearch:    true,

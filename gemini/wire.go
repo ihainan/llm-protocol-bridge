@@ -82,9 +82,10 @@ type wireToolDef struct {
 }
 
 type wireFunctionDecl struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Name                 string          `json:"name"`
+	Description          string          `json:"description,omitempty"`
+	Parameters           json.RawMessage `json:"parameters,omitempty"`
+	ParametersJsonSchema json.RawMessage `json:"parametersJsonSchema,omitempty"`
 }
 
 // wireToolConfig controls function calling mode.

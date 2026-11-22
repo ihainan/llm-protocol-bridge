@@ -189,12 +189,18 @@ func (s *Stream) End(dst []byte, how ir.EndKind) ([]byte, error)
 func (s *Stream) Done() bool              // nothing more is needed from the upstream
 func (s *Stream) Keepalive(dst []byte) []byte
 func (s *Stream) Usage() ir.Usage         // normalised usage, summed over rounds
-func (s *Stream) Result() ([]byte, *ir.Response, error) // collector mode: client JSON
+func (s *Stream) Losses() []ir.Loss       // response-phase losses recorded across rounds
+func (s *Stream) Result() ([]byte, *ir.Response, error) // collector mode: client JSON (ir.Response.Losses holds response losses)
 func (s *Stream) Intercepted() []ir.ToolCall             // calls to caller-owned tools (7.6)
 func (s *Stream) NextRound(p *Plan)       // continue the same client response (7.6)
 
 func ErrorResponse(client Format, err error) (status int, body []byte)
 ```
+
+`Plan.Losses` holds request-phase losses (parsing and building); response-phase
+losses (decoding and encoding) are readable without setting `OnLoss` via
+`ir.Response.Losses` (returned by `Plan.ConvertResponse` and `Stream.Result`)
+and `Stream.Losses()` (streaming mode).
 
 `Done()` turns true when the client response is complete before the upstream is (a
 matched stop sequence, a terminal upstream error): the caller should stop reading and

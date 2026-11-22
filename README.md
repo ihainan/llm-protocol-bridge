@@ -88,7 +88,10 @@ column shows the behaviour when the caller passes `bridge.Options{}`.
 | `tool.parallel`            | `parallel_tool_calls` cannot be carried          | allowed   |
 | `tool.deferred`            | Deferred tool-call mode cannot be carried        | allowed   |
 | `tool.cached_web_search`   | Cached web-search state cannot be carried        | allowed   |
+| `tool.schema`              | JSON Schema constraints dropped on OpenAPI downgrade | allowed |
 | `output.citations`         | Citation metadata cannot be carried              | allowed   |
+| `output.builtin_activity`  | Hosted builtin call/result cannot be carried     | allowed   |
+| `output.media`             | Non-text output media cannot be carried          | allowed   |
 | `sampling.seed`            | `seed` cannot be carried                          | allowed   |
 | `sampling.top_k`            | `top_k` cannot be carried                         | denied    |
 | `sampling.penalty`         | `presence_penalty` / `frequency_penalty` dropped | denied    |
@@ -97,9 +100,12 @@ column shows the behaviour when the caller passes `bridge.Options{}`.
 | `stop.limit`               | Extra stop sequences beyond the target's limit   | denied    |
 
 Losses marked *denied* by default return an error unless the caller explicitly
-adds the key to `Options.Allow`. Losses marked *allowed* are recorded in
-`Plan.Losses` silently; add them to `Options.Deny` to turn any of them into an
-error instead.
+adds the key to `Options.Allow`. Losses marked *allowed* are recorded silently
+and can be read without setting `Options.OnLoss`: request-phase losses appear
+in `Plan.Losses`, non-streaming / collector response-phase losses appear in
+`ir.Response.Losses` (returned by `Plan.ConvertResponse` and `Stream.Result`),
+and streaming response-phase losses appear in `Stream.Losses()`. Add any key to
+`Options.Deny` to turn it into an error instead.
 
 ## Install
 
