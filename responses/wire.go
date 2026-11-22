@@ -133,12 +133,12 @@ type wireUsage struct {
 }
 
 type wireInputDetails struct {
-	CachedTokens     int `json:"cached_tokens,omitempty"`
+	CachedTokens     int `json:"cached_tokens"`
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
 type wireOutputDetails struct {
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // wireError is the error object in a response or error response body.

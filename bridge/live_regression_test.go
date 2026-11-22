@@ -473,3 +473,75 @@ func TestLiveRegression_CachedWebSearchDroppedForChat(t *testing.T) {
 		t.Fatalf("expected error for active web_search towards Chat Completions")
 	}
 }
+
+// TestLiveRegression_ResponsesUsageZeroDetailsIncludeRequiredFields verifies
+// that when Responses usage emits input_tokens_details or output_tokens_details
+// with zero counts (e.g. from Chat Completions gpt-4.1-mini reporting
+// cached_tokens:0 and reasoning_tokens:0), the required integer fields
+// cached_tokens and reasoning_tokens are serialized explicitly rather than
+// emitting empty objects {} which fail strict Responses clients such as Codex.
+func TestLiveRegression_ResponsesUsageZeroDetailsIncludeRequiredFields(t *testing.T) {
+	reqBody := []byte(`{"model":"gpt-4.1-mini","input":"pong","stream":true}`)
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, reqBody, bridge.Options{})
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+
+	chatSSE := strings.Join([]string{
+		`data: {"id":"chatcmpl-live1","object":"chat.completion.chunk","created":1,"model":"gpt-4.1-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"pong"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-live1","object":"chat.completion.chunk","created":1,"model":"gpt-4.1-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: {"id":"chatcmpl-live1","object":"chat.completion.chunk","created":1,"model":"gpt-4.1-mini","choices":[],"usage":{"prompt_tokens":13,"completion_tokens":1,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	st := plan.NewStream()
+	rd := sse.NewReader(strings.NewReader(chatSSE))
+	var out []byte
+	for {
+		ev, rerr := rd.Next()
+		if rerr != nil {
+			break
+		}
+		if len(ev.Data) == 0 {
+			continue
+		}
+		out, err = st.Feed(out, ev)
+		if err != nil {
+			t.Fatalf("Feed: %v", err)
+		}
+	}
+	out, err = st.End(out, ir.EndDone)
+	if err != nil {
+		t.Fatalf("End: %v", err)
+	}
+
+	var completedUsage map[string]any
+	outRd := sse.NewReader(strings.NewReader(string(out)))
+	for {
+		ev, rerr := outRd.Next()
+		if rerr != nil {
+			break
+		}
+		var m map[string]any
+		if json.Unmarshal(ev.Data, &m) == nil && m["type"] == "response.completed" {
+			if resp, ok := m["response"].(map[string]any); ok {
+				completedUsage, _ = resp["usage"].(map[string]any)
+			}
+		}
+	}
+	if completedUsage == nil {
+		t.Fatalf("missing response.completed usage:\n%s", string(out))
+	}
+	inDet, _ := completedUsage["input_tokens_details"].(map[string]any)
+	if _, ok := inDet["cached_tokens"]; !ok {
+		t.Fatalf("input_tokens_details missing required cached_tokens key: %v", completedUsage)
+	}
+	outDet, _ := completedUsage["output_tokens_details"].(map[string]any)
+	if _, ok := outDet["reasoning_tokens"]; !ok {
+		t.Fatalf("output_tokens_details missing required reasoning_tokens key: %v", completedUsage)
+	}
+}
