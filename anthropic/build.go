@@ -162,6 +162,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			}
 		}
 	} else if req.ToolChoice.Mode == ir.ToolChoiceRequired ||
+		req.ToolChoice.Mode == ir.ToolChoiceTool ||
 		(req.ToolChoice.Mode == ir.ToolChoiceAllowed && req.ToolChoice.AllowedMode == ir.ToolChoiceRequired) {
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), "tool_choice.required", "tool_choice requires a tool, but no supported tools remain for Anthropic"))
 	}

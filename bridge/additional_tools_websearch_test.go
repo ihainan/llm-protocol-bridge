@@ -401,6 +401,19 @@ func TestResponsesAdditionalTools_PrecedenceAndValidation(t *testing.T) {
 		if _, err := bridge.Parse(ir.FormatResponses, []byte(body), bridge.Options{}); err == nil {
 			t.Fatalf("expected error for duplicate tool inside same additional_tools block")
 		}
+		dupBuiltin := `{
+		  "model": "m",
+		  "input": [
+		    {"type": "additional_tools", "tools": [
+		      {"type": "web_search", "external_web_access": false},
+		      {"type": "web_search", "external_web_access": true}
+		    ]},
+		    {"type": "message", "role": "user", "content": "hi"}
+		  ]
+		}`
+		if _, err := bridge.Parse(ir.FormatResponses, []byte(dupBuiltin), bridge.Options{}); err == nil {
+			t.Fatalf("expected error for duplicate web_search builtin inside same additional_tools block")
+		}
 	})
 
 	// 4. Null/omitted tools in additional_tools is a no-op; non-array tools is 400.
@@ -491,12 +504,23 @@ func TestAnthropicDisableWebSearch(t *testing.T) {
 		t.Fatalf("expected both tools and tool_choice omitted when only web_search was dropped: %s", planOnlyWS.Body)
 	}
 
-	// 3. Only web_search + tool_choice="required" -> explicit unsupported error.
+	// 3. Only web_search + tool_choice="required" or specific tool -> explicit unsupported error.
 	onlyWSReq := `{"model":"claude-sonnet-4-6","tool_choice":"required","tools":[{"type":"web_search"}],"input":"hi"}`
 	if _, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(onlyWSReq), bridge.Options{
 		Anthropic: anthropic.Dialect{DisableWebSearch: true},
 	}); err == nil {
 		t.Fatalf("expected error when tool_choice=required and only web_search was dropped")
+	}
+	directReq := &ir.Request{
+		Model:      "claude-sonnet-4-6",
+		Messages:   []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("hi")}}},
+		Builtins:   []ir.BuiltinTool{{Kind: ir.BuiltinWebSearch, Origin: ir.FormatResponses}},
+		ToolChoice: ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: "web_search"},
+	}
+	if _, err := bridge.Build(directReq, ir.FormatResponses, ir.FormatAnthropic, bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected error from bridge.Build when ToolChoiceTool targets dropped web_search and no tools remain")
 	}
 
 	// 4. Anthropic-origin web_search_20250305 is also stripped when DisableWebSearch=true.

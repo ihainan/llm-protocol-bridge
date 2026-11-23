@@ -1018,6 +1018,11 @@ func parseToolsWithSeen(raw json.RawMessage, p ir.Path, env *ir.Env, seen map[st
 			tools = append(tools, subTools...)
 			builtins = append(builtins, subBuiltins...)
 		case "web_search", "web_search_preview":
+			bkey := "\x01" + string(ir.BuiltinWebSearch)
+			if seen[bkey] {
+				return nil, nil, env.Err(ir.Invalid(fp.Key("type"), "duplicate builtin tool: "+string(ir.BuiltinWebSearch)))
+			}
+			seen[bkey] = true
 			var cfgBytes json.RawMessage
 			cfgMap := map[string]json.RawMessage{}
 			for k, v := range fields {
