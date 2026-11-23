@@ -36,7 +36,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// 1. Tools (filter when ToolChoiceAllowed is set)
-	for i, bt := range req.Builtins {
+	for _, bt := range req.Builtins {
 		if bt.IsCachedWebSearch() {
 			if err := b.env.Lose(ir.LossCachedWebSearch, ir.Root.Key("tools"), "cached web_search (external_web_access: false) dropped for Chat Completions"); err != nil {
 				return nil, err
@@ -44,8 +44,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			continue
 		}
 		if bt.Kind == ir.BuiltinWebSearch && b.dia.DisableWebSearch {
-			fp := ir.Root.Key("tools").At(len(req.Tools) + i)
-			if err := b.env.Lose(ir.LossWebSearch, fp, "web_search dropped because upstream does not support server-side web search"); err != nil {
+			if err := b.env.Lose(ir.LossWebSearch, ir.Root.Key("tools"), "web_search dropped because upstream does not support server-side web search"); err != nil {
 				return nil, err
 			}
 			continue
@@ -949,9 +948,16 @@ func buildToolChoice(tc ir.ToolChoice, b *built) ([]byte, error) {
 	case ir.ToolChoiceRequired:
 		return jsonRaw(`"required"`), nil
 	case ir.ToolChoiceTool:
+		if tc.Builtin != "" {
+			return nil, b.env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), string(tc.Builtin), "builtin tool_choice is not supported by Chat Completions"))
+		}
+		wireName := b.nameMap.WireName(tc.Namespace, tc.Name)
+		if _, exists := b.names[wireName]; !exists {
+			return nil, b.env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), tc.Name, "tool_choice targets a tool that is not available in Chat tools: "+tc.Name))
+		}
 		wtc := wireToolChoice{
 			Type:     "function",
-			Function: &wireToolChoiceFunc{Name: b.nameMap.WireName(tc.Namespace, tc.Name)},
+			Function: &wireToolChoiceFunc{Name: wireName},
 		}
 		return jsonx.Marshal(wtc)
 	case ir.ToolChoiceAllowed:

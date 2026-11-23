@@ -91,7 +91,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		switch bt.Kind {
 		case ir.BuiltinWebSearch:
 			if dia.DisableWebSearch {
-				if err := env.Lose(ir.LossWebSearch, fp, "web_search dropped because upstream does not support server-side web search"); err != nil {
+				if err := env.Lose(ir.LossWebSearch, ir.Root.Key("tools"), "web_search dropped because upstream does not support server-side web search"); err != nil {
 					return nil, err
 				}
 				continue

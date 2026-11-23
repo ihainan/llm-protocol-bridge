@@ -469,6 +469,9 @@ func TestAnthropicDisableWebSearch(t *testing.T) {
 	hasLoss := false
 	for _, l := range planOff.Losses {
 		if l.Kind == ir.LossWebSearch {
+			if l.Path.String() != "tools" {
+				t.Fatalf("expected LossWebSearch path \"tools\", got %q", l.Path.String())
+			}
 			hasLoss = true
 		}
 	}
@@ -572,6 +575,9 @@ func TestChatDisableWebSearch(t *testing.T) {
 	hasLoss := false
 	for _, l := range planOff.Losses {
 		if l.Kind == ir.LossWebSearch {
+			if l.Path.String() != "tools" {
+				t.Fatalf("expected LossWebSearch path \"tools\", got %q", l.Path.String())
+			}
 			hasLoss = true
 		}
 	}
@@ -643,6 +649,31 @@ func TestChatDisableWebSearch(t *testing.T) {
 		Chat: chat.Dialect{DisableWebSearch: true},
 	}); err == nil {
 		t.Fatalf("expected error from bridge.Build when ToolChoiceTool targets dropped web_search toward Chat")
+	}
+	// Even when regular function tools remain, forcing a dropped/builtin web_search must fail.
+	mixedForcedName := &ir.Request{
+		Model:      "gpt-5.4-mini",
+		Messages:   []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("hi")}}},
+		Tools:      []ir.Tool{{Kind: ir.ToolFunction, Name: "exec_command"}},
+		Builtins:   []ir.BuiltinTool{{Kind: ir.BuiltinWebSearch, Origin: ir.FormatResponses}},
+		ToolChoice: ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: "web_search"},
+	}
+	if _, err := bridge.Build(mixedForcedName, ir.FormatResponses, ir.FormatChat, bridge.Options{
+		Chat: chat.Dialect{DisableWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected error when ToolChoiceTool(Name=web_search) targets dropped web_search alongside function tools")
+	}
+	mixedForcedBuiltin := &ir.Request{
+		Model:      "gpt-5.4-mini",
+		Messages:   []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("hi")}}},
+		Tools:      []ir.Tool{{Kind: ir.ToolFunction, Name: "exec_command"}},
+		Builtins:   []ir.BuiltinTool{{Kind: ir.BuiltinWebSearch, Origin: ir.FormatResponses}},
+		ToolChoice: ir.ToolChoice{Mode: ir.ToolChoiceTool, Builtin: ir.BuiltinWebSearch},
+	}
+	if _, err := bridge.Build(mixedForcedBuiltin, ir.FormatResponses, ir.FormatChat, bridge.Options{
+		Chat: chat.Dialect{DisableWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected error when ToolChoiceTool(Builtin=web_search) targets dropped web_search alongside function tools")
 	}
 
 	// 5. Anthropic web_search_20250305 and Gemini googleSearch toward Chat with DisableWebSearch=true.

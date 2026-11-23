@@ -64,9 +64,10 @@ type Dialect struct {
 	// ReasoningReplay controls how reasoning is replayed in tool-call rounds.
 	ReasoningReplay ReasoningReplay
 
-	// DisableWebSearch: when true, server-side web_search builtin tools
-	// (including live web_search with external_web_access != false) are omitted
-	// and recorded via ir.LossWebSearch instead of failing with unsupported.
+	// DisableWebSearch: when true, live server-side web_search builtin tools
+	// (external_web_access != false) are omitted and recorded via ir.LossWebSearch
+	// instead of failing with unsupported. Cached web_search (external_web_access: false)
+	// continues to be dropped via ir.LossCachedWebSearch.
 	DisableWebSearch bool
 }
 
