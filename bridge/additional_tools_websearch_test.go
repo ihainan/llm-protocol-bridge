@@ -538,6 +538,100 @@ func TestAnthropicDisableWebSearch(t *testing.T) {
 	if strings.Contains(string(planAnth.Body), "web_search") {
 		t.Fatalf("expected Anthropic-origin web_search_20250305 dropped: %s", planAnth.Body)
 	}
+
+	// 5. When DisableWebSearch=true drops web_search while other function tools remain,
+	//    forcing ToolChoiceTool to the dropped web_search (by Name or Builtin) fails,
+	//    unless a surviving regular function tool has Name=="web_search".
+	mixedName := &ir.Request{
+		Model:      "claude-sonnet-4-6",
+		Messages:   []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("hi")}}},
+		Tools:      []ir.Tool{{Kind: ir.ToolFunction, Name: "read_file"}},
+		Builtins:   []ir.BuiltinTool{{Kind: ir.BuiltinWebSearch, Origin: ir.FormatResponses}},
+		ToolChoice: ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: "web_search"},
+	}
+	if _, err := bridge.Build(mixedName, ir.FormatResponses, ir.FormatAnthropic, bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected error when ToolChoiceTool(Name=web_search) targets dropped web_search alongside function tools")
+	}
+	mixedBuiltin := &ir.Request{
+		Model:      "claude-sonnet-4-6",
+		Messages:   []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("hi")}}},
+		Tools:      []ir.Tool{{Kind: ir.ToolFunction, Name: "web_search"}},
+		Builtins:   []ir.BuiltinTool{{Kind: ir.BuiltinWebSearch, Origin: ir.FormatResponses}},
+		ToolChoice: ir.ToolChoice{Mode: ir.ToolChoiceTool, Builtin: ir.BuiltinWebSearch},
+	}
+	if _, err := bridge.Build(mixedBuiltin, ir.FormatResponses, ir.FormatAnthropic, bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected error when ToolChoiceTool(Builtin=web_search) targets dropped builtin")
+	}
+	survivingFn := &ir.Request{
+		Model:      "claude-sonnet-4-6",
+		Messages:   []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("hi")}}},
+		Tools:      []ir.Tool{{Kind: ir.ToolFunction, Name: "web_search"}},
+		Builtins:   []ir.BuiltinTool{{Kind: ir.BuiltinWebSearch, Origin: ir.FormatResponses}},
+		ToolChoice: ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: "web_search"},
+	}
+	if planSurv, err := bridge.Build(survivingFn, ir.FormatResponses, ir.FormatAnthropic, bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+	}); err != nil {
+		t.Fatalf("expected surviving regular function named web_search to succeed: %v", err)
+	} else if !strings.Contains(string(planSurv.Body), `"tool_choice":{"type":"tool","name":"web_search"}`) {
+		t.Fatalf("expected tool_choice preserved for surviving regular function: %s", planSurv.Body)
+	}
+}
+
+// TestChatToAnthropicDisableWebSearchOff_ByteExactV010 pins byte-for-byte
+// compatibility with v0.1.0 when Anthropic.DisableWebSearch is false, including
+// Chat requests carrying web_search_options without regular tools and explicit
+// tool_choice ("required", "none", "auto", named function, parallel_tool_calls:false).
+func TestChatToAnthropicDisableWebSearchOff_ByteExactV010(t *testing.T) {
+	cases := []struct {
+		name string
+		req  string
+		want string
+	}{
+		{
+			name: "web_search_options_tool_choice_required",
+			req:  `{"model":"claude-sonnet-4-6","web_search_options":{"search_context_size":"low"},"tool_choice":"required","messages":[{"role":"user","content":"hi"}]}`,
+			want: `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":16384,"tool_choice":{"type":"any"}}`,
+		},
+		{
+			name: "web_search_options_tool_choice_none",
+			req:  `{"model":"claude-sonnet-4-6","web_search_options":{"search_context_size":"low"},"tool_choice":"none","messages":[{"role":"user","content":"hi"}]}`,
+			want: `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":16384,"tool_choice":{"type":"none"}}`,
+		},
+		{
+			name: "web_search_options_tool_choice_auto",
+			req:  `{"model":"claude-sonnet-4-6","web_search_options":{"search_context_size":"low"},"tool_choice":"auto","messages":[{"role":"user","content":"hi"}]}`,
+			want: `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":16384,"tool_choice":{"type":"auto"}}`,
+		},
+		{
+			name: "web_search_options_parallel_tool_calls_false",
+			req:  `{"model":"claude-sonnet-4-6","web_search_options":{"search_context_size":"low"},"parallel_tool_calls":false,"messages":[{"role":"user","content":"hi"}]}`,
+			want: `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":16384,"tool_choice":{"type":"auto","disable_parallel_tool_use":true}}`,
+		},
+		{
+			name: "web_search_options_tool_choice_named",
+			req:  `{"model":"claude-sonnet-4-6","web_search_options":{"search_context_size":"low"},"tool_choice":{"type":"function","function":{"name":"foo"}},"messages":[{"role":"user","content":"hi"}]}`,
+			want: `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":16384,"tool_choice":{"type":"tool","name":"foo"}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := bridge.Convert(ir.FormatChat, ir.FormatAnthropic, []byte(tc.req), bridge.Options{
+				Unknown: ir.UnknownIgnore,
+			})
+			if err != nil {
+				t.Fatalf("Convert failed: %v", err)
+			}
+			if string(plan.Body) != tc.want {
+				t.Fatalf("output diverged from v0.1.0:\ngot:  %s\nwant: %s", plan.Body, tc.want)
+			}
+		})
+	}
 }
 
 func TestChatDisableWebSearch(t *testing.T) {

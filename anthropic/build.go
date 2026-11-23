@@ -86,6 +86,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		}
 		rawTools = append(rawTools, tb)
 	}
+	droppedWebSearch := false
 	for i, bt := range req.Builtins {
 		fp := ir.Root.Key("tools").At(len(req.Tools) + i)
 		switch bt.Kind {
@@ -94,6 +95,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 				if err := env.Lose(ir.LossWebSearch, ir.Root.Key("tools"), "web_search dropped because upstream does not support server-side web search"); err != nil {
 					return nil, err
 				}
+				droppedWebSearch = true
 				continue
 			}
 			if bt.Origin == ir.FormatAnthropic && len(bt.Raw) > 0 {
@@ -150,12 +152,19 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		}
 	}
 
-	// Tool choice. Emitted only when at least one tool remains in rawTools
-	// (Anthropic rejects tool_choice when tools is absent). If all tools were
-	// dropped (e.g., only web_search was present and DisableWebSearch dropped it)
-	// and tool_choice required calling a tool, fail explicitly.
-	if len(rawTools) > 0 {
+	// Tool choice. When DisableWebSearch did not drop any tool, preserve exact
+	// v0.1.0 behaviour (callers such as gateways may inject extra tools after
+	// BuildRequest, e.g. Chat web_search_options -> web_search_20250305).
+	// When DisableWebSearch dropped web_search:
+	//   - if no tools remain, omit optional tool_choice and fail on forced tool_choice;
+	//   - if other tools remain, fail if tool_choice explicitly targets the dropped web_search.
+	if !droppedWebSearch || len(rawTools) > 0 {
 		if req.ToolChoice.Mode != "" || (req.ParallelToolCalls != nil && !*req.ParallelToolCalls) {
+			if droppedWebSearch && req.ToolChoice.Mode == ir.ToolChoiceTool &&
+				(req.ToolChoice.Builtin == ir.BuiltinWebSearch ||
+					(req.ToolChoice.Name == "web_search" && req.ToolChoice.Namespace == "" && names["web_search"].Name == "")) {
+				return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), "tool_choice.web_search", "tool_choice targets web_search, which was dropped because upstream does not support server-side web search"))
+			}
 			tcRaw, err = buildToolChoice(req.ToolChoice, req.ParallelToolCalls, nameMap, env)
 			if err != nil {
 				return nil, err
