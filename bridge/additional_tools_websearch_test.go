@@ -387,7 +387,9 @@ func TestResponsesAdditionalTools_PrecedenceAndValidation(t *testing.T) {
 		}
 	})
 
-	// 3. Duplicate within a single additional_tools block is still rejected 400.
+	// 3. Duplicate function/custom name within a single additional_tools block is rejected 400,
+	//    while duplicate/aliased builtins (e.g. web_search + web_search_preview) are accepted
+	//    to preserve exact v0.1.0 compatibility.
 	t.Run("duplicate_within_single_additional_tools_rejected", func(t *testing.T) {
 		body := `{
 		  "model": "m",
@@ -402,18 +404,22 @@ func TestResponsesAdditionalTools_PrecedenceAndValidation(t *testing.T) {
 		if _, err := bridge.Parse(ir.FormatResponses, []byte(body), bridge.Options{}); err == nil {
 			t.Fatalf("expected error for duplicate tool inside same additional_tools block")
 		}
-		dupBuiltin := `{
+		aliasedBuiltin := `{
 		  "model": "m",
 		  "input": [
 		    {"type": "additional_tools", "tools": [
 		      {"type": "web_search", "external_web_access": false},
-		      {"type": "web_search", "external_web_access": true}
+		      {"type": "web_search_preview", "external_web_access": false}
 		    ]},
 		    {"type": "message", "role": "user", "content": "hi"}
 		  ]
 		}`
-		if _, err := bridge.Parse(ir.FormatResponses, []byte(dupBuiltin), bridge.Options{}); err == nil {
-			t.Fatalf("expected error for duplicate web_search builtin inside same additional_tools block")
+		req, err := bridge.Parse(ir.FormatResponses, []byte(aliasedBuiltin), bridge.Options{})
+		if err != nil {
+			t.Fatalf("expected aliased web_search builtins to be accepted: %v", err)
+		}
+		if len(req.Builtins) != 2 {
+			t.Fatalf("expected both builtin entries preserved, got %d", len(req.Builtins))
 		}
 	})
 
@@ -609,8 +615,9 @@ func TestChatBuildDisableWebSearchOff_ByteExactV010(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat->Chat default Convert should preserve v0.1.0 behavior, got error: %v", err)
 	}
-	if !strings.Contains(string(plan.Body), `"tool_choice":{"type":"function","function":{"name":"missing"}}`) {
-		t.Fatalf("expected v0.1.0 named tool_choice preserved, got: %s", plan.Body)
+	want := `{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"foo","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"missing"}}}`
+	if string(plan.Body) != want {
+		t.Fatalf("Chat->Chat output diverged from v0.1.0:\ngot:  %s\nwant: %s", plan.Body, want)
 	}
 
 	// Namespaced regular function named "web_search" selected by bare name alongside dropped web_search.
@@ -621,6 +628,79 @@ func TestChatBuildDisableWebSearchOff_ByteExactV010(t *testing.T) {
 		t.Fatalf("expected namespaced web_search selected by bare name toward Chat to succeed: %v", err)
 	} else if !strings.Contains(string(planNS.Body), `"tool_choice":{"type":"function","function":{"name":"ns__web_search"}}`) {
 		t.Fatalf("expected resolved wire name ns__web_search in Chat body: %s", planNS.Body)
+	}
+}
+
+// TestResponsesDuplicateAndAliasedBuiltins_ByteExactV010 pins byte-for-byte
+// compatibility with v0.1.0 when a Responses request declares duplicate or
+// aliased web_search builtins (web_search + web_search_preview) alongside
+// regular function tools and DisableWebSearch is false.
+func TestResponsesDuplicateAndAliasedBuiltins_ByteExactV010(t *testing.T) {
+	cachedAliased := `{"model":"m","input":"hi","tools":[{"type":"web_search","external_web_access":false},{"type":"web_search_preview","external_web_access":false},{"type":"function","name":"ping","description":"Ping","parameters":{"type":"object","properties":{"x":{"type":"string"}}}}]}`
+	liveAliased := `{"model":"m","input":"hi","tools":[{"type":"web_search"},{"type":"web_search_preview"},{"type":"function","name":"ping","description":"Ping","parameters":{"type":"object","properties":{"x":{"type":"string"}}}}]}`
+
+	cases := []struct {
+		name       string
+		req        string
+		upstream   ir.Format
+		wantErr    bool
+		wantBody   string
+		wantLosses int
+	}{
+		{
+			name:       "cached_aliased_to_chat",
+			req:        cachedAliased,
+			upstream:   ir.FormatChat,
+			wantBody:   `{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"ping","description":"Ping","parameters":{"type":"object","properties":{"x":{"type":"string"}}}}}]}`,
+			wantLosses: 2,
+		},
+		{
+			name:       "cached_aliased_to_anthropic",
+			req:        cachedAliased,
+			upstream:   ir.FormatAnthropic,
+			wantBody:   `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":16384,"tools":[{"name":"ping","description":"Ping","input_schema":{"type":"object","properties":{"x":{"type":"string"}}}}]}`,
+			wantLosses: 2,
+		},
+		{
+			name:       "cached_aliased_to_gemini",
+			req:        cachedAliased,
+			upstream:   ir.FormatGemini,
+			wantBody:   `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[{"name":"ping","description":"Ping","parameters":{"properties":{"x":{"type":"string"}},"type":"object"}}]}]}`,
+			wantLosses: 2,
+		},
+		{
+			name:     "live_aliased_to_chat_rejected",
+			req:      liveAliased,
+			upstream: ir.FormatChat,
+			wantErr:  true,
+		},
+		{
+			name:     "live_aliased_to_anthropic",
+			req:      liveAliased,
+			upstream: ir.FormatAnthropic,
+			wantBody: `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":16384,"tools":[{"name":"ping","description":"Ping","input_schema":{"type":"object","properties":{"x":{"type":"string"}}}},{"name":"web_search","type":"web_search_20250305"},{"name":"web_search","type":"web_search_20250305"}]}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := bridge.Convert(ir.FormatResponses, tc.upstream, []byte(tc.req), bridge.Options{})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error matching v0.1.0, got body=%s", plan.Body)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Convert failed: %v", err)
+			}
+			if string(plan.Body) != tc.wantBody {
+				t.Fatalf("body diverged from v0.1.0:\ngot:  %s\nwant: %s", plan.Body, tc.wantBody)
+			}
+			if len(plan.Losses) != tc.wantLosses {
+				t.Fatalf("losses count = %d, want %d: %+v", len(plan.Losses), tc.wantLosses, plan.Losses)
+			}
+		})
 	}
 }
 

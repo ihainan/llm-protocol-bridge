@@ -93,40 +93,49 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 	}
 
 	// tools: top-level tools merged with any input[].additional_tools blocks.
-	// Precedence: duplicates within a single tools array (top-level or a single
-	// additional_tools item) are rejected; across top-level tools and subsequent
-	// additional_tools items in input[] order, the later declaration with the same
-	// (Namespace, Name) overrides the earlier one in place (preserving order).
-	toolIndex := map[string]int{}
-	builtinIndex := map[ir.BuiltinKind]int{}
-	mergeTools := func(tools []ir.Tool, builtins []ir.BuiltinTool) {
-		for _, t := range tools {
-			key := t.Namespace + "\x00" + t.Name
-			if idx, exists := toolIndex[key]; exists {
-				req.Tools[idx] = t
-			} else {
-				toolIndex[key] = len(req.Tools)
-				req.Tools = append(req.Tools, t)
-			}
-		}
-		for _, bt := range builtins {
-			if idx, exists := builtinIndex[bt.Kind]; exists {
-				req.Builtins[idx] = bt
-			} else {
-				builtinIndex[bt.Kind] = len(req.Builtins)
-				req.Builtins = append(req.Builtins, bt)
-			}
-		}
-	}
+	// Precedence: duplicate (Namespace, Name) function/custom declarations within a
+	// single tools array are rejected (matching v0.1.0); duplicate/aliased builtins
+	// within a tools array are preserved verbatim as in v0.1.0. Across top-level
+	// tools and subsequent additional_tools items in input[] order, a later block's
+	// declaration overrides an earlier block's entry with the same (Namespace, Name)
+	// or builtin kind.
 	if v, ok := fields["tools"]; ok && !jsonx.IsNull(v) {
 		tools, builtins, err := parseTools(v, p.Key("tools"), env)
 		if err != nil {
 			return nil, err
 		}
-		mergeTools(tools, builtins)
+		req.Tools = tools
+		req.Builtins = builtins
 	}
-	for _, blk := range extraTools {
-		mergeTools(blk.tools, blk.builtins)
+	if len(extraTools) > 0 {
+		toolIndex := make(map[string]int, len(req.Tools))
+		for i, t := range req.Tools {
+			toolIndex[t.Namespace+"\x00"+t.Name] = i
+		}
+		for _, blk := range extraTools {
+			for _, t := range blk.tools {
+				key := t.Namespace + "\x00" + t.Name
+				if idx, exists := toolIndex[key]; exists {
+					req.Tools[idx] = t
+				} else {
+					toolIndex[key] = len(req.Tools)
+					req.Tools = append(req.Tools, t)
+				}
+			}
+			if len(blk.builtins) > 0 {
+				overridden := make(map[ir.BuiltinKind]bool, len(blk.builtins))
+				for _, bt := range blk.builtins {
+					overridden[bt.Kind] = true
+				}
+				kept := req.Builtins[:0]
+				for _, bt := range req.Builtins {
+					if !overridden[bt.Kind] {
+						kept = append(kept, bt)
+					}
+				}
+				req.Builtins = append(kept, blk.builtins...)
+			}
+		}
 	}
 
 	// tool_choice
@@ -1018,11 +1027,6 @@ func parseToolsWithSeen(raw json.RawMessage, p ir.Path, env *ir.Env, seen map[st
 			tools = append(tools, subTools...)
 			builtins = append(builtins, subBuiltins...)
 		case "web_search", "web_search_preview":
-			bkey := "\x01" + string(ir.BuiltinWebSearch)
-			if seen[bkey] {
-				return nil, nil, env.Err(ir.Invalid(fp.Key("type"), "duplicate builtin tool: "+string(ir.BuiltinWebSearch)))
-			}
-			seen[bkey] = true
 			var cfgBytes json.RawMessage
 			cfgMap := map[string]json.RawMessage{}
 			for k, v := range fields {
