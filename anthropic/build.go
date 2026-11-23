@@ -160,10 +160,16 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	//   - if other tools remain, fail if tool_choice explicitly targets the dropped web_search.
 	if !droppedWebSearch || len(rawTools) > 0 {
 		if req.ToolChoice.Mode != "" || (req.ParallelToolCalls != nil && !*req.ParallelToolCalls) {
-			if droppedWebSearch && req.ToolChoice.Mode == ir.ToolChoiceTool &&
-				(req.ToolChoice.Builtin == ir.BuiltinWebSearch ||
-					(req.ToolChoice.Name == "web_search" && req.ToolChoice.Namespace == "" && names["web_search"].Name == "")) {
-				return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), "tool_choice.web_search", "tool_choice targets web_search, which was dropped because upstream does not support server-side web search"))
+			if droppedWebSearch && req.ToolChoice.Mode == ir.ToolChoiceTool {
+				if req.ToolChoice.Builtin == ir.BuiltinWebSearch {
+					return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), "tool_choice.web_search", "tool_choice targets web_search, which was dropped because upstream does not support server-side web search"))
+				}
+				if req.ToolChoice.Name == "web_search" && req.ToolChoice.Namespace == "" {
+					wireName := nameMap.WireName(req.ToolChoice.Namespace, req.ToolChoice.Name)
+					if _, exists := names[wireName]; !exists {
+						return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), "tool_choice.web_search", "tool_choice targets web_search, which was dropped because upstream does not support server-side web search"))
+					}
+				}
 			}
 			tcRaw, err = buildToolChoice(req.ToolChoice, req.ParallelToolCalls, nameMap, env)
 			if err != nil {

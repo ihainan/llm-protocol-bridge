@@ -580,6 +580,48 @@ func TestAnthropicDisableWebSearch(t *testing.T) {
 	} else if !strings.Contains(string(planSurv.Body), `"tool_choice":{"type":"tool","name":"web_search"}`) {
 		t.Fatalf("expected tool_choice preserved for surviving regular function: %s", planSurv.Body)
 	}
+
+	// Namespaced regular function named "web_search" selected by bare name (both unique and wire-name collision).
+	nsReq := `{"model":"claude-sonnet-4-6","input":"hi","tools":[{"type":"web_search"},{"type":"namespace","name":"ns","tools":[{"type":"function","name":"web_search","parameters":{"type":"object"}}]}],"tool_choice":{"type":"function","name":"web_search"}}`
+	if planNS, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(nsReq), bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+	}); err != nil {
+		t.Fatalf("expected namespaced web_search selected by bare name to succeed: %v", err)
+	} else if !strings.Contains(string(planNS.Body), `"tool_choice":{"type":"tool","name":"ns__web_search"}`) {
+		t.Fatalf("expected resolved wire name ns__web_search: %s", planNS.Body)
+	}
+	nsCollisionReq := `{"model":"claude-sonnet-4-6","input":"hi","tools":[{"type":"web_search"},{"type":"function","name":"ns__web_search","parameters":{"type":"object"}},{"type":"namespace","name":"ns","tools":[{"type":"function","name":"web_search","parameters":{"type":"object"}}]}],"tool_choice":{"type":"function","name":"web_search"}}`
+	if planCol, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(nsCollisionReq), bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+	}); err != nil {
+		t.Fatalf("expected colliding namespaced web_search selected by bare name to succeed: %v", err)
+	} else if !strings.Contains(string(planCol.Body), `"tool_choice":{"type":"tool","name":"ns__web_search_2"}`) {
+		t.Fatalf("expected resolved colliding wire name ns__web_search_2: %s", planCol.Body)
+	}
+}
+
+// TestChatBuildDisableWebSearchOff_ByteExactV010 pins default Chat build behavior
+// against v0.1.0 when DisableWebSearch is false (including named tool_choice targeting
+// an undeclared tool, which v0.1.0 forwarded unchanged).
+func TestChatBuildDisableWebSearchOff_ByteExactV010(t *testing.T) {
+	req := `{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"foo","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"missing"}}}`
+	plan, err := bridge.Convert(ir.FormatChat, ir.FormatChat, []byte(req), bridge.Options{})
+	if err != nil {
+		t.Fatalf("Chat->Chat default Convert should preserve v0.1.0 behavior, got error: %v", err)
+	}
+	if !strings.Contains(string(plan.Body), `"tool_choice":{"type":"function","function":{"name":"missing"}}`) {
+		t.Fatalf("expected v0.1.0 named tool_choice preserved, got: %s", plan.Body)
+	}
+
+	// Namespaced regular function named "web_search" selected by bare name alongside dropped web_search.
+	nsReq := `{"model":"m","input":"hi","tools":[{"type":"web_search","external_web_access":true},{"type":"namespace","name":"ns","tools":[{"type":"function","name":"web_search","parameters":{"type":"object"}}]}],"tool_choice":{"type":"function","name":"web_search"}}`
+	if planNS, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(nsReq), bridge.Options{
+		Chat: chat.Dialect{DisableWebSearch: true},
+	}); err != nil {
+		t.Fatalf("expected namespaced web_search selected by bare name toward Chat to succeed: %v", err)
+	} else if !strings.Contains(string(planNS.Body), `"tool_choice":{"type":"function","function":{"name":"ns__web_search"}}`) {
+		t.Fatalf("expected resolved wire name ns__web_search in Chat body: %s", planNS.Body)
+	}
 }
 
 // TestChatToAnthropicDisableWebSearchOff_ByteExactV010 pins byte-for-byte
