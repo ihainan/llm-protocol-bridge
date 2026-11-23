@@ -90,6 +90,12 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		fp := ir.Root.Key("tools").At(len(req.Tools) + i)
 		switch bt.Kind {
 		case ir.BuiltinWebSearch:
+			if dia.DisableWebSearch {
+				if err := env.Lose(ir.LossWebSearch, fp, "web_search dropped because upstream does not support server-side web search"); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if bt.Origin == ir.FormatAnthropic && len(bt.Raw) > 0 {
 				rawTools = append(rawTools, bt.Raw)
 			} else if bt.IsCachedWebSearch() {
@@ -144,14 +150,20 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		}
 	}
 
-	// Tool choice. Emitted when ToolChoice.Mode is set, or when
-	// ParallelToolCalls is set to false (Anthropic expresses it via
-	// disable_parallel_tool_use on the tool_choice object).
-	if req.ToolChoice.Mode != "" || (req.ParallelToolCalls != nil && !*req.ParallelToolCalls) {
-		tcRaw, err = buildToolChoice(req.ToolChoice, req.ParallelToolCalls, nameMap, env)
-		if err != nil {
-			return nil, err
+	// Tool choice. Emitted only when at least one tool remains in rawTools
+	// (Anthropic rejects tool_choice when tools is absent). If all tools were
+	// dropped (e.g., only web_search was present and DisableWebSearch dropped it)
+	// and tool_choice required calling a tool, fail explicitly.
+	if len(rawTools) > 0 {
+		if req.ToolChoice.Mode != "" || (req.ParallelToolCalls != nil && !*req.ParallelToolCalls) {
+			tcRaw, err = buildToolChoice(req.ToolChoice, req.ParallelToolCalls, nameMap, env)
+			if err != nil {
+				return nil, err
+			}
 		}
+	} else if req.ToolChoice.Mode == ir.ToolChoiceRequired ||
+		(req.ToolChoice.Mode == ir.ToolChoiceAllowed && req.ToolChoice.AllowedMode == ir.ToolChoiceRequired) {
+		return nil, env.Err(ir.Unsupported(ir.Root.Key("tool_choice"), "tool_choice.required", "tool_choice requires a tool, but no supported tools remain for Anthropic"))
 	}
 
 	// Thinking config resolved via ModelProfile.

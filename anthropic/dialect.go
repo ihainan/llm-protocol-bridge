@@ -18,4 +18,10 @@ type Dialect struct {
 	// DefaultMaxTokens is used when ir.Request.MaxOutputTokens is nil.
 	// 0 means the downstream will error (Anthropic requires max_tokens).
 	DefaultMaxTokens int
+
+	// DisableWebSearch: when true, server-side web_search builtin tools are
+	// omitted and recorded via ir.LossWebSearch instead of being emitted as
+	// web_search_20250305 (for Anthropic-compatible upstreams such as AWS
+	// Bedrock that reject server-side web search tools).
+	DisableWebSearch bool
 }

@@ -69,12 +69,14 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 		req.PreviousResponseID, _ = jsonx.String(v)
 	}
 
-	// input: string or array
+	// input: string or array (may include additional_tools items declaring extra tools).
+	var extraTools []additionalToolBlock
 	if v, ok := fields["input"]; ok && !jsonx.IsNull(v) {
-		msgs, err := parseInput(v, p.Key("input"), env, req.PreviousResponseID != "")
+		msgs, et, err := parseInput(v, p.Key("input"), env, req.PreviousResponseID != "")
 		if err != nil {
 			return nil, err
 		}
+		extraTools = et
 		// Extract leading system/developer messages into Instructions.
 		// Within a single leading message, join multiple text parts with "\n"
 		// so Instructions holds one part per instructions/message entry (joined
@@ -90,14 +92,41 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 		req.Messages = msgs[i:]
 	}
 
-	// tools
+	// tools: top-level tools merged with any input[].additional_tools blocks.
+	// Precedence: duplicates within a single tools array (top-level or a single
+	// additional_tools item) are rejected; across top-level tools and subsequent
+	// additional_tools items in input[] order, the later declaration with the same
+	// (Namespace, Name) overrides the earlier one in place (preserving order).
+	toolIndex := map[string]int{}
+	builtinIndex := map[ir.BuiltinKind]int{}
+	mergeTools := func(tools []ir.Tool, builtins []ir.BuiltinTool) {
+		for _, t := range tools {
+			key := t.Namespace + "\x00" + t.Name
+			if idx, exists := toolIndex[key]; exists {
+				req.Tools[idx] = t
+			} else {
+				toolIndex[key] = len(req.Tools)
+				req.Tools = append(req.Tools, t)
+			}
+		}
+		for _, bt := range builtins {
+			if idx, exists := builtinIndex[bt.Kind]; exists {
+				req.Builtins[idx] = bt
+			} else {
+				builtinIndex[bt.Kind] = len(req.Builtins)
+				req.Builtins = append(req.Builtins, bt)
+			}
+		}
+	}
 	if v, ok := fields["tools"]; ok && !jsonx.IsNull(v) {
 		tools, builtins, err := parseTools(v, p.Key("tools"), env)
 		if err != nil {
 			return nil, err
 		}
-		req.Tools = tools
-		req.Builtins = builtins
+		mergeTools(tools, builtins)
+	}
+	for _, blk := range extraTools {
+		mergeTools(blk.tools, blk.builtins)
 	}
 
 	// tool_choice
@@ -368,28 +397,35 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 	return req, nil
 }
 
+type additionalToolBlock struct {
+	tools    []ir.Tool
+	builtins []ir.BuiltinTool
+}
+
 // parseInput handles the input field (string or array).
-func parseInput(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool) ([]ir.Message, error) {
+func parseInput(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool) ([]ir.Message, []additionalToolBlock, error) {
 	switch jsonx.Kind(raw) {
 	case '"':
 		s, _ := jsonx.String(raw)
-		return []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart(s)}}}, nil
+		return []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart(s)}}}, nil, nil
 	case '[':
 		return parseInputItems(raw, p, env, hasPrevRespID)
 	}
-	return nil, env.Err(ir.Invalid(p, "must be a string or array"))
+	return nil, nil, env.Err(ir.Invalid(p, "must be a string or array"))
 }
 
-// parseInputItems parses a Responses input array into ir.Messages.
+// parseInputItems parses a Responses input array into ir.Messages and any
+// additional_tools declarations embedded in input[].
 // It groups consecutive function_call and reasoning items into one assistant
 // message, and groups consecutive function_call_output items into one user message.
-func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool) ([]ir.Message, error) {
+func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool) ([]ir.Message, []additionalToolBlock, error) {
 	elems, ok := jsonx.Array(raw)
 	if !ok {
-		return nil, env.Err(ir.Invalid(p, "must be an array"))
+		return nil, nil, env.Err(ir.Invalid(p, "must be an array"))
 	}
 
 	var msgs []ir.Message
+	var extraTools []additionalToolBlock
 	knownCalls := map[string]ir.ToolKind{}
 	answeredCalls := map[string]bool{}
 
@@ -417,7 +453,7 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 		fp := p.At(i)
 		kvs, err := jsonx.Object(elem)
 		if err != nil {
-			return nil, env.Err(ir.Invalid(fp, "must be an object"))
+			return nil, nil, env.Err(ir.Invalid(fp, "must be an object"))
 		}
 		fields := map[string]json.RawMessage{}
 		for _, kv := range kvs {
@@ -433,7 +469,7 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 			flush()
 			msg, err := parseMessageItem(fields, fp, env)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			msgs = append(msgs, msg)
 
@@ -441,7 +477,7 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 			c := ensure(ir.RoleAssistant)
 			part, err := parseReasoningItem(fields, fp, env)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			c.parts = append(c.parts, part)
 
@@ -449,10 +485,10 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 			c := ensure(ir.RoleAssistant)
 			part, err := parseFunctionCallItem(fields, fp, env)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if _, dup := knownCalls[part.Call.ID]; dup {
-				return nil, env.Err(ir.Invalid(fp.Key("call_id"), "duplicate call_id: "+part.Call.ID))
+				return nil, nil, env.Err(ir.Invalid(fp.Key("call_id"), "duplicate call_id: "+part.Call.ID))
 			}
 			knownCalls[part.Call.ID] = ir.ToolFunction
 			c.parts = append(c.parts, part)
@@ -461,19 +497,19 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 			c := ensure(ir.RoleUser)
 			part, err := parseFunctionCallOutputItem(fields, fp, env)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			callID := part.Result.CallID
 			callKind, known := knownCalls[callID]
 			if !known {
 				if !hasPrevRespID && !env.Repairs(ir.RepairOrphanResults) {
-					return nil, env.Err(ir.Invalid(fp.Key("call_id"), "no tool call found for call_id: "+callID))
+					return nil, nil, env.Err(ir.Invalid(fp.Key("call_id"), "no tool call found for call_id: "+callID))
 				}
 			} else if callKind != ir.ToolFunction {
-				return nil, env.Err(ir.Invalid(fp.Key("type"), "call_id "+callID+" belongs to a custom_tool call, not function"))
+				return nil, nil, env.Err(ir.Invalid(fp.Key("type"), "call_id "+callID+" belongs to a custom_tool call, not function"))
 			}
 			if answeredCalls[callID] && !env.Repairs(ir.RepairDuplicateResults) {
-				return nil, env.Err(ir.Invalid(fp.Key("call_id"), "call_id already has an output: "+callID))
+				return nil, nil, env.Err(ir.Invalid(fp.Key("call_id"), "call_id already has an output: "+callID))
 			}
 			answeredCalls[callID] = true
 			c.parts = append(c.parts, part)
@@ -482,10 +518,10 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 			c := ensure(ir.RoleAssistant)
 			part, err := parseCustomToolCallItem(fields, fp, env)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if _, dup := knownCalls[part.Call.ID]; dup {
-				return nil, env.Err(ir.Invalid(fp.Key("call_id"), "duplicate call_id: "+part.Call.ID))
+				return nil, nil, env.Err(ir.Invalid(fp.Key("call_id"), "duplicate call_id: "+part.Call.ID))
 			}
 			knownCalls[part.Call.ID] = ir.ToolCustom
 			c.parts = append(c.parts, part)
@@ -494,32 +530,49 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 			c := ensure(ir.RoleUser)
 			part, err := parseCustomToolCallOutputItem(fields, fp, env)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			callID := part.Result.CallID
 			callKind, known := knownCalls[callID]
 			if !known {
 				if !hasPrevRespID && !env.Repairs(ir.RepairOrphanResults) {
-					return nil, env.Err(ir.Invalid(fp.Key("call_id"), "no tool call found for call_id: "+callID))
+					return nil, nil, env.Err(ir.Invalid(fp.Key("call_id"), "no tool call found for call_id: "+callID))
 				}
 			} else if callKind != ir.ToolCustom {
-				return nil, env.Err(ir.Invalid(fp.Key("type"), "call_id "+callID+" belongs to a function call, not custom_tool"))
+				return nil, nil, env.Err(ir.Invalid(fp.Key("type"), "call_id "+callID+" belongs to a function call, not custom_tool"))
 			}
 			if answeredCalls[callID] && !env.Repairs(ir.RepairDuplicateResults) {
-				return nil, env.Err(ir.Invalid(fp.Key("call_id"), "call_id already has an output: "+callID))
+				return nil, nil, env.Err(ir.Invalid(fp.Key("call_id"), "call_id already has an output: "+callID))
 			}
 			answeredCalls[callID] = true
 			c.parts = append(c.parts, part)
 
+		case "additional_tools":
+			if roleRaw, ok := fields["role"]; ok && !jsonx.IsNull(roleRaw) {
+				if _, okStr := jsonx.String(roleRaw); !okStr {
+					return nil, nil, env.Err(ir.Invalid(fp.Key("role"), "role must be a string"))
+				}
+			}
+			if toolsRaw, ok := fields["tools"]; ok && !jsonx.IsNull(toolsRaw) {
+				subTools, subBuiltins, err := parseToolsWithSeen(toolsRaw, fp.Key("tools"), env, map[string]bool{}, "")
+				if err != nil {
+					return nil, nil, err
+				}
+				extraTools = append(extraTools, additionalToolBlock{
+					tools:    subTools,
+					builtins: subBuiltins,
+				})
+			}
+
 		case "item_reference":
-			return nil, env.Err(ir.Unsupported(fp.Key("type"), "item_reference", "item_reference is not supported"))
+			return nil, nil, env.Err(ir.Unsupported(fp.Key("type"), "item_reference", "item_reference is not supported"))
 
 		default:
-			return nil, env.Err(ir.Invalid(fp.Key("type"), "unknown input item type: "+itemType))
+			return nil, nil, env.Err(ir.Invalid(fp.Key("type"), "unknown input item type: "+itemType))
 		}
 	}
 	flush()
-	return msgs, nil
+	return msgs, extraTools, nil
 }
 
 func parseMessageItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, error) {

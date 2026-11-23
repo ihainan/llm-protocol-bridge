@@ -1,0 +1,513 @@
+package bridge_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"strings"
+	"testing"
+
+	"github.com/ihainan/llm-protocol-bridge/anthropic"
+	"github.com/ihainan/llm-protocol-bridge/bridge"
+	"github.com/ihainan/llm-protocol-bridge/ir"
+	"github.com/ihainan/llm-protocol-bridge/sse"
+)
+
+// codexAdditionalToolsRequest mirrors a Codex-style Responses request that omits
+// top-level tools and declares namespaced custom + function tools via an
+// input[0] item of type "additional_tools".
+const codexAdditionalToolsRequest = `{
+  "model": "gpt-6.1-test",
+  "stream": true,
+  "store": false,
+  "tool_choice": "auto",
+  "parallel_tool_calls": false,
+  "include": ["reasoning.encrypted_content"],
+  "reasoning": {"effort": "low", "context": "all_turns"},
+  "text": {"verbosity": "low"},
+  "prompt_cache_key": "sess-001",
+  "client_metadata": {"turn_id": "t-1"},
+  "input": [
+    {
+      "type": "additional_tools",
+      "id": "at_001",
+      "role": "developer",
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "functions",
+          "description": "",
+          "tools": [
+            {
+              "type": "custom",
+              "name": "exec",
+              "description": "Run a script",
+              "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.+/"}
+            },
+            {
+              "type": "function",
+              "name": "wait",
+              "description": "Wait for background task",
+              "strict": false,
+              "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
+            }
+          ]
+        },
+        {
+          "type": "namespace",
+          "name": "clock",
+          "tools": [
+            {
+              "type": "function",
+              "name": "sleep",
+              "description": "Sleep for N seconds",
+              "strict": true,
+              "parameters": {"type": "object", "properties": {"seconds": {"type": "integer"}}, "required": ["seconds"], "additionalProperties": false}
+            }
+          ]
+        },
+        {
+          "type": "namespace",
+          "name": "collaboration",
+          "tools": [
+            {
+              "type": "function",
+              "name": "spawn_agent",
+              "description": "Spawn a helper agent",
+              "strict": false,
+              "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_dev_1",
+      "role": "developer",
+      "content": [{"type": "input_text", "text": "You are a coding assistant."}]
+    },
+    {
+      "type": "message",
+      "id": "msg_user_1",
+      "role": "user",
+      "content": [{"type": "input_text", "text": "Run a quick command and sleep."}]
+    }
+  ]
+}`
+
+func TestResponsesAdditionalTools_AllDirectionsAndRoundTrip(t *testing.T) {
+	targets := []struct {
+		name      string
+		upstream  ir.Format
+		checkBody func(t *testing.T, body []byte) map[string]string // returns logical "ns/name" -> wireName
+		nsResp    func(wireExec, wireSleep string) []byte
+		sseResp   func(wireExec, wireSleep string) []byte
+	}{
+		{
+			name:     "responses_to_chat",
+			upstream: ir.FormatChat,
+			checkBody: func(t *testing.T, body []byte) map[string]string {
+				var req struct {
+					Messages []struct {
+						Role string `json:"role"`
+					} `json:"messages"`
+					Tools []struct {
+						Type     string `json:"type"`
+						Function struct {
+							Name string `json:"name"`
+						} `json:"function"`
+					} `json:"tools"`
+				}
+				if err := json.Unmarshal(body, &req); err != nil {
+					t.Fatalf("unmarshal chat body: %v", err)
+				}
+				if len(req.Tools) != 4 {
+					t.Fatalf("expected 4 tools, got %d (%s)", len(req.Tools), body)
+				}
+				if len(req.Messages) < 2 || req.Messages[0].Role != "system" {
+					t.Fatalf("leading developer message should become system instruction after additional_tools: %s", body)
+				}
+				m := map[string]string{}
+				for _, tl := range req.Tools {
+					m[tl.Function.Name] = tl.Function.Name
+				}
+				return m
+			},
+			nsResp: func(wireExec, wireSleep string) []byte {
+				return []byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-6.1-test","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"` + wireExec + `","arguments":"{\"input\":\"console.log(1)\"}"}},{"id":"call_2","type":"function","function":{"name":"` + wireSleep + `","arguments":"{\"seconds\":3}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+			},
+			sseResp: func(wireExec, wireSleep string) []byte {
+				return []byte(
+					"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-6.1-test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"" + wireExec + "\",\"arguments\":\"{\\\"input\\\":\\\"console.log(1)\\\"}\"}}]}}]}\n\n" +
+						"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-6.1-test\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"" + wireSleep + "\",\"arguments\":\"{\\\"seconds\\\":3}\"}}]}}]}\n\n" +
+						"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-6.1-test\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n" +
+						"data: [DONE]\n\n")
+			},
+		},
+		{
+			name:     "responses_to_anthropic",
+			upstream: ir.FormatAnthropic,
+			checkBody: func(t *testing.T, body []byte) map[string]string {
+				var req struct {
+					System json.RawMessage `json:"system"`
+					Tools  []struct {
+						Name string `json:"name"`
+					} `json:"tools"`
+				}
+				if err := json.Unmarshal(body, &req); err != nil {
+					t.Fatalf("unmarshal anthropic body: %v", err)
+				}
+				if len(req.Tools) != 4 {
+					t.Fatalf("expected 4 tools, got %d (%s)", len(req.Tools), body)
+				}
+				if !strings.Contains(string(req.System), "coding assistant") {
+					t.Fatalf("expected developer instruction in anthropic system: %s", body)
+				}
+				m := map[string]string{}
+				for _, tl := range req.Tools {
+					m[tl.Name] = tl.Name
+				}
+				return m
+			},
+			nsResp: func(wireExec, wireSleep string) []byte {
+				return []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","stop_reason":"tool_use","content":[{"type":"tool_use","id":"call_1","name":"` + wireExec + `","input":{"input":"console.log(1)"}},{"type":"tool_use","id":"call_2","name":"` + wireSleep + `","input":{"seconds":3}}],"usage":{"input_tokens":10,"output_tokens":5}}`)
+			},
+			sseResp: func(wireExec, wireSleep string) []byte {
+				return []byte(
+					"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n" +
+						"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"" + wireExec + "\",\"input\":{}}}\n\n" +
+						"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"input\\\":\\\"console.log(1)\\\"}\"}}\n\n" +
+						"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+						"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_2\",\"name\":\"" + wireSleep + "\",\"input\":{}}}\n\n" +
+						"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"seconds\\\":3}\"}}\n\n" +
+						"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
+						"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+						"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			},
+		},
+		{
+			name:     "responses_to_gemini",
+			upstream: ir.FormatGemini,
+			checkBody: func(t *testing.T, body []byte) map[string]string {
+				var req struct {
+					Tools []struct {
+						FunctionDeclarations []struct {
+							Name string `json:"name"`
+						} `json:"functionDeclarations"`
+					} `json:"tools"`
+				}
+				if err := json.Unmarshal(body, &req); err != nil {
+					t.Fatalf("unmarshal gemini body: %v", err)
+				}
+				if len(req.Tools) != 1 || len(req.Tools[0].FunctionDeclarations) != 4 {
+					t.Fatalf("expected 4 functionDeclarations, got %s", body)
+				}
+				m := map[string]string{}
+				for _, fd := range req.Tools[0].FunctionDeclarations {
+					m[fd.Name] = fd.Name
+				}
+				return m
+			},
+			nsResp: func(wireExec, wireSleep string) []byte {
+				return []byte(`{"candidates":[{"index":0,"finishReason":"STOP","content":{"role":"model","parts":[{"functionCall":{"name":"` + wireExec + `","args":{"input":"console.log(1)"}}},{"functionCall":{"name":"` + wireSleep + `","args":{"seconds":3}}}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}`)
+			},
+			sseResp: func(wireExec, wireSleep string) []byte {
+				return []byte(
+					"data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"" + wireExec + "\",\"args\":{\"input\":\"console.log(1)\"}}}]}}]}\n\n" +
+						"data: {\"candidates\":[{\"index\":0,\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"" + wireSleep + "\",\"args\":{\"seconds\":3}}}]}}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n\n")
+			},
+		},
+	}
+
+	assertResponsesOutput := func(t *testing.T, label string, output []map[string]any) {
+		t.Helper()
+		var sawExec, sawSleep bool
+		for _, item := range output {
+			switch item["type"] {
+			case "custom_tool_call":
+				if item["name"] == "exec" && item["namespace"] == "functions" && item["input"] == "console.log(1)" {
+					sawExec = true
+				}
+			case "function_call":
+				if item["name"] == "sleep" && item["namespace"] == "clock" {
+					sawSleep = true
+				}
+			}
+		}
+		if !sawExec || !sawSleep {
+			b, _ := json.Marshal(output)
+			t.Fatalf("%s: expected custom_tool_call(functions/exec) and function_call(clock/sleep), got %s", label, b)
+		}
+	}
+
+	for _, tc := range targets {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := bridge.Convert(ir.FormatResponses, tc.upstream, []byte(codexAdditionalToolsRequest), bridge.Options{})
+			if err != nil {
+				t.Fatalf("Convert failed: %v", err)
+			}
+			wireSet := tc.checkBody(t, plan.Body)
+			// Find wire names for exec (in functions) and sleep (in clock)
+			var wireExec, wireSleep string
+			for w := range wireSet {
+				if strings.HasSuffix(w, "exec") {
+					wireExec = w
+				}
+				if strings.HasSuffix(w, "sleep") {
+					wireSleep = w
+				}
+			}
+			if wireExec == "" || wireSleep == "" {
+				t.Fatalf("missing wire names in %v", wireSet)
+			}
+
+			// 1. Non-stream round-trip
+			nsOut, _, err := plan.ConvertResponse(tc.nsResp(wireExec, wireSleep))
+			if err != nil {
+				t.Fatalf("ConvertResponse failed: %v", err)
+			}
+			var nsObj struct {
+				Output []map[string]any `json:"output"`
+			}
+			if err := json.Unmarshal(nsOut, &nsObj); err != nil {
+				t.Fatalf("unmarshal non-stream Responses output: %v", err)
+			}
+			assertResponsesOutput(t, tc.name+"/nonstream", nsObj.Output)
+
+			// 2. Stream round-trip
+			st := plan.NewStream()
+			var streamOut []byte
+			sr := sse.NewReader(bytes.NewReader(tc.sseResp(wireExec, wireSleep)))
+			for {
+				ev, err := sr.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("sse.Next failed: %v", err)
+				}
+				streamOut, err = st.Feed(streamOut, ev)
+				if err != nil {
+					t.Fatalf("stream Feed failed: %v", err)
+				}
+			}
+			var endErr error
+			streamOut, endErr = st.End(streamOut, ir.EndEOF)
+			if endErr != nil {
+				t.Fatalf("stream End failed: %v", endErr)
+			}
+			var completedOutput []map[string]any
+			for _, line := range strings.Split(string(streamOut), "\n") {
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				var ev struct {
+					Type     string `json:"type"`
+					Response struct {
+						Output []map[string]any `json:"output"`
+					} `json:"response"`
+				}
+				if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev) == nil && ev.Type == "response.completed" {
+					completedOutput = ev.Response.Output
+				}
+			}
+			assertResponsesOutput(t, tc.name+"/stream", completedOutput)
+		})
+	}
+}
+
+func TestResponsesAdditionalTools_PrecedenceAndValidation(t *testing.T) {
+	// 1. Later declaration wins across top-level tools and additional_tools items (replacing in place).
+	t.Run("later_additional_tools_overrides_top_level_and_earlier_block", func(t *testing.T) {
+		body := `{
+		  "model": "m",
+		  "tools": [
+		    {"type": "function", "name": "ping", "description": "from-top-level", "parameters": {"type": "object"}},
+		    {"type": "namespace", "name": "ns1", "tools": [
+		      {"type": "function", "name": "alpha", "description": "top-ns1", "parameters": {"type": "object"}}
+		    ]}
+		  ],
+		  "tool_choice": {"type": "function", "name": "beta", "namespace": "ns2"},
+		  "input": [
+		    {"type": "additional_tools", "id": "at_1", "role": "developer", "tools": [
+		      {"type": "function", "name": "ping", "description": "from-at1", "parameters": {"type": "object"}},
+		      {"type": "namespace", "name": "ns1", "tools": [
+		        {"type": "function", "name": "alpha", "description": "at1-ns1", "parameters": {"type": "object"}}
+		      ]},
+		      {"type": "namespace", "name": "ns2", "tools": [
+		        {"type": "function", "name": "beta", "description": "at1-ns2", "parameters": {"type": "object"}}
+		      ]}
+		    ]},
+		    {"type": "additional_tools", "id": "at_2", "role": "developer", "tools": [
+		      {"type": "function", "name": "ping", "description": "from-at2", "parameters": {"type": "object"}}
+		    ]},
+		    {"type": "message", "role": "user", "content": "hi"}
+		  ]
+		}`
+		req, err := bridge.Parse(ir.FormatResponses, []byte(body), bridge.Options{})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if len(req.Tools) != 3 {
+			t.Fatalf("expected 3 merged tools, got %d: %+v", len(req.Tools), req.Tools)
+		}
+		if req.Tools[0].Name != "ping" || req.Tools[0].Description != "from-at2" {
+			t.Fatalf("expected ping overridden in-place by at_2, got %+v", req.Tools[0])
+		}
+		if req.Tools[1].Namespace != "ns1" || req.Tools[1].Name != "alpha" || req.Tools[1].Description != "at1-ns1" {
+			t.Fatalf("expected ns1/alpha overridden in-place by at_1, got %+v", req.Tools[1])
+		}
+		if req.Tools[2].Namespace != "ns2" || req.Tools[2].Name != "beta" {
+			t.Fatalf("expected ns2/beta appended, got %+v", req.Tools[2])
+		}
+	})
+
+	// 2. Same tool name in different namespaces are distinct and both kept.
+	t.Run("same_name_different_namespaces_both_kept", func(t *testing.T) {
+		body := `{
+		  "model": "m",
+		  "tools": [{"type": "function", "name": "run", "description": "bare", "parameters": {"type": "object"}}],
+		  "input": [
+		    {"type": "additional_tools", "tools": [
+		      {"type": "namespace", "name": "functions", "tools": [
+		        {"type": "function", "name": "run", "description": "ns-run", "parameters": {"type": "object"}}
+		      ]}
+		    ]},
+		    {"type": "message", "role": "user", "content": "hi"}
+		  ]
+		}`
+		req, err := bridge.Parse(ir.FormatResponses, []byte(body), bridge.Options{})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if len(req.Tools) != 2 {
+			t.Fatalf("expected 2 distinct tools across namespaces, got %d", len(req.Tools))
+		}
+	})
+
+	// 3. Duplicate within a single additional_tools block is still rejected 400.
+	t.Run("duplicate_within_single_additional_tools_rejected", func(t *testing.T) {
+		body := `{
+		  "model": "m",
+		  "input": [
+		    {"type": "additional_tools", "tools": [
+		      {"type": "function", "name": "dup", "parameters": {"type": "object"}},
+		      {"type": "function", "name": "dup", "parameters": {"type": "object"}}
+		    ]},
+		    {"type": "message", "role": "user", "content": "hi"}
+		  ]
+		}`
+		if _, err := bridge.Parse(ir.FormatResponses, []byte(body), bridge.Options{}); err == nil {
+			t.Fatalf("expected error for duplicate tool inside same additional_tools block")
+		}
+	})
+
+	// 4. Null/omitted tools in additional_tools is a no-op; non-array tools is 400.
+	t.Run("null_or_invalid_tools_in_additional_tools", func(t *testing.T) {
+		okBody := `{"model":"m","input":[{"type":"additional_tools","id":"at_empty","role":"developer","tools":null},{"type":"message","role":"user","content":"hi"}]}`
+		if _, err := bridge.Parse(ir.FormatResponses, []byte(okBody), bridge.Options{}); err != nil {
+			t.Fatalf("null additional_tools.tools should succeed: %v", err)
+		}
+		badBody := `{"model":"m","input":[{"type":"additional_tools","tools":"not-an-array"},{"type":"message","role":"user","content":"hi"}]}`
+		if _, err := bridge.Parse(ir.FormatResponses, []byte(badBody), bridge.Options{}); err == nil {
+			t.Fatalf("non-array additional_tools.tools should fail")
+		}
+	})
+}
+
+func TestAnthropicDisableWebSearch(t *testing.T) {
+	// 1. Responses -> Anthropic with web_search + function tool
+	reqBody := `{
+	  "model": "claude-sonnet-4-6",
+	  "tool_choice": "auto",
+	  "tools": [
+	    {"type": "web_search"},
+	    {"type": "function", "name": "read_file", "description": "Read file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}
+	  ],
+	  "input": "search and read"
+	}`
+
+	// Default (DisableWebSearch=false): web_search_20250305 is emitted.
+	planOn, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(reqBody), bridge.Options{})
+	if err != nil {
+		t.Fatalf("default Convert failed: %v", err)
+	}
+	if !strings.Contains(string(planOn.Body), `"web_search_20250305"`) {
+		t.Fatalf("expected web_search_20250305 when DisableWebSearch=false: %s", planOn.Body)
+	}
+
+	// DisableWebSearch=true: web_search dropped, function tool kept, LossWebSearch recorded.
+	var seenLosses []ir.Loss
+	planOff, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(reqBody), bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+		OnLoss:    func(l ir.Loss) { seenLosses = append(seenLosses, l) },
+	})
+	if err != nil {
+		t.Fatalf("DisableWebSearch Convert failed: %v", err)
+	}
+	if strings.Contains(string(planOff.Body), "web_search") {
+		t.Fatalf("expected web_search stripped when DisableWebSearch=true: %s", planOff.Body)
+	}
+	if !strings.Contains(string(planOff.Body), `"read_file"`) {
+		t.Fatalf("expected regular function tool preserved: %s", planOff.Body)
+	}
+	hasLoss := false
+	for _, l := range planOff.Losses {
+		if l.Kind == ir.LossWebSearch {
+			hasLoss = true
+		}
+	}
+	if !hasLoss {
+		t.Fatalf("expected ir.LossWebSearch in plan.Losses, got %+v", planOff.Losses)
+	}
+	hasCallbackLoss := false
+	for _, l := range seenLosses {
+		if l.Kind == ir.LossWebSearch {
+			hasCallbackLoss = true
+		}
+	}
+	if !hasCallbackLoss {
+		t.Fatalf("expected ir.LossWebSearch passed to OnLoss callback")
+	}
+
+	// Deny: LossSet{LossWebSearch: true} rejects it.
+	if _, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(reqBody), bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+		Deny:      ir.LossSet{ir.LossWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected Deny[LossWebSearch] to reject dropped web_search")
+	}
+
+	// 2. Only web_search + tool_choice="auto" -> both tools and tool_choice omitted cleanly.
+	onlyWS := `{"model":"claude-sonnet-4-6","tool_choice":"auto","parallel_tool_calls":false,"tools":[{"type":"web_search"}],"input":"hi"}`
+	planOnlyWS, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(onlyWS), bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+	})
+	if err != nil {
+		t.Fatalf("only-web_search auto Convert failed: %v", err)
+	}
+	if strings.Contains(string(planOnlyWS.Body), `"tools"`) || strings.Contains(string(planOnlyWS.Body), `"tool_choice"`) {
+		t.Fatalf("expected both tools and tool_choice omitted when only web_search was dropped: %s", planOnlyWS.Body)
+	}
+
+	// 3. Only web_search + tool_choice="required" -> explicit unsupported error.
+	onlyWSReq := `{"model":"claude-sonnet-4-6","tool_choice":"required","tools":[{"type":"web_search"}],"input":"hi"}`
+	if _, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(onlyWSReq), bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected error when tool_choice=required and only web_search was dropped")
+	}
+
+	// 4. Anthropic-origin web_search_20250305 is also stripped when DisableWebSearch=true.
+	anthReq := `{"model":"claude-sonnet-4-6","max_tokens":256,"tools":[{"type":"web_search_20250305","name":"web_search"}],"messages":[{"role":"user","content":"hi"}]}`
+	planAnth, err := bridge.Convert(ir.FormatAnthropic, ir.FormatAnthropic, []byte(anthReq), bridge.Options{
+		Anthropic: anthropic.Dialect{DisableWebSearch: true},
+	})
+	if err != nil {
+		t.Fatalf("Anthropic->Anthropic DisableWebSearch failed: %v", err)
+	}
+	if strings.Contains(string(planAnth.Body), "web_search") {
+		t.Fatalf("expected Anthropic-origin web_search_20250305 dropped: %s", planAnth.Body)
+	}
+}

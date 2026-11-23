@@ -29,6 +29,7 @@ const (
 	LossToolParallel       LossKind = "tool.parallel"
 	LossToolDeferred       LossKind = "tool.deferred"
 	LossCachedWebSearch    LossKind = "tool.cached_web_search"
+	LossWebSearch          LossKind = "tool.web_search"
 	LossReasoningSummary   LossKind = "reasoning.summary"
 	LossReasoningDisplay   LossKind = "reasoning.display"
 	LossSamplingSeed       LossKind = "sampling.seed"
@@ -62,6 +63,7 @@ var DefaultAllowed = LossSet{
 	LossToolParallel:       true,
 	LossToolDeferred:       true,
 	LossCachedWebSearch:    true,
+	LossWebSearch:          true,
 	LossReasoningSummary:   true,
 	LossReasoningDisplay:   true,
 	LossSamplingSeed:       true,
