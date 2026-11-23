@@ -1,0 +1,1422 @@
+[
+  {
+    "name": "anthropic-tools-loop",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"system\":\"sys\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"q\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"calling\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"f\",\"input\":{\"a\":1}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":[{\"type\":\"text\",\"text\":\"r1\"},{\"type\":\"text\",\"text\":\"r2\"}]},{\"type\":\"text\",\"text\":\"next\"}]}],\"max_tokens\":512,\"tools\":[{\"name\":\"f\",\"description\":\"F\",\"input_schema\":{\"type\":\"object\"}}]}"
+  },
+  {
+    "name": "anthropic-tools-loop",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"system\":\"sys\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"q\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"calling\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"f\",\"input\":{\"a\":1}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":[{\"type\":\"text\",\"text\":\"r1\"},{\"type\":\"text\",\"text\":\"r2\"}]},{\"type\":\"text\",\"text\":\"next\"}]}],\"max_tokens\":512,\"tools\":[{\"name\":\"f\",\"description\":\"F\",\"input_schema\":{\"type\":\"object\"}}]}"
+  },
+  {
+    "name": "anthropic-tools-loop",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"sys\"},{\"role\":\"user\",\"content\":\"q\"},{\"role\":\"assistant\",\"content\":\"calling\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}}]},{\"role\":\"tool\",\"content\":\"r1r2\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"next\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"description\":\"F\",\"parameters\":{\"type\":\"object\"}}}],\"max_tokens\":512}"
+  },
+  {
+    "name": "anthropic-tools-loop",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"sys\"},{\"role\":\"user\",\"content\":\"q\"},{\"role\":\"assistant\",\"content\":\"calling\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}}]},{\"role\":\"tool\",\"content\":\"r1r2\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"next\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"description\":\"F\",\"parameters\":{\"type\":\"object\"}}}],\"max_tokens\":512}"
+  },
+  {
+    "name": "anthropic-tools-loop",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"instructions\":\"sys\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"q\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"calling\"}]},{\"type\":\"function_call\",\"name\":\"f\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"a\\\":1}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"next\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"r1r2\"}],\"tools\":[{\"type\":\"function\",\"name\":\"f\",\"description\":\"F\",\"parameters\":{\"type\":\"object\"}}],\"max_output_tokens\":512}"
+  },
+  {
+    "name": "anthropic-tools-loop",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"instructions\":\"sys\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"q\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"calling\"}]},{\"type\":\"function_call\",\"name\":\"f\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"a\\\":1}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"next\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"r1r2\"}],\"tools\":[{\"type\":\"function\",\"name\":\"f\",\"description\":\"F\",\"parameters\":{\"type\":\"object\"}}],\"max_output_tokens\":512}"
+  },
+  {
+    "name": "anthropic-tools-loop",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"q\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"calling\"},{\"functionCall\":{\"name\":\"f\",\"args\":{\"a\":1}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"r1r2\"}}},{\"text\":\"next\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"sys\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"f\",\"description\":\"F\",\"parameters\":{\"type\":\"object\"}}]}],\"generationConfig\":{\"maxOutputTokens\":512}}"
+  },
+  {
+    "name": "anthropic-tools-loop",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"q\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"calling\"},{\"functionCall\":{\"name\":\"f\",\"args\":{\"a\":1}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"r1r2\"}}},{\"text\":\"next\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"sys\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"f\",\"description\":\"F\",\"parameters\":{\"type\":\"object\"}}]}],\"generationConfig\":{\"maxOutputTokens\":512}}"
+  },
+  {
+    "name": "chat-agent-loop",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"system\":\"sys\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"list files\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Checking.\"},{\"type\":\"tool_use\",\"id\":\"call_a\",\"name\":\"ls\",\"input\":{\"dir\":\".\"}},{\"type\":\"tool_use\",\"id\":\"call_b\",\"name\":\"cat\",\"input\":{\"path\":\"x\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_a\",\"content\":\"a.txt\\nb.txt\"},{\"type\":\"tool_result\",\"tool_use_id\":\"call_b\",\"content\":[{\"type\":\"text\",\"text\":\"line1\"},{\"type\":\"text\",\"text\":\"line2\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Done.\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"thanks\"}]}],\"max_tokens\":16384,\"tools\":[{\"name\":\"ls\",\"description\":\"List\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\"}}}},{\"name\":\"cat\",\"description\":\"Cat\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"additionalProperties\":false}}],\"tool_choice\":{\"type\":\"auto\",\"disable_parallel_tool_use\":true},\"stream\":true}",
+    "losses": "tool.strict@tools[1].strict"
+  },
+  {
+    "name": "chat-agent-loop",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"system\":\"sys\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"list files\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Checking.\"},{\"type\":\"tool_use\",\"id\":\"call_a\",\"name\":\"ls\",\"input\":{\"dir\":\".\"}},{\"type\":\"tool_use\",\"id\":\"call_b\",\"name\":\"cat\",\"input\":{\"path\":\"x\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_a\",\"content\":\"a.txt\\nb.txt\"},{\"type\":\"tool_result\",\"tool_use_id\":\"call_b\",\"content\":[{\"type\":\"text\",\"text\":\"line1\"},{\"type\":\"text\",\"text\":\"line2\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Done.\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"thanks\"}]}],\"max_tokens\":16384,\"tools\":[{\"name\":\"ls\",\"description\":\"List\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\"}}}},{\"name\":\"cat\",\"description\":\"Cat\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"additionalProperties\":false}}],\"tool_choice\":{\"type\":\"auto\",\"disable_parallel_tool_use\":true},\"stream\":true}",
+    "losses": "tool.strict@tools[1].strict"
+  },
+  {
+    "name": "chat-agent-loop",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"sys\"},{\"role\":\"user\",\"content\":\"list files\"},{\"role\":\"assistant\",\"content\":\"Checking.\",\"tool_calls\":[{\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"ls\",\"arguments\":\"{\\\"dir\\\":\\\".\\\"}\"}},{\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"cat\",\"arguments\":\"{\\\"path\\\":\\\"x\\\"}\"}}]},{\"role\":\"tool\",\"content\":\"a.txt\\nb.txt\",\"tool_call_id\":\"call_a\"},{\"role\":\"tool\",\"content\":\"line1line2\",\"tool_call_id\":\"call_b\"},{\"role\":\"assistant\",\"content\":\"Done.\"},{\"role\":\"user\",\"content\":\"thanks\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"ls\",\"description\":\"List\",\"parameters\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\"}}}}},{\"type\":\"function\",\"function\":{\"name\":\"cat\",\"description\":\"Cat\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"additionalProperties\":false},\"strict\":true}}],\"tool_choice\":\"auto\",\"parallel_tool_calls\":false,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+  },
+  {
+    "name": "chat-agent-loop",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"sys\"},{\"role\":\"user\",\"content\":\"list files\"},{\"role\":\"assistant\",\"content\":\"Checking.\",\"tool_calls\":[{\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"ls\",\"arguments\":\"{\\\"dir\\\":\\\".\\\"}\"}},{\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"cat\",\"arguments\":\"{\\\"path\\\":\\\"x\\\"}\"}}]},{\"role\":\"tool\",\"content\":\"a.txt\\nb.txt\",\"tool_call_id\":\"call_a\"},{\"role\":\"tool\",\"content\":\"line1line2\",\"tool_call_id\":\"call_b\"},{\"role\":\"assistant\",\"content\":\"Done.\"},{\"role\":\"user\",\"content\":\"thanks\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"ls\",\"description\":\"List\",\"parameters\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\"}}}}},{\"type\":\"function\",\"function\":{\"name\":\"cat\",\"description\":\"Cat\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"additionalProperties\":false},\"strict\":true}}],\"tool_choice\":\"auto\",\"parallel_tool_calls\":false,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+  },
+  {
+    "name": "chat-agent-loop",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"instructions\":\"sys\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"list files\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Checking.\"}]},{\"type\":\"function_call\",\"name\":\"ls\",\"call_id\":\"call_a\",\"arguments\":\"{\\\"dir\\\":\\\".\\\"}\"},{\"type\":\"function_call\",\"name\":\"cat\",\"call_id\":\"call_b\",\"arguments\":\"{\\\"path\\\":\\\"x\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_a\",\"output\":\"a.txt\\nb.txt\"},{\"type\":\"function_call_output\",\"call_id\":\"call_b\",\"output\":\"line1line2\"},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Done.\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"thanks\"}]}],\"tools\":[{\"type\":\"function\",\"name\":\"ls\",\"description\":\"List\",\"parameters\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\"}}}},{\"type\":\"function\",\"name\":\"cat\",\"description\":\"Cat\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"additionalProperties\":false},\"strict\":true}],\"tool_choice\":\"auto\",\"parallel_tool_calls\":false,\"stream\":true}"
+  },
+  {
+    "name": "chat-agent-loop",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"instructions\":\"sys\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"list files\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Checking.\"}]},{\"type\":\"function_call\",\"name\":\"ls\",\"call_id\":\"call_a\",\"arguments\":\"{\\\"dir\\\":\\\".\\\"}\"},{\"type\":\"function_call\",\"name\":\"cat\",\"call_id\":\"call_b\",\"arguments\":\"{\\\"path\\\":\\\"x\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_a\",\"output\":\"a.txt\\nb.txt\"},{\"type\":\"function_call_output\",\"call_id\":\"call_b\",\"output\":\"line1line2\"},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Done.\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"thanks\"}]}],\"tools\":[{\"type\":\"function\",\"name\":\"ls\",\"description\":\"List\",\"parameters\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\"}}}},{\"type\":\"function\",\"name\":\"cat\",\"description\":\"Cat\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"additionalProperties\":false},\"strict\":true}],\"tool_choice\":\"auto\",\"parallel_tool_calls\":false,\"stream\":true}"
+  },
+  {
+    "name": "chat-agent-loop",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"list files\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"Checking.\"},{\"functionCall\":{\"name\":\"ls\",\"args\":{\"dir\":\".\"}}},{\"functionCall\":{\"name\":\"cat\",\"args\":{\"path\":\"x\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"ls\",\"response\":{\"output\":\"a.txt\\nb.txt\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"cat\",\"response\":{\"output\":\"line1line2\"}}}]},{\"role\":\"model\",\"parts\":[{\"text\":\"Done.\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"thanks\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"sys\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"ls\",\"description\":\"List\",\"parameters\":{\"properties\":{\"dir\":{\"type\":\"string\"}},\"type\":\"object\"}},{\"name\":\"cat\",\"description\":\"Cat\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"AUTO\"}}}",
+    "losses": "tool.strict@tools[1].strict;tool.schema@tools[1].parameters;tool.parallel@parallel_tool_calls"
+  },
+  {
+    "name": "chat-agent-loop",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"list files\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"Checking.\"},{\"functionCall\":{\"name\":\"ls\",\"args\":{\"dir\":\".\"}}},{\"functionCall\":{\"name\":\"cat\",\"args\":{\"path\":\"x\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"ls\",\"response\":{\"output\":\"a.txt\\nb.txt\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"cat\",\"response\":{\"output\":\"line1line2\"}}}]},{\"role\":\"model\",\"parts\":[{\"text\":\"Done.\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"thanks\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"sys\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"ls\",\"description\":\"List\",\"parameters\":{\"properties\":{\"dir\":{\"type\":\"string\"}},\"type\":\"object\"}},{\"name\":\"cat\",\"description\":\"Cat\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"AUTO\"}}}",
+    "losses": "tool.strict@tools[1].strict;tool.schema@tools[1].parameters;tool.parallel@parallel_tool_calls"
+  },
+  {
+    "name": "chat-assistant-last",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"start\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"prefill\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "chat-assistant-last",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"start\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"prefill\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "chat-assistant-last",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"start\"},{\"role\":\"assistant\",\"content\":\"prefill\"}]}"
+  },
+  {
+    "name": "chat-assistant-last",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"start\"},{\"role\":\"assistant\",\"content\":\"prefill\"}]}"
+  },
+  {
+    "name": "chat-assistant-last",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"start\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"prefill\"}]}]}"
+  },
+  {
+    "name": "chat-assistant-last",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"start\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"prefill\"}]}]}"
+  },
+  {
+    "name": "chat-assistant-last",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"start\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"prefill\"}]}]}"
+  },
+  {
+    "name": "chat-assistant-last",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"start\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"prefill\"}]}]}"
+  },
+  {
+    "name": "chat-image-file",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"see\"},{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/a.png\"}},{\"type\":\"document\",\"source\":{\"type\":\"base64\",\"media_type\":\"application/pdf\",\"data\":\"JVBERi0=\"}}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "chat-image-file",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"see\"},{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/a.png\"}},{\"type\":\"document\",\"source\":{\"type\":\"base64\",\"media_type\":\"application/pdf\",\"data\":\"JVBERi0=\"}}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "chat-image-file",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"see\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://example.com/a.png\"}},{\"type\":\"file\",\"file\":{\"filename\":\"a.pdf\",\"file_data\":\"data:application/pdf;base64,JVBERi0=\"}}]}]}"
+  },
+  {
+    "name": "chat-image-file",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"see\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://example.com/a.png\"}},{\"type\":\"file\",\"file\":{\"filename\":\"a.pdf\",\"file_data\":\"data:application/pdf;base64,JVBERi0=\"}}]}]}"
+  },
+  {
+    "name": "chat-image-file",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"see\"},{\"type\":\"input_image\",\"image_url\":\"https://example.com/a.png\"},{\"type\":\"input_file\",\"filename\":\"a.pdf\",\"file_data\":\"JVBERi0=\"}]}]}"
+  },
+  {
+    "name": "chat-image-file",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"see\"},{\"type\":\"input_image\",\"image_url\":\"https://example.com/a.png\"},{\"type\":\"input_file\",\"filename\":\"a.pdf\",\"file_data\":\"JVBERi0=\"}]}]}"
+  },
+  {
+    "name": "chat-image-file",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"see\"},{\"fileData\":{\"fileUri\":\"https://example.com/a.png\"}},{\"inlineData\":{\"mimeType\":\"application/pdf\",\"data\":\"JVBERi0=\"}}]}]}"
+  },
+  {
+    "name": "chat-image-file",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"see\"},{\"fileData\":{\"fileUri\":\"https://example.com/a.png\"}},{\"inlineData\":{\"mimeType\":\"application/pdf\",\"data\":\"JVBERi0=\"}}]}]}"
+  },
+  {
+    "name": "chat-mid-system",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"system\":\"top\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"u1\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"a1\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"mid note\"},{\"type\":\"text\",\"text\":\"u2\"}]}],\"max_tokens\":16384,\"stop_sequences\":[\"END\"],\"metadata\":{\"user_id\":\"u-1\"}}",
+    "losses": "request.metadata@metadata"
+  },
+  {
+    "name": "chat-mid-system",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"system\":\"top\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"u1\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"a1\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\u003csystem_message\u003emid note\u003c/system_message\u003e\"},{\"type\":\"text\",\"text\":\"u2\"}]}],\"max_tokens\":16384,\"stop_sequences\":[\"END\"]}",
+    "losses": "request.metadata@metadata"
+  },
+  {
+    "name": "chat-mid-system",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"top\"},{\"role\":\"user\",\"content\":\"u1\"},{\"role\":\"assistant\",\"content\":\"a1\"},{\"role\":\"system\",\"content\":\"mid note\"},{\"role\":\"user\",\"content\":\"u2\"}],\"stop\":\"END\",\"user\":\"u-1\",\"metadata\":{\"k\":\"v\"}}"
+  },
+  {
+    "name": "chat-mid-system",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"top\"},{\"role\":\"user\",\"content\":\"u1\"},{\"role\":\"assistant\",\"content\":\"a1\"},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\u003csystem_message\u003e\\nmid note\\n\u003c/system_message\u003e\"},{\"type\":\"text\",\"text\":\"u2\"}]}],\"stop\":\"END\",\"metadata\":{\"k\":\"v\"}}"
+  },
+  {
+    "name": "chat-mid-system",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "error": "stop: not supported by Responses API"
+  },
+  {
+    "name": "chat-mid-system",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "error": "stop: not supported by Responses API"
+  },
+  {
+    "name": "chat-mid-system",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"u1\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"a1\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"mid note\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"u2\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"top\"}]},\"generationConfig\":{\"stopSequences\":[\"END\"]}}",
+    "losses": "request.user@user;request.metadata@metadata"
+  },
+  {
+    "name": "chat-mid-system",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"u1\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"a1\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"mid note\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"u2\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"top\"}]},\"generationConfig\":{\"stopSequences\":[\"END\"]}}",
+    "losses": "request.user@user;request.metadata@metadata"
+  },
+  {
+    "name": "chat-reasoning",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"u1\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"a1\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"u2\"}]}],\"max_tokens\":20000,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":19999}}",
+    "losses": "reasoning.signature@messages[1].content[0]"
+  },
+  {
+    "name": "chat-reasoning",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"u1\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"a1\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"u2\"}]}],\"max_tokens\":20000,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":19999}}",
+    "losses": "reasoning.signature@messages[1].content[0]"
+  },
+  {
+    "name": "chat-reasoning",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"u1\"},{\"role\":\"assistant\",\"content\":\"a1\",\"reasoning_content\":\"thought\"},{\"role\":\"user\",\"content\":\"u2\"}],\"max_tokens\":20000,\"reasoning_effort\":\"high\"}"
+  },
+  {
+    "name": "chat-reasoning",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"u1\"},{\"role\":\"assistant\",\"content\":\"a1\"},{\"role\":\"user\",\"content\":\"u2\"}],\"max_tokens\":20000,\"reasoning_effort\":\"high\"}"
+  },
+  {
+    "name": "chat-reasoning",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"u1\"}]},{\"type\":\"reasoning\",\"summary\":[{\"text\":\"thought\",\"type\":\"summary_text\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"a1\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"u2\"}]}],\"max_output_tokens\":20000,\"reasoning\":{\"effort\":\"high\"}}"
+  },
+  {
+    "name": "chat-reasoning",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"u1\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"a1\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"u2\"}]}],\"max_output_tokens\":20000,\"reasoning\":{\"effort\":\"high\"}}"
+  },
+  {
+    "name": "chat-reasoning",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"u1\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"thought\",\"thought\":true},{\"text\":\"a1\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"u2\"}]}],\"generationConfig\":{\"maxOutputTokens\":20000,\"thinkingConfig\":{\"thinkingBudget\":24000}}}"
+  },
+  {
+    "name": "chat-reasoning",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"u1\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"thought\",\"thought\":true},{\"text\":\"a1\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"u2\"}]}],\"generationConfig\":{\"maxOutputTokens\":20000,\"thinkingConfig\":{\"thinkingBudget\":24000}}}"
+  },
+  {
+    "name": "chat-response-format",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"json please\"}]}],\"max_tokens\":16384,\"output_config\":{\"format\":{\"schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}}},\"type\":\"json_schema\"}},\"top_p\":0.5}",
+    "losses": "sampling.seed@seed"
+  },
+  {
+    "name": "chat-response-format",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"json please\"}]}],\"max_tokens\":16384,\"output_config\":{\"format\":{\"schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}}},\"type\":\"json_schema\"}},\"top_p\":0.5}",
+    "losses": "sampling.seed@seed"
+  },
+  {
+    "name": "chat-response-format",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"json please\"}],\"top_p\":0.5,\"seed\":7,\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"x\",\"schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}}},\"strict\":true}}}"
+  },
+  {
+    "name": "chat-response-format",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"json please\"}],\"top_p\":0.5,\"seed\":7,\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"x\",\"schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}}},\"strict\":true}}}"
+  },
+  {
+    "name": "chat-response-format",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"json please\"}]}],\"top_p\":0.5,\"text\":{\"format\":{\"name\":\"x\",\"schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}}},\"type\":\"json_schema\"}}}",
+    "losses": "sampling.seed@seed"
+  },
+  {
+    "name": "chat-response-format",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"json please\"}]}],\"top_p\":0.5,\"text\":{\"format\":{\"name\":\"x\",\"schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}}},\"type\":\"json_schema\"}}}",
+    "losses": "sampling.seed@seed"
+  },
+  {
+    "name": "chat-response-format",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"json please\"}]}],\"generationConfig\":{\"topP\":0.5,\"candidateCount\":1,\"seed\":7,\"responseMimeType\":\"application/json\",\"responseSchema\":{\"properties\":{\"a\":{\"type\":\"string\"}},\"type\":\"object\"}}}"
+  },
+  {
+    "name": "chat-response-format",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"json please\"}]}],\"generationConfig\":{\"topP\":0.5,\"candidateCount\":1,\"seed\":7,\"responseMimeType\":\"application/json\",\"responseSchema\":{\"properties\":{\"a\":{\"type\":\"string\"}},\"type\":\"object\"}}}"
+  },
+  {
+    "name": "chat-simple",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "chat-simple",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "chat-simple",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+  },
+  {
+    "name": "chat-simple",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+  },
+  {
+    "name": "chat-simple",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]}]}"
+  },
+  {
+    "name": "chat-simple",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]}]}"
+  },
+  {
+    "name": "chat-simple",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}]}"
+  },
+  {
+    "name": "chat-simple",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}]}"
+  },
+  {
+    "name": "chat-system-parts",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"system\":[{\"type\":\"text\",\"text\":\"Part A\"},{\"type\":\"text\",\"text\":\"Part B\"},{\"type\":\"text\",\"text\":\"Dev note\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "chat-system-parts",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"system\":[{\"type\":\"text\",\"text\":\"Part A\"},{\"type\":\"text\",\"text\":\"Part B\"},{\"type\":\"text\",\"text\":\"Dev note\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "chat-system-parts",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"Part A\\nPart B\\nDev note\"},{\"role\":\"user\",\"content\":\"hello\"}]}"
+  },
+  {
+    "name": "chat-system-parts",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"Part A\\nPart B\\nDev note\"},{\"role\":\"user\",\"content\":\"hello\"}]}"
+  },
+  {
+    "name": "chat-system-parts",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"instructions\":\"Part A\\n\\nPart B\\n\\nDev note\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}]}"
+  },
+  {
+    "name": "chat-system-parts",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"instructions\":\"Part A\\n\\nPart B\\n\\nDev note\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}]}"
+  },
+  {
+    "name": "chat-system-parts",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hello\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"Part A\"},{\"text\":\"Part B\"},{\"text\":\"Dev note\"}]}}"
+  },
+  {
+    "name": "chat-system-parts",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hello\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"Part A\"},{\"text\":\"Part B\"},{\"text\":\"Dev note\"}]}}"
+  },
+  {
+    "name": "chat-system-string",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"system\":\"You are terse.\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"max_tokens\":256,\"temperature\":0.3}"
+  },
+  {
+    "name": "chat-system-string",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"system\":\"You are terse.\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"max_tokens\":256,\"temperature\":0.3}"
+  },
+  {
+    "name": "chat-system-string",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"You are terse.\"},{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":256,\"temperature\":0.3}"
+  },
+  {
+    "name": "chat-system-string",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"You are terse.\"},{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":256,\"temperature\":0.3}"
+  },
+  {
+    "name": "chat-system-string",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"instructions\":\"You are terse.\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]}],\"temperature\":0.3,\"max_output_tokens\":256}"
+  },
+  {
+    "name": "chat-system-string",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"instructions\":\"You are terse.\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]}],\"temperature\":0.3,\"max_output_tokens\":256}"
+  },
+  {
+    "name": "chat-system-string",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are terse.\"}]},\"generationConfig\":{\"temperature\":0.3,\"maxOutputTokens\":256}}"
+  },
+  {
+    "name": "chat-system-string",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are terse.\"}]},\"generationConfig\":{\"temperature\":0.3,\"maxOutputTokens\":256}}"
+  },
+  {
+    "name": "chat-tool-single-text-part",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"q\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"f\",\"input\":{}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"only\"},{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"\"}]}],\"max_tokens\":16384,\"tools\":[{\"name\":\"f\",\"input_schema\":{\"type\":\"object\"}}],\"tool_choice\":{\"type\":\"tool\",\"name\":\"f\"}}"
+  },
+  {
+    "name": "chat-tool-single-text-part",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"q\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"f\",\"input\":{}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"only\"},{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"\"}]}],\"max_tokens\":16384,\"tools\":[{\"name\":\"f\",\"input_schema\":{\"type\":\"object\"}}],\"tool_choice\":{\"type\":\"tool\",\"name\":\"f\"}}"
+  },
+  {
+    "name": "chat-tool-single-text-part",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"q\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"content\":\"only\",\"tool_call_id\":\"call_1\"},{\"role\":\"tool\",\"content\":\"\",\"tool_call_id\":\"call_1\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}}],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"f\"}}}"
+  },
+  {
+    "name": "chat-tool-single-text-part",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"q\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"content\":\"only\",\"tool_call_id\":\"call_1\"},{\"role\":\"tool\",\"content\":\"\",\"tool_call_id\":\"call_1\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}}],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"f\"}}}"
+  },
+  {
+    "name": "chat-tool-single-text-part",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"q\"}]},{\"type\":\"function_call\",\"name\":\"f\",\"call_id\":\"call_1\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"only\"},{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"\"}],\"tools\":[{\"type\":\"function\",\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}],\"tool_choice\":{\"name\":\"f\",\"type\":\"function\"}}"
+  },
+  {
+    "name": "chat-tool-single-text-part",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"q\"}]},{\"type\":\"function_call\",\"name\":\"f\",\"call_id\":\"call_1\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"only\"},{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"\"}],\"tools\":[{\"type\":\"function\",\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}],\"tool_choice\":{\"name\":\"f\",\"type\":\"function\"}}"
+  },
+  {
+    "name": "chat-tool-single-text-part",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"q\"}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":{}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"only\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"\"}}}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"ANY\",\"allowedFunctionNames\":[\"f\"]}}}"
+  },
+  {
+    "name": "chat-tool-single-text-part",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"q\"}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":{}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"only\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"\"}}}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"ANY\",\"allowedFunctionNames\":[\"f\"]}}}"
+  },
+  {
+    "name": "fixture-anthropic",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"system\":[{\"type\":\"text\",\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"read it\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\",\"signature\":\"c2ln\"},{\"type\":\"text\",\"text\":\"ok 漢字 😀\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"line\\u0001one\\r\\nline two\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":1024,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"thinking\":{\"type\":\"disabled\"},\"temperature\":0.7,\"metadata\":{\"user_id\":\"u_1\"}}",
+    "losses": "request.unknown_field@unknown_field"
+  },
+  {
+    "name": "fixture-anthropic",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"system\":[{\"type\":\"text\",\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"read it\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\",\"signature\":\"c2ln\"},{\"type\":\"text\",\"text\":\"ok 漢字 😀\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"line\\u0001one\\r\\nline two\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":1024,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"thinking\":{\"type\":\"disabled\"},\"temperature\":0.7}",
+    "losses": "request.unknown_field@unknown_field"
+  },
+  {
+    "name": "fixture-anthropic",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"You are é / \\\"careful\\\"\\n\\ttabs\"},{\"role\":\"user\",\"content\":\"read it\"},{\"role\":\"assistant\",\"content\":\"ok 漢字 😀\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"}}],\"reasoning_content\":\"hmm\"},{\"role\":\"tool\",\"content\":\"line\\u0001one\\r\\nline two\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}],\"max_tokens\":1024,\"temperature\":0.7,\"reasoning_effort\":\"none\",\"user\":\"u_1\"}",
+    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]"
+  },
+  {
+    "name": "fixture-anthropic",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"You are é / \\\"careful\\\"\\n\\ttabs\"},{\"role\":\"user\",\"content\":\"read it\"},{\"role\":\"assistant\",\"content\":\"ok 漢字 😀\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"}}]},{\"role\":\"tool\",\"content\":\"line\\u0001one\\r\\nline two\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}],\"max_tokens\":1024,\"temperature\":0.7,\"reasoning_effort\":\"none\"}",
+    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]"
+  },
+  {
+    "name": "fixture-anthropic",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"instructions\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"read it\"}]},{\"type\":\"reasoning\",\"summary\":[{\"text\":\"hmm\",\"type\":\"summary_text\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok 漢字 😀\"}]},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"line\\u0001one\\r\\nline two\"}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"temperature\":0.7,\"max_output_tokens\":1024,\"reasoning\":{\"effort\":\"none\"},\"user\":\"u_1\"}",
+    "losses": "request.unknown_field@unknown_field;reasoning.signature@input[1].parts[0]"
+  },
+  {
+    "name": "fixture-anthropic",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"instructions\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"read it\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok 漢字 😀\"}]},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"line\\u0001one\\r\\nline two\"}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"temperature\":0.7,\"max_output_tokens\":1024,\"reasoning\":{\"effort\":\"none\"}}",
+    "losses": "request.unknown_field@unknown_field"
+  },
+  {
+    "name": "fixture-anthropic",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"read it\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hmm\",\"thought\":true},{\"text\":\"ok 漢字 😀\"},{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"line\\u0001one\\r\\nline two\"}}},{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":1024,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
+    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user"
+  },
+  {
+    "name": "fixture-anthropic",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"read it\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hmm\",\"thought\":true},{\"text\":\"ok 漢字 😀\"},{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"line\\u0001one\\r\\nline two\"}}},{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":1024,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
+    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user"
+  },
+  {
+    "name": "fixture-anthropic-group",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"system\":[{\"type\":\"text\",\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"read it\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\",\"signature\":\"c2ln\"},{\"type\":\"text\",\"text\":\"ok 漢字 😀\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"line\\u0001one\\r\\nline two\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":1024,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"thinking\":{\"type\":\"disabled\"},\"temperature\":0.7,\"metadata\":{\"user_id\":\"u_1\"}}",
+    "losses": "request.unknown_field@unknown_field"
+  },
+  {
+    "name": "fixture-anthropic-group",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"system\":[{\"type\":\"text\",\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"read it\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\",\"signature\":\"c2ln\"},{\"type\":\"text\",\"text\":\"ok 漢字 😀\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"line\\u0001one\\r\\nline two\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":1024,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"thinking\":{\"type\":\"disabled\"},\"temperature\":0.7}",
+    "losses": "request.unknown_field@unknown_field"
+  },
+  {
+    "name": "fixture-anthropic-group",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"You are é / \\\"careful\\\"\\n\\ttabs\"},{\"role\":\"user\",\"content\":\"read it\"},{\"role\":\"assistant\",\"content\":\"ok 漢字 😀\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"}}],\"reasoning_content\":\"hmm\"},{\"role\":\"tool\",\"content\":\"line\\u0001one\\r\\nline two\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}],\"max_tokens\":1024,\"temperature\":0.7,\"reasoning_effort\":\"none\",\"user\":\"u_1\"}",
+    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]"
+  },
+  {
+    "name": "fixture-anthropic-group",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"You are é / \\\"careful\\\"\\n\\ttabs\"},{\"role\":\"user\",\"content\":\"read it\"},{\"role\":\"assistant\",\"content\":\"ok 漢字 😀\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"}}]},{\"role\":\"tool\",\"content\":\"line\\u0001one\\r\\nline two\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}],\"max_tokens\":1024,\"temperature\":0.7,\"reasoning_effort\":\"none\"}",
+    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]"
+  },
+  {
+    "name": "fixture-anthropic-group",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"instructions\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"read it\"}]},{\"type\":\"reasoning\",\"summary\":[{\"text\":\"hmm\",\"type\":\"summary_text\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok 漢字 😀\"}]},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"line\\u0001one\\r\\nline two\"}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"temperature\":0.7,\"max_output_tokens\":1024,\"reasoning\":{\"effort\":\"none\"},\"user\":\"u_1\"}",
+    "losses": "request.unknown_field@unknown_field;reasoning.signature@input[1].parts[0]"
+  },
+  {
+    "name": "fixture-anthropic-group",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"instructions\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"read it\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok 漢字 😀\"}]},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"line\\u0001one\\r\\nline two\"}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"temperature\":0.7,\"max_output_tokens\":1024,\"reasoning\":{\"effort\":\"none\"}}",
+    "losses": "request.unknown_field@unknown_field"
+  },
+  {
+    "name": "fixture-anthropic-group",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"read it\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hmm\",\"thought\":true},{\"text\":\"ok 漢字 😀\"},{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"line\\u0001one\\r\\nline two\"}}},{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":1024,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
+    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user"
+  },
+  {
+    "name": "fixture-anthropic-group",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"read it\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hmm\",\"thought\":true},{\"text\":\"ok 漢字 😀\"},{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"line\\u0001one\\r\\nline two\"}}},{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":1024,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
+    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user"
+  },
+  {
+    "name": "fixture-anthropic-image",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]}],\"max_tokens\":64,\"thinking\":{\"type\":\"disabled\"}}"
+  },
+  {
+    "name": "fixture-anthropic-image",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]}],\"max_tokens\":64,\"thinking\":{\"type\":\"disabled\"}}"
+  },
+  {
+    "name": "fixture-anthropic-image",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]}],\"max_tokens\":64,\"reasoning_effort\":\"none\"}"
+  },
+  {
+    "name": "fixture-anthropic-image",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]}],\"max_tokens\":64,\"reasoning_effort\":\"none\"}"
+  },
+  {
+    "name": "fixture-anthropic-image",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"what is this\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}]}],\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"none\"}}"
+  },
+  {
+    "name": "fixture-anthropic-image",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"what is this\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}]}],\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"none\"}}"
+  },
+  {
+    "name": "fixture-anthropic-image",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"what is this\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]}],\"generationConfig\":{\"maxOutputTokens\":64,\"thinkingConfig\":{\"thinkingBudget\":0}}}"
+  },
+  {
+    "name": "fixture-anthropic-image",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"what is this\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]}],\"generationConfig\":{\"maxOutputTokens\":64,\"thinkingConfig\":{\"thinkingBudget\":0}}}"
+  },
+  {
+    "name": "fixture-anthropic-thinking",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"fake/m1\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"think\"}]}],\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024}}"
+  },
+  {
+    "name": "fixture-anthropic-thinking",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"fake/m1\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"think\"}]}],\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024}}"
+  },
+  {
+    "name": "fixture-anthropic-thinking",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"fake/m1\",\"messages\":[{\"role\":\"user\",\"content\":\"think\"}],\"max_tokens\":2048,\"reasoning_effort\":\"minimal\"}"
+  },
+  {
+    "name": "fixture-anthropic-thinking",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"fake/m1\",\"messages\":[{\"role\":\"user\",\"content\":\"think\"}],\"max_tokens\":2048,\"reasoning_effort\":\"minimal\"}"
+  },
+  {
+    "name": "fixture-anthropic-thinking",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"fake/m1\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"think\"}]}],\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"minimal\"}}"
+  },
+  {
+    "name": "fixture-anthropic-thinking",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"fake/m1\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"think\"}]}],\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"minimal\"}}"
+  },
+  {
+    "name": "fixture-anthropic-thinking",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"think\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048,\"thinkingConfig\":{\"thinkingBudget\":1024}}}"
+  },
+  {
+    "name": "fixture-anthropic-thinking",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"think\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048,\"thinkingConfig\":{\"thinkingBudget\":1024}}}"
+  },
+  {
+    "name": "fixture-chat",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"system\":\"be brief\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"Read\",\"input\":{\"path\":\"/x\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"file \\\"body\\\"\\n\"},{\"type\":\"text\",\"text\":\"go on é\"}]}],\"max_tokens\":28096,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}],\"tool_choice\":{\"type\":\"auto\"},\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":24000},\"temperature\":1,\"stop_sequences\":[\"\\n\\n\"],\"metadata\":{\"user_id\":\"u\"}}"
+  },
+  {
+    "name": "fixture-chat",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"system\":\"be brief\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"Read\",\"input\":{\"path\":\"/x\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"file \\\"body\\\"\\n\"},{\"type\":\"text\",\"text\":\"go on é\"}]}],\"max_tokens\":28096,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}],\"tool_choice\":{\"type\":\"auto\"},\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":24000},\"temperature\":1,\"stop_sequences\":[\"\\n\\n\"]}"
+  },
+  {
+    "name": "fixture-chat",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"be brief\"},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"}}]},{\"role\":\"tool\",\"content\":\"file \\\"body\\\"\\n\",\"tool_call_id\":\"call_1\"},{\"role\":\"user\",\"content\":\"go on é\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}}],\"tool_choice\":\"auto\",\"temperature\":1,\"stop\":\"\\n\\n\",\"reasoning_effort\":\"high\",\"user\":\"u\"}"
+  },
+  {
+    "name": "fixture-chat",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"be brief\"},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"}}]},{\"role\":\"tool\",\"content\":\"file \\\"body\\\"\\n\",\"tool_call_id\":\"call_1\"},{\"role\":\"user\",\"content\":\"go on é\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}}],\"tool_choice\":\"auto\",\"temperature\":1,\"stop\":\"\\n\\n\",\"reasoning_effort\":\"high\"}"
+  },
+  {
+    "name": "fixture-chat",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "error": "stop: not supported by Responses API"
+  },
+  {
+    "name": "fixture-chat",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "error": "stop: not supported by Responses API"
+  },
+  {
+    "name": "fixture-chat",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"look\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/x\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"file \\\"body\\\"\\n\"}}}]},{\"role\":\"user\",\"parts\":[{\"text\":\"go on é\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"be brief\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"type\":\"object\"}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"AUTO\"}},\"generationConfig\":{\"temperature\":1,\"stopSequences\":[\"\\n\\n\"],\"thinkingConfig\":{\"thinkingBudget\":24000}}}",
+    "losses": "request.user@user"
+  },
+  {
+    "name": "fixture-chat",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"look\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/x\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"file \\\"body\\\"\\n\"}}}]},{\"role\":\"user\",\"parts\":[{\"text\":\"go on é\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"be brief\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"type\":\"object\"}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"AUTO\"}},\"generationConfig\":{\"temperature\":1,\"stopSequences\":[\"\\n\\n\"],\"thinkingConfig\":{\"thinkingBudget\":24000}}}",
+    "losses": "request.user@user"
+  },
+  {
+    "name": "fixture-chat-group",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"system\":\"be brief\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"Read\",\"input\":{\"path\":\"/x\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"file \\\"body\\\"\\n\"},{\"type\":\"text\",\"text\":\"go on é\"}]}],\"max_tokens\":28096,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}],\"tool_choice\":{\"type\":\"auto\"},\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":24000},\"temperature\":1,\"stop_sequences\":[\"\\n\\n\"],\"metadata\":{\"user_id\":\"u\"}}"
+  },
+  {
+    "name": "fixture-chat-group",
+    "from": "chat",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"system\":\"be brief\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"Read\",\"input\":{\"path\":\"/x\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"file \\\"body\\\"\\n\"},{\"type\":\"text\",\"text\":\"go on é\"}]}],\"max_tokens\":28096,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}],\"tool_choice\":{\"type\":\"auto\"},\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":24000},\"temperature\":1,\"stop_sequences\":[\"\\n\\n\"]}"
+  },
+  {
+    "name": "fixture-chat-group",
+    "from": "chat",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"be brief\"},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"}}]},{\"role\":\"tool\",\"content\":\"file \\\"body\\\"\\n\",\"tool_call_id\":\"call_1\"},{\"role\":\"user\",\"content\":\"go on é\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}}],\"tool_choice\":\"auto\",\"temperature\":1,\"stop\":\"\\n\\n\",\"reasoning_effort\":\"high\",\"user\":\"u\"}"
+  },
+  {
+    "name": "fixture-chat-group",
+    "from": "chat",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"be brief\"},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"}}]},{\"role\":\"tool\",\"content\":\"file \\\"body\\\"\\n\",\"tool_call_id\":\"call_1\"},{\"role\":\"user\",\"content\":\"go on é\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}}],\"tool_choice\":\"auto\",\"temperature\":1,\"stop\":\"\\n\\n\",\"reasoning_effort\":\"high\"}"
+  },
+  {
+    "name": "fixture-chat-group",
+    "from": "chat",
+    "to": "responses",
+    "options": "default",
+    "error": "stop: not supported by Responses API"
+  },
+  {
+    "name": "fixture-chat-group",
+    "from": "chat",
+    "to": "responses",
+    "options": "gateway",
+    "error": "stop: not supported by Responses API"
+  },
+  {
+    "name": "fixture-chat-group",
+    "from": "chat",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"look\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/x\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"file \\\"body\\\"\\n\"}}}]},{\"role\":\"user\",\"parts\":[{\"text\":\"go on é\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"be brief\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"type\":\"object\"}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"AUTO\"}},\"generationConfig\":{\"temperature\":1,\"stopSequences\":[\"\\n\\n\"],\"thinkingConfig\":{\"thinkingBudget\":24000}}}",
+    "losses": "request.user@user"
+  },
+  {
+    "name": "fixture-chat-group",
+    "from": "chat",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"look\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/x\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"file \\\"body\\\"\\n\"}}}]},{\"role\":\"user\",\"parts\":[{\"text\":\"go on é\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"be brief\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"type\":\"object\"}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"AUTO\"}},\"generationConfig\":{\"temperature\":1,\"stopSequences\":[\"\\n\\n\"],\"thinkingConfig\":{\"thinkingBudget\":24000}}}",
+    "losses": "request.user@user"
+  },
+  {
+    "name": "fixture-responses",
+    "from": "responses",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"system\":\"be brief — ok\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"Read\",\"input\":{\"path\":\"/x\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"done\\t\\\"x\\\"\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":16384,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}],\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":10000}}",
+    "losses": "reasoning.sealed@messages[1].content[0];request.service_tier@service_tier;request.store@store;request.include@include"
+  },
+  {
+    "name": "fixture-responses",
+    "from": "responses",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"system\":\"be brief — ok\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"Read\",\"input\":{\"path\":\"/x\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"done\\t\\\"x\\\"\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":16384,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}],\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":10000}}",
+    "losses": "reasoning.sealed@messages[1].content[0];request.service_tier@service_tier;request.store@store;request.include@include"
+  },
+  {
+    "name": "fixture-responses",
+    "from": "responses",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"be brief — ok\"},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"}}]},{\"role\":\"tool\",\"content\":\"done\\t\\\"x\\\"\",\"tool_call_id\":\"call_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}}],\"reasoning_effort\":\"medium\",\"service_tier\":\"priority\"}",
+    "losses": "reasoning.sealed@messages[1].parts[0];request.store@store;request.include@include[0]"
+  },
+  {
+    "name": "fixture-responses",
+    "from": "responses",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"be brief — ok\"},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"}}]},{\"role\":\"tool\",\"content\":\"done\\t\\\"x\\\"\",\"tool_call_id\":\"call_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}}],\"reasoning_effort\":\"medium\",\"service_tier\":\"priority\"}",
+    "losses": "reasoning.sealed@messages[1].parts[0];request.store@store;request.include@include[0]"
+  },
+  {
+    "name": "fixture-responses",
+    "from": "responses",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"instructions\":\"be brief — ok\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}]},{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"ZW5j\"},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"call_1\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"done\\t\\\"x\\\"\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}],\"reasoning\":{\"effort\":\"medium\",\"summary\":\"auto\"},\"include\":[\"reasoning.encrypted_content\"],\"store\":false,\"service_tier\":\"priority\"}"
+  },
+  {
+    "name": "fixture-responses",
+    "from": "responses",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"instructions\":\"be brief — ok\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}]},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"call_1\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"done\\t\\\"x\\\"\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}],\"reasoning\":{\"effort\":\"medium\",\"summary\":\"auto\"},\"include\":[\"reasoning.encrypted_content\"],\"store\":false,\"service_tier\":\"priority\"}"
+  },
+  {
+    "name": "fixture-responses",
+    "from": "responses",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/x\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"done\\t\\\"x\\\"\"}}}]},{\"role\":\"user\",\"parts\":[{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"be brief — ok\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"type\":\"object\"}}]}],\"generationConfig\":{\"thinkingConfig\":{\"thinkingBudget\":10000,\"includeThoughts\":true}}}",
+    "losses": "reasoning.sealed@contents[1].parts[0];request.service_tier@service_tier"
+  },
+  {
+    "name": "fixture-responses",
+    "from": "responses",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/x\"}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"done\\t\\\"x\\\"\"}}}]},{\"role\":\"user\",\"parts\":[{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"be brief — ok\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"type\":\"object\"}}]}],\"generationConfig\":{\"thinkingConfig\":{\"thinkingBudget\":10000,\"includeThoughts\":true}}}",
+    "losses": "reasoning.sealed@contents[1].parts[0];request.service_tier@service_tier"
+  },
+  {
+    "name": "fixture-responses-string",
+    "from": "responses",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"just a string 😀\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "fixture-responses-string",
+    "from": "responses",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"just a string 😀\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "fixture-responses-string",
+    "from": "responses",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"user\",\"content\":\"just a string 😀\"}]}"
+  },
+  {
+    "name": "fixture-responses-string",
+    "from": "responses",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"user\",\"content\":\"just a string 😀\"}]}"
+  },
+  {
+    "name": "fixture-responses-string",
+    "from": "responses",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m1\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"just a string 😀\"}]}]}"
+  },
+  {
+    "name": "fixture-responses-string",
+    "from": "responses",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m1\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"just a string 😀\"}]}]}"
+  },
+  {
+    "name": "fixture-responses-string",
+    "from": "responses",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"just a string 😀\"}]}]}"
+  },
+  {
+    "name": "fixture-responses-string",
+    "from": "responses",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"just a string 😀\"}]}]}"
+  },
+  {
+    "name": "gemini-simple",
+    "from": "gemini",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"\",\"system\":\"sys\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"again\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "gemini-simple",
+    "from": "gemini",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"\",\"system\":\"sys\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"again\"}]}],\"max_tokens\":16384}"
+  },
+  {
+    "name": "gemini-simple",
+    "from": "gemini",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"\",\"messages\":[{\"role\":\"system\",\"content\":\"sys\"},{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"hello\"},{\"role\":\"user\",\"content\":\"again\"}]}"
+  },
+  {
+    "name": "gemini-simple",
+    "from": "gemini",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"\",\"messages\":[{\"role\":\"system\",\"content\":\"sys\"},{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"hello\"},{\"role\":\"user\",\"content\":\"again\"}]}"
+  },
+  {
+    "name": "gemini-simple",
+    "from": "gemini",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"\",\"instructions\":\"sys\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"again\"}]}]}"
+  },
+  {
+    "name": "gemini-simple",
+    "from": "gemini",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"\",\"instructions\":\"sys\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"again\"}]}]}"
+  },
+  {
+    "name": "gemini-simple",
+    "from": "gemini",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"again\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"sys\"}]}}"
+  },
+  {
+    "name": "gemini-simple",
+    "from": "gemini",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"again\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"sys\"}]}}"
+  },
+  {
+    "name": "marked-anthropic-image-doc",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/a.png\"},\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"document\",\"source\":{\"type\":\"text\",\"media_type\":\"text/plain\",\"data\":\"doc body\"},\"title\":\"T\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"what?\"}]}],\"max_tokens\":512}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-image-doc",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/a.png\"},\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"document\",\"source\":{\"type\":\"text\",\"media_type\":\"text/plain\",\"data\":\"doc body\"},\"title\":\"T\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"what?\"}]}],\"max_tokens\":512}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-image-doc",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://example.com/a.png\"}},{\"type\":\"text\",\"text\":\"T\\n\\ndoc body\"},{\"type\":\"text\",\"text\":\"what?\"}]}],\"max_tokens\":512}",
+    "losses": "cache.marker@messages[0].parts[0].cache_control;cache.marker@messages[0].parts[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-image-doc",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://example.com/a.png\"}},{\"type\":\"text\",\"text\":\"T\\n\\ndoc body\"},{\"type\":\"text\",\"text\":\"what?\"}]}],\"max_tokens\":512}",
+    "losses": "cache.marker@messages[0].parts[0].cache_control;cache.marker@messages[0].parts[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-image-doc",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"image_url\":\"https://example.com/a.png\"},{\"type\":\"input_file\"},{\"type\":\"input_text\",\"text\":\"what?\"}]}],\"max_output_tokens\":512}",
+    "losses": "cache.marker@input[0].parts[0].cache_control;cache.marker@input[0].parts[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-image-doc",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"image_url\":\"https://example.com/a.png\"},{\"type\":\"input_file\"},{\"type\":\"input_text\",\"text\":\"what?\"}]}],\"max_output_tokens\":512}",
+    "losses": "cache.marker@input[0].parts[0].cache_control;cache.marker@input[0].parts[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-image-doc",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"fileData\":{\"fileUri\":\"https://example.com/a.png\"}},{\"text\":\"doc body\"},{\"text\":\"what?\"}]}],\"generationConfig\":{\"maxOutputTokens\":512}}",
+    "losses": "cache.marker@contents[0].parts[0].cache_control;cache.marker@contents[0].parts[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-image-doc",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"fileData\":{\"fileUri\":\"https://example.com/a.png\"}},{\"text\":\"doc body\"},{\"text\":\"what?\"}]}],\"generationConfig\":{\"maxOutputTokens\":512}}",
+    "losses": "cache.marker@contents[0].parts[0].cache_control;cache.marker@contents[0].parts[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-system-tools",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"system\":[{\"type\":\"text\",\"text\":\"S1\"},{\"type\":\"text\",\"text\":\"S2\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"max_tokens\":512,\"tools\":[{\"name\":\"a\",\"input_schema\":{\"type\":\"object\"}},{\"name\":\"b\",\"input_schema\":{\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-system-tools",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"system\":[{\"type\":\"text\",\"text\":\"S1\"},{\"type\":\"text\",\"text\":\"S2\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"max_tokens\":512,\"tools\":[{\"name\":\"a\",\"input_schema\":{\"type\":\"object\"}},{\"name\":\"b\",\"input_schema\":{\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-system-tools",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"S1\\nS2\"},{\"role\":\"user\",\"content\":\"hello\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"a\",\"parameters\":{\"type\":\"object\"}}},{\"type\":\"function\",\"function\":{\"name\":\"b\",\"parameters\":{\"type\":\"object\"}}}],\"max_tokens\":512}",
+    "losses": "cache.marker@tools[1].cache_control;cache.marker@system[1].cache_control;cache.marker@messages[0].parts[0].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-system-tools",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"S1\\nS2\"},{\"role\":\"user\",\"content\":\"hello\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"a\",\"parameters\":{\"type\":\"object\"}}},{\"type\":\"function\",\"function\":{\"name\":\"b\",\"parameters\":{\"type\":\"object\"}}}],\"max_tokens\":512}",
+    "losses": "cache.marker@tools[1].cache_control;cache.marker@system[1].cache_control;cache.marker@messages[0].parts[0].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-system-tools",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"instructions\":\"S1\\n\\nS2\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}],\"tools\":[{\"type\":\"function\",\"name\":\"a\",\"parameters\":{\"type\":\"object\"}},{\"type\":\"function\",\"name\":\"b\",\"parameters\":{\"type\":\"object\"}}],\"max_output_tokens\":512}",
+    "losses": "cache.marker@input[0].parts[0].cache_control;cache.marker@tools[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-system-tools",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"instructions\":\"S1\\n\\nS2\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}],\"tools\":[{\"type\":\"function\",\"name\":\"a\",\"parameters\":{\"type\":\"object\"}},{\"type\":\"function\",\"name\":\"b\",\"parameters\":{\"type\":\"object\"}}],\"max_output_tokens\":512}",
+    "losses": "cache.marker@input[0].parts[0].cache_control;cache.marker@tools[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-system-tools",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hello\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"S1\"},{\"text\":\"S2\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"a\",\"parameters\":{\"type\":\"object\"}},{\"name\":\"b\",\"parameters\":{\"type\":\"object\"}}]}],\"generationConfig\":{\"maxOutputTokens\":512}}",
+    "losses": "cache.marker@systemInstruction[1].cache_control;cache.marker@contents[0].parts[0].cache_control;cache.marker@tools[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-system-tools",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hello\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"S1\"},{\"text\":\"S2\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"a\",\"parameters\":{\"type\":\"object\"}},{\"name\":\"b\",\"parameters\":{\"type\":\"object\"}}]}],\"generationConfig\":{\"maxOutputTokens\":512}}",
+    "losses": "cache.marker@systemInstruction[1].cache_control;cache.marker@contents[0].parts[0].cache_control;cache.marker@tools[1].cache_control",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-tool-result-multi",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"q\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"f\",\"input\":{}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":[{\"type\":\"text\",\"text\":\"r1\"},{\"type\":\"text\",\"text\":\"r2\",\"cache_control\":{\"type\":\"ephemeral\"}}]}]}],\"max_tokens\":512,\"tools\":[{\"name\":\"f\",\"input_schema\":{\"type\":\"object\"}}]}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-tool-result-multi",
+    "from": "anthropic",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"q\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"f\",\"input\":{}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":[{\"type\":\"text\",\"text\":\"r1\"},{\"type\":\"text\",\"text\":\"r2\",\"cache_control\":{\"type\":\"ephemeral\"}}]}]}],\"max_tokens\":512,\"tools\":[{\"name\":\"f\",\"input_schema\":{\"type\":\"object\"}}]}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-tool-result-multi",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"q\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"content\":\"r1r2\",\"tool_call_id\":\"toolu_1\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}}],\"max_tokens\":512}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-tool-result-multi",
+    "from": "anthropic",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"q\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"content\":\"r1r2\",\"tool_call_id\":\"toolu_1\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}}],\"max_tokens\":512}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-tool-result-multi",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"q\"}]},{\"type\":\"function_call\",\"name\":\"f\",\"call_id\":\"toolu_1\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"r1r2\"}],\"tools\":[{\"type\":\"function\",\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}],\"max_output_tokens\":512}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-tool-result-multi",
+    "from": "anthropic",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"q\"}]},{\"type\":\"function_call\",\"name\":\"f\",\"call_id\":\"toolu_1\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"r1r2\"}],\"tools\":[{\"type\":\"function\",\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}],\"max_output_tokens\":512}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-tool-result-multi",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"q\"}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":{}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"r1r2\"}}}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}]}],\"generationConfig\":{\"maxOutputTokens\":512}}",
+    "has_cache": true
+  },
+  {
+    "name": "marked-anthropic-tool-result-multi",
+    "from": "anthropic",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"q\"}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":{}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"r1r2\"}}}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}]}],\"generationConfig\":{\"maxOutputTokens\":512}}",
+    "has_cache": true
+  },
+  {
+    "name": "responses-tools",
+    "from": "responses",
+    "to": "anthropic",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"system\":\"inst\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"c1\",\"content\":\"ok\"}]}],\"max_tokens\":16384,\"tools\":[{\"name\":\"f\",\"input_schema\":{\"type\":\"object\"}}]}"
+  },
+  {
+    "name": "responses-tools",
+    "from": "responses",
+    "to": "anthropic",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"system\":\"inst\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"c1\",\"content\":\"ok\"}]}],\"max_tokens\":16384,\"tools\":[{\"name\":\"f\",\"input_schema\":{\"type\":\"object\"}}]}"
+  },
+  {
+    "name": "responses-tools",
+    "from": "responses",
+    "to": "chat",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"inst\"},{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"content\":\"ok\",\"tool_call_id\":\"c1\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}}]}"
+  },
+  {
+    "name": "responses-tools",
+    "from": "responses",
+    "to": "chat",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"inst\"},{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"content\":\"ok\",\"tool_call_id\":\"c1\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}}]}"
+  },
+  {
+    "name": "responses-tools",
+    "from": "responses",
+    "to": "responses",
+    "options": "default",
+    "body": "{\"model\":\"m\",\"instructions\":\"inst\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]},{\"type\":\"function_call\",\"name\":\"f\",\"call_id\":\"c1\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"ok\"}],\"tools\":[{\"type\":\"function\",\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}]}"
+  },
+  {
+    "name": "responses-tools",
+    "from": "responses",
+    "to": "responses",
+    "options": "gateway",
+    "body": "{\"model\":\"m\",\"instructions\":\"inst\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]},{\"type\":\"function_call\",\"name\":\"f\",\"call_id\":\"c1\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"ok\"}],\"tools\":[{\"type\":\"function\",\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}]}"
+  },
+  {
+    "name": "responses-tools",
+    "from": "responses",
+    "to": "gemini",
+    "options": "default",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":{}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"ok\"}}}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"inst\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}]}]}"
+  },
+  {
+    "name": "responses-tools",
+    "from": "responses",
+    "to": "gemini",
+    "options": "gateway",
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":{}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"f\",\"response\":{\"output\":\"ok\"}}}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"inst\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"f\",\"parameters\":{\"type\":\"object\"}}]}]}"
+  }
+]
