@@ -36,9 +36,16 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// 1. Tools (filter when ToolChoiceAllowed is set)
-	for _, bt := range req.Builtins {
+	for i, bt := range req.Builtins {
 		if bt.IsCachedWebSearch() {
 			if err := b.env.Lose(ir.LossCachedWebSearch, ir.Root.Key("tools"), "cached web_search (external_web_access: false) dropped for Chat Completions"); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if bt.Kind == ir.BuiltinWebSearch && b.dia.DisableWebSearch {
+			fp := ir.Root.Key("tools").At(len(req.Tools) + i)
+			if err := b.env.Lose(ir.LossWebSearch, fp, "web_search dropped because upstream does not support server-side web search"); err != nil {
 				return nil, err
 			}
 			continue

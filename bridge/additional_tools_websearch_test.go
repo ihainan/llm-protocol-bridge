@@ -9,6 +9,7 @@ import (
 
 	"github.com/ihainan/llm-protocol-bridge/anthropic"
 	"github.com/ihainan/llm-protocol-bridge/bridge"
+	"github.com/ihainan/llm-protocol-bridge/chat"
 	"github.com/ihainan/llm-protocol-bridge/ir"
 	"github.com/ihainan/llm-protocol-bridge/sse"
 )
@@ -533,5 +534,133 @@ func TestAnthropicDisableWebSearch(t *testing.T) {
 	}
 	if strings.Contains(string(planAnth.Body), "web_search") {
 		t.Fatalf("expected Anthropic-origin web_search_20250305 dropped: %s", planAnth.Body)
+	}
+}
+
+func TestChatDisableWebSearch(t *testing.T) {
+	// 1. Responses -> Chat with live web_search (external_web_access: true) + function tool (Codex YOLO mode).
+	liveReq := `{
+	  "model": "gpt-5.4-mini",
+	  "tool_choice": "auto",
+	  "tools": [
+	    {"type": "web_search", "external_web_access": true},
+	    {"type": "function", "name": "exec_command", "description": "Run command", "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}}}
+	  ],
+	  "input": "check status"
+	}`
+
+	// Default (DisableWebSearch=false): live web_search is still rejected.
+	if _, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(liveReq), bridge.Options{}); err == nil {
+		t.Fatalf("expected live web_search to fail toward Chat when DisableWebSearch=false")
+	}
+
+	// DisableWebSearch=true: live web_search dropped, function tool preserved, ir.LossWebSearch recorded.
+	var seenLosses []ir.Loss
+	planOff, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(liveReq), bridge.Options{
+		Chat:   chat.Dialect{DisableWebSearch: true},
+		OnLoss: func(l ir.Loss) { seenLosses = append(seenLosses, l) },
+	})
+	if err != nil {
+		t.Fatalf("Chat DisableWebSearch Convert failed: %v", err)
+	}
+	if strings.Contains(string(planOff.Body), "web_search") {
+		t.Fatalf("expected web_search stripped from Chat body: %s", planOff.Body)
+	}
+	if !strings.Contains(string(planOff.Body), `"exec_command"`) {
+		t.Fatalf("expected regular function tool preserved: %s", planOff.Body)
+	}
+	hasLoss := false
+	for _, l := range planOff.Losses {
+		if l.Kind == ir.LossWebSearch {
+			hasLoss = true
+		}
+	}
+	if !hasLoss {
+		t.Fatalf("expected ir.LossWebSearch in plan.Losses, got %+v", planOff.Losses)
+	}
+	hasCallback := false
+	for _, l := range seenLosses {
+		if l.Kind == ir.LossWebSearch {
+			hasCallback = true
+		}
+	}
+	if !hasCallback {
+		t.Fatalf("expected ir.LossWebSearch passed to OnLoss")
+	}
+
+	// Deny[LossWebSearch] rejects it.
+	if _, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(liveReq), bridge.Options{
+		Chat: chat.Dialect{DisableWebSearch: true},
+		Deny: ir.LossSet{ir.LossWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected Deny[LossWebSearch] to reject dropped web_search toward Chat")
+	}
+
+	// 2. Cached web_search (external_web_access: false) still records LossCachedWebSearch.
+	cachedReq := `{"model":"gpt-5.4-mini","tools":[{"type":"web_search","external_web_access":false}],"input":"hi"}`
+	planCached, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(cachedReq), bridge.Options{
+		Chat: chat.Dialect{DisableWebSearch: true},
+	})
+	if err != nil {
+		t.Fatalf("cached web_search toward Chat failed: %v", err)
+	}
+	hasCachedLoss := false
+	for _, l := range planCached.Losses {
+		if l.Kind == ir.LossCachedWebSearch {
+			hasCachedLoss = true
+		}
+	}
+	if !hasCachedLoss {
+		t.Fatalf("expected LossCachedWebSearch for cached web_search, got %+v", planCached.Losses)
+	}
+
+	// 3. Only live web_search + tool_choice="auto" -> tools and tool_choice omitted.
+	onlyWS := `{"model":"gpt-5.4-mini","tool_choice":"auto","tools":[{"type":"web_search","external_web_access":true}],"input":"hi"}`
+	planOnlyWS, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(onlyWS), bridge.Options{
+		Chat: chat.Dialect{DisableWebSearch: true},
+	})
+	if err != nil {
+		t.Fatalf("only-web_search auto toward Chat failed: %v", err)
+	}
+	if strings.Contains(string(planOnlyWS.Body), `"tools"`) || strings.Contains(string(planOnlyWS.Body), `"tool_choice"`) {
+		t.Fatalf("expected both tools and tool_choice omitted: %s", planOnlyWS.Body)
+	}
+
+	// 4. Only live web_search + tool_choice="required" or ToolChoiceTool -> explicit error.
+	onlyWSReq := `{"model":"gpt-5.4-mini","tool_choice":"required","tools":[{"type":"web_search","external_web_access":true}],"input":"hi"}`
+	if _, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(onlyWSReq), bridge.Options{
+		Chat: chat.Dialect{DisableWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected error when tool_choice=required and only web_search was dropped toward Chat")
+	}
+	directReq := &ir.Request{
+		Model:      "gpt-5.4-mini",
+		Messages:   []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart("hi")}}},
+		Builtins:   []ir.BuiltinTool{{Kind: ir.BuiltinWebSearch, Origin: ir.FormatResponses}},
+		ToolChoice: ir.ToolChoice{Mode: ir.ToolChoiceTool, Name: "web_search"},
+	}
+	if _, err := bridge.Build(directReq, ir.FormatResponses, ir.FormatChat, bridge.Options{
+		Chat: chat.Dialect{DisableWebSearch: true},
+	}); err == nil {
+		t.Fatalf("expected error from bridge.Build when ToolChoiceTool targets dropped web_search toward Chat")
+	}
+
+	// 5. Anthropic web_search_20250305 and Gemini googleSearch toward Chat with DisableWebSearch=true.
+	anthReq := `{"model":"gpt-5.4-mini","max_tokens":128,"tools":[{"type":"web_search_20250305","name":"web_search"}],"messages":[{"role":"user","content":"hi"}]}`
+	if planA, err := bridge.Convert(ir.FormatAnthropic, ir.FormatChat, []byte(anthReq), bridge.Options{
+		Chat: chat.Dialect{DisableWebSearch: true},
+	}); err != nil {
+		t.Fatalf("Anthropic->Chat DisableWebSearch failed: %v", err)
+	} else if strings.Contains(string(planA.Body), "web_search") {
+		t.Fatalf("expected web_search stripped in Anthropic->Chat: %s", planA.Body)
+	}
+	gemReq := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"googleSearch":{}}]}`
+	if planG, err := bridge.Convert(ir.FormatGemini, ir.FormatChat, []byte(gemReq), bridge.Options{
+		Model: "gpt-5.4-mini",
+		Chat:  chat.Dialect{DisableWebSearch: true},
+	}); err != nil {
+		t.Fatalf("Gemini->Chat DisableWebSearch failed: %v", err)
+	} else if strings.Contains(string(planG.Body), "web_search") || strings.Contains(string(planG.Body), "googleSearch") {
+		t.Fatalf("expected googleSearch stripped in Gemini->Chat: %s", planG.Body)
 	}
 }
