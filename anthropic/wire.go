@@ -1,6 +1,10 @@
 package anthropic
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/ihainan/llm-protocol-bridge/ir"
+)
 
 // Wire types for the Anthropic Messages request and response.
 
@@ -45,6 +49,12 @@ type wireContentBlock struct {
 	Data      string  `json:"data,omitempty"`
 	// cache_control
 	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
+
+	// inner holds tool_result content blocks while a request is being built;
+	// Content is rendered from it just before marshalling.
+	inner []wireContentBlock
+	// cachePath is the IR path of CacheControl, used when a marker is dropped.
+	cachePath ir.Path
 }
 
 type wireImageSource struct {

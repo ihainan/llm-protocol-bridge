@@ -37,10 +37,9 @@ type cacheBaselineCase struct {
 	HasCache bool   `json:"has_cache,omitempty"`
 }
 
-// cacheBaselineRequests returns client requests keyed by name. Requests whose
-// name starts with "marked-" carry Anthropic cache_control markers (at most
-// four, none inside a single-text tool_result); every other request carries
-// no cache marker at all.
+// cacheBaselineRequests returns client requests keyed by name. Requests that
+// contain cache_control carry at most four Anthropic markers, none inside a
+// single-text tool_result; for them only body and error are pinned.
 func cacheBaselineRequests(t *testing.T) map[string]struct {
 	from ir.Format
 	body string
@@ -137,7 +136,7 @@ func runCacheBaseline(t *testing.T) []cacheBaselineCase {
 		r := reqs[n]
 		for _, to := range targets {
 			for _, on := range optNames {
-				c := cacheBaselineCase{Name: n, From: string(r.from), To: string(to), Options: on, HasCache: strings.HasPrefix(n, "marked-")}
+				c := cacheBaselineCase{Name: n, From: string(r.from), To: string(to), Options: on, HasCache: strings.Contains(r.body, "cache_control")}
 				plan, err := bridge.Convert(r.from, to, []byte(r.body), optSets[on])
 				if err != nil {
 					c.Error = err.Error()
@@ -154,9 +153,9 @@ func runCacheBaseline(t *testing.T) []cacheBaselineCase {
 
 // TestCacheBaseline_ByteExactV014 pins request conversion output against
 // v0.1.4 for every request that carries no cache marker (body, error and
-// recorded losses), and for Anthropic requests carrying at most four markers
-// (body and error; losses may now additionally report dropped markers for
-// formats that cannot express them).
+// recorded losses), and for requests carrying at most four markers (body and
+// error; losses may now additionally report dropped markers for formats that
+// cannot express them).
 func TestCacheBaseline_ByteExactV014(t *testing.T) {
 	got := runCacheBaseline(t)
 	path := filepath.Join(testdataDir, cacheBaselineFile)
@@ -194,7 +193,7 @@ func TestCacheBaseline_ByteExactV014(t *testing.T) {
 		if g.Error != w.Error {
 			t.Errorf("%s: error diverged from v0.1.4\n got: %s\nwant: %s", label, g.Error, w.Error)
 		}
-		if !w.HasCache && g.Losses != w.Losses {
+		if !g.HasCache && g.Losses != w.Losses {
 			t.Errorf("%s: losses diverged from v0.1.4\n got: %s\nwant: %s", label, g.Losses, w.Losses)
 		}
 	}

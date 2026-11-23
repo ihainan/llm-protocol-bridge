@@ -635,7 +635,8 @@
     "to": "anthropic",
     "options": "default",
     "body": "{\"model\":\"m1\",\"system\":[{\"type\":\"text\",\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"read it\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\",\"signature\":\"c2ln\"},{\"type\":\"text\",\"text\":\"ok 漢字 😀\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"line\\u0001one\\r\\nline two\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":1024,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"thinking\":{\"type\":\"disabled\"},\"temperature\":0.7,\"metadata\":{\"user_id\":\"u_1\"}}",
-    "losses": "request.unknown_field@unknown_field"
+    "losses": "request.unknown_field@unknown_field",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic",
@@ -643,7 +644,8 @@
     "to": "anthropic",
     "options": "gateway",
     "body": "{\"model\":\"m1\",\"system\":[{\"type\":\"text\",\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"read it\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\",\"signature\":\"c2ln\"},{\"type\":\"text\",\"text\":\"ok 漢字 😀\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"line\\u0001one\\r\\nline two\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":1024,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"thinking\":{\"type\":\"disabled\"},\"temperature\":0.7}",
-    "losses": "request.unknown_field@unknown_field"
+    "losses": "request.unknown_field@unknown_field",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic",
@@ -651,7 +653,8 @@
     "to": "chat",
     "options": "default",
     "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"You are é / \\\"careful\\\"\\n\\ttabs\"},{\"role\":\"user\",\"content\":\"read it\"},{\"role\":\"assistant\",\"content\":\"ok 漢字 😀\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"}}],\"reasoning_content\":\"hmm\"},{\"role\":\"tool\",\"content\":\"line\\u0001one\\r\\nline two\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}],\"max_tokens\":1024,\"temperature\":0.7,\"reasoning_effort\":\"none\",\"user\":\"u_1\"}",
-    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]"
+    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic",
@@ -659,7 +662,8 @@
     "to": "chat",
     "options": "gateway",
     "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"You are é / \\\"careful\\\"\\n\\ttabs\"},{\"role\":\"user\",\"content\":\"read it\"},{\"role\":\"assistant\",\"content\":\"ok 漢字 😀\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"}}]},{\"role\":\"tool\",\"content\":\"line\\u0001one\\r\\nline two\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}],\"max_tokens\":1024,\"temperature\":0.7,\"reasoning_effort\":\"none\"}",
-    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]"
+    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic",
@@ -667,7 +671,8 @@
     "to": "responses",
     "options": "default",
     "body": "{\"model\":\"m1\",\"instructions\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"read it\"}]},{\"type\":\"reasoning\",\"summary\":[{\"text\":\"hmm\",\"type\":\"summary_text\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok 漢字 😀\"}]},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"line\\u0001one\\r\\nline two\"}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"temperature\":0.7,\"max_output_tokens\":1024,\"reasoning\":{\"effort\":\"none\"},\"user\":\"u_1\"}",
-    "losses": "request.unknown_field@unknown_field;reasoning.signature@input[1].parts[0]"
+    "losses": "request.unknown_field@unknown_field;reasoning.signature@input[1].parts[0]",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic",
@@ -675,7 +680,8 @@
     "to": "responses",
     "options": "gateway",
     "body": "{\"model\":\"m1\",\"instructions\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"read it\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok 漢字 😀\"}]},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"line\\u0001one\\r\\nline two\"}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"temperature\":0.7,\"max_output_tokens\":1024,\"reasoning\":{\"effort\":\"none\"}}",
-    "losses": "request.unknown_field@unknown_field"
+    "losses": "request.unknown_field@unknown_field",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic",
@@ -683,7 +689,8 @@
     "to": "gemini",
     "options": "default",
     "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"read it\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hmm\",\"thought\":true},{\"text\":\"ok 漢字 😀\"},{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"line\\u0001one\\r\\nline two\"}}},{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":1024,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
-    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user"
+    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic",
@@ -691,7 +698,8 @@
     "to": "gemini",
     "options": "gateway",
     "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"read it\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hmm\",\"thought\":true},{\"text\":\"ok 漢字 😀\"},{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"line\\u0001one\\r\\nline two\"}}},{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":1024,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
-    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user"
+    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic-group",
@@ -699,7 +707,8 @@
     "to": "anthropic",
     "options": "default",
     "body": "{\"model\":\"m1\",\"system\":[{\"type\":\"text\",\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"read it\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\",\"signature\":\"c2ln\"},{\"type\":\"text\",\"text\":\"ok 漢字 😀\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"line\\u0001one\\r\\nline two\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":1024,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"thinking\":{\"type\":\"disabled\"},\"temperature\":0.7,\"metadata\":{\"user_id\":\"u_1\"}}",
-    "losses": "request.unknown_field@unknown_field"
+    "losses": "request.unknown_field@unknown_field",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic-group",
@@ -707,7 +716,8 @@
     "to": "anthropic",
     "options": "gateway",
     "body": "{\"model\":\"m1\",\"system\":[{\"type\":\"text\",\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"read it\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\",\"signature\":\"c2ln\"},{\"type\":\"text\",\"text\":\"ok 漢字 😀\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"line\\u0001one\\r\\nline two\"},{\"type\":\"text\",\"text\":\"go on\"}]}],\"max_tokens\":1024,\"tools\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"thinking\":{\"type\":\"disabled\"},\"temperature\":0.7}",
-    "losses": "request.unknown_field@unknown_field"
+    "losses": "request.unknown_field@unknown_field",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic-group",
@@ -715,7 +725,8 @@
     "to": "chat",
     "options": "default",
     "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"You are é / \\\"careful\\\"\\n\\ttabs\"},{\"role\":\"user\",\"content\":\"read it\"},{\"role\":\"assistant\",\"content\":\"ok 漢字 😀\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"}}],\"reasoning_content\":\"hmm\"},{\"role\":\"tool\",\"content\":\"line\\u0001one\\r\\nline two\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}],\"max_tokens\":1024,\"temperature\":0.7,\"reasoning_effort\":\"none\",\"user\":\"u_1\"}",
-    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]"
+    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic-group",
@@ -723,7 +734,8 @@
     "to": "chat",
     "options": "gateway",
     "body": "{\"model\":\"m1\",\"messages\":[{\"role\":\"system\",\"content\":\"You are é / \\\"careful\\\"\\n\\ttabs\"},{\"role\":\"user\",\"content\":\"read it\"},{\"role\":\"assistant\",\"content\":\"ok 漢字 😀\",\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"}}]},{\"role\":\"tool\",\"content\":\"line\\u0001one\\r\\nline two\",\"tool_call_id\":\"toolu_1\"},{\"role\":\"user\",\"content\":\"go on\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}],\"max_tokens\":1024,\"temperature\":0.7,\"reasoning_effort\":\"none\"}",
-    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]"
+    "losses": "request.unknown_field@unknown_field;cache.marker@system[0].cache_control;reasoning.signature@messages[1].parts[0]",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic-group",
@@ -731,7 +743,8 @@
     "to": "responses",
     "options": "default",
     "body": "{\"model\":\"m1\",\"instructions\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"read it\"}]},{\"type\":\"reasoning\",\"summary\":[{\"text\":\"hmm\",\"type\":\"summary_text\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok 漢字 😀\"}]},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"line\\u0001one\\r\\nline two\"}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"temperature\":0.7,\"max_output_tokens\":1024,\"reasoning\":{\"effort\":\"none\"},\"user\":\"u_1\"}",
-    "losses": "request.unknown_field@unknown_field;reasoning.signature@input[1].parts[0]"
+    "losses": "request.unknown_field@unknown_field;reasoning.signature@input[1].parts[0]",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic-group",
@@ -739,7 +752,8 @@
     "to": "responses",
     "options": "gateway",
     "body": "{\"model\":\"m1\",\"instructions\":\"You are é / \\\"careful\\\"\\n\\ttabs\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"read it\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok 漢字 😀\"}]},{\"type\":\"function_call\",\"name\":\"Read\",\"call_id\":\"toolu_1\",\"arguments\":\"{\\\"path\\\":\\\"/a b/c.go\\\",\\\"n\\\":1.50e2}\"},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go on\"}]},{\"type\":\"function_call_output\",\"call_id\":\"toolu_1\",\"output\":\"line\\u0001one\\r\\nline two\"}],\"tools\":[{\"type\":\"function\",\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}],\"temperature\":0.7,\"max_output_tokens\":1024,\"reasoning\":{\"effort\":\"none\"}}",
-    "losses": "request.unknown_field@unknown_field"
+    "losses": "request.unknown_field@unknown_field",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic-group",
@@ -747,7 +761,8 @@
     "to": "gemini",
     "options": "default",
     "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"read it\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hmm\",\"thought\":true},{\"text\":\"ok 漢字 😀\"},{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"line\\u0001one\\r\\nline two\"}}},{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":1024,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
-    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user"
+    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic-group",
@@ -755,7 +770,8 @@
     "to": "gemini",
     "options": "gateway",
     "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"read it\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"hmm\",\"thought\":true},{\"text\":\"ok 漢字 😀\"},{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/a b/c.go\",\"n\":1.50e2}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"Read\",\"response\":{\"output\":\"line\\u0001one\\r\\nline two\"}}},{\"text\":\"go on\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are é / \\\"careful\\\"\\n\\ttabs\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"Read\",\"description\":\"Reads a file\",\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"],\"type\":\"object\"}}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":1024,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
-    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user"
+    "losses": "request.unknown_field@unknown_field;cache.marker@systemInstruction[0].cache_control;reasoning.signature@contents[1].parts[0];request.user@user",
+    "has_cache": true
   },
   {
     "name": "fixture-anthropic-image",

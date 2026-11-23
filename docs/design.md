@@ -984,8 +984,34 @@ them:
 
 ### 9.7 Prompt caching
 
-Anthropic `cache_control` (type and `ttl`) is kept on instructions, parts and tools
-and reproduced exactly towards Anthropic; no marks are added unless the dialect asks.
+Anthropic `cache_control` (type and `ttl`) is kept on instructions, parts (including
+`tool_use` and `tool_result`) and tools and reproduced towards Anthropic. Chat clients
+may send the same object, following the OpenRouter and LiteLLM conventions: on `text`,
+`image_url` and `file` content parts, on a message (applied to its last content part)
+and on a tool definition next to `function`. Markers on a Chat `tool` message are moved
+to the outer `tool_result`, whose breakpoint covers all of its content.
+
+Anthropic accepts at most four breakpoints per request and rejects a marker on an empty
+text block. The builder drops markers on empty text, then, above four, keeps the first
+marker in render order (tools, system, messages; usually the stable prefix) and the last
+three (the most recent turns). Anthropic also requires `1h` breakpoints to precede `5m`
+ones; a `1h` marker after a `5m` one is shortened to `5m`. Each dropped or shortened
+marker is a `cache.marker` loss.
+
+`anthropic.Dialect.AutoCache` adds breakpoints only when the request carries none:
+
+| Mode           | Breakpoints                                                              |
+| -------------- | ------------------------------------------------------------------------ |
+| `""` (off)     | none                                                                     |
+| `prefix`       | last function tool; last system block                                    |
+| `conversation` | as `prefix`, plus the last cacheable block of the final message and of the user message before it |
+
+A cache write costs more than plain input (1.25x for the 5-minute TTL) and a read costs a
+fraction (0.1x on most models), so `prefix` limits the write premium to the shared system
+prompt and tools, while `conversation` also writes every new turn so that the next turn
+reads it. Automatic breakpoints use the 5-minute TTL and are never placed on thinking
+blocks or empty text.
+
 Towards other upstreams marks are a `cache.marker` loss (allowed: those providers cache
 implicitly). `prompt_cache_key` and `prompt_cache_retention` are forwarded where the
 upstream accepts them.
@@ -1044,7 +1070,7 @@ names appear in the library; callers choose dialect values per provider.
   `PromptExcludesCache`, `CacheReadFields`, `CacheWriteFields`,
   `ReasoningExcludedFromCompletion` (usage interpretation); `ThinkTags`;
   `SignaturesInExtraContent`; `MidSystem` (keep | fold).
-- **anthropic.Dialect**: `MidSystem`; `AutoCache`; `StrictTools`; `DefaultMaxTokens`.
+- **anthropic.Dialect**: `MidSystem`; `AutoCache` (off | prefix | conversation); `StrictTools`; `DefaultMaxTokens`; `DisableWebSearch`.
 - **gemini.Dialect**: `SchemaField`; `URLFileData`; `FunctionCallIDs`; `MidSystem`.
 - **responses.Dialect**: `StoreDefault`; `CacheWriteField`.
 

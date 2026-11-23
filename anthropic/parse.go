@@ -489,8 +489,9 @@ func parseContentBlock(raw json.RawMessage, p ir.Path, role ir.Role, allowEmptyT
 			args = json.RawMessage(`{}`)
 		}
 		return ir.Part{
-			Type: ir.PartToolCall,
-			Call: &ir.ToolCall{ID: id, Name: name, Kind: ir.ToolFunction, Arguments: args, Signature: sig},
+			Type:  ir.PartToolCall,
+			Call:  &ir.ToolCall{ID: id, Name: name, Kind: ir.ToolFunction, Arguments: args, Signature: sig},
+			Cache: parseCacheControl(fields["cache_control"]),
 		}, nil
 
 	case "tool_result":
@@ -535,6 +536,7 @@ func parseContentBlock(raw json.RawMessage, p ir.Path, role ir.Role, allowEmptyT
 				IsError: isErr,
 				Content: content,
 			},
+			Cache: parseCacheControl(fields["cache_control"]),
 		}, nil
 
 	case "thinking":

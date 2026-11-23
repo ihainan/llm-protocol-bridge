@@ -246,6 +246,7 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 	var toolCallID string
 	var nameStr string
 	var reasoningText string
+	var msgCacheRaw json.RawMessage
 
 	for _, kv := range kvs {
 		k, v := kv.Key, kv.Value
@@ -287,6 +288,8 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 			if s, ok := jsonx.String(v); ok && s != "" {
 				msg.Parts = append(msg.Parts, ir.Part{Type: ir.PartRefusal, Text: s})
 			}
+		case "cache_control":
+			msgCacheRaw = v
 		}
 	}
 
@@ -326,6 +329,21 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 			}
 		}
 		cleanID, _ := decodeChatCallID(env, toolCallID)
+		// Anthropic caches a tool_result as one block, so markers on inner
+		// content parts (or on the tool message itself) move to the outer
+		// result; a breakpoint at its end covers every inner part.
+		var resultCache *ir.CacheControl
+		for i := range parts {
+			if parts[i].Cache != nil {
+				resultCache = parts[i].Cache
+				parts[i].Cache = nil
+			}
+		}
+		if cc, err := parseChatCacheControl(msgCacheRaw, p.Key("cache_control"), env); err != nil {
+			return ir.Message{}, err
+		} else if cc != nil {
+			resultCache = cc
+		}
 		msg.Parts = []ir.Part{{
 			Type: ir.PartToolResult,
 			Result: &ir.ToolResult{
@@ -333,7 +351,9 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 				IsError: false,
 				Content: parts,
 			},
+			Cache: resultCache,
 		}}
+		return msg, nil
 
 	case "assistant":
 		if reasoningText != "" {
@@ -367,7 +387,61 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 		}
 	}
 
+	if err := applyMessageCacheControl(&msg, msgCacheRaw, p.Key("cache_control"), env); err != nil {
+		return ir.Message{}, err
+	}
 	return msg, nil
+}
+
+// applyMessageCacheControl applies a message-level cache_control (a LiteLLM
+// convention) to the last cacheable part of the message. A part that already
+// carries its own marker keeps it.
+func applyMessageCacheControl(msg *ir.Message, raw json.RawMessage, p ir.Path, env *ir.Env) error {
+	cc, err := parseChatCacheControl(raw, p, env)
+	if err != nil || cc == nil {
+		return err
+	}
+	for i := len(msg.Parts) - 1; i >= 0; i-- {
+		switch msg.Parts[i].Type {
+		case ir.PartText, ir.PartRefusal, ir.PartImage, ir.PartFile, ir.PartToolCall:
+			if msg.Parts[i].Cache == nil {
+				msg.Parts[i].Cache = cc
+			}
+			return nil
+		}
+	}
+	return env.Lose(ir.LossCacheMarker, p, "message has no content part that can carry a cache marker")
+}
+
+// parseChatCacheControl reads an Anthropic-style cache_control object that
+// OpenAI-compatible clients (OpenRouter, LiteLLM) attach to Chat content parts,
+// messages and tool definitions. Absent or null yields nil. Shapes Anthropic
+// would reject are dropped with a LossCacheMarker instead of failing the
+// request, since Chat Completions itself defines no such field.
+func parseChatCacheControl(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.CacheControl, error) {
+	if jsonx.IsNull(raw) {
+		return nil, nil
+	}
+	kvs, err := jsonx.Object(raw)
+	if err != nil {
+		return nil, env.Lose(ir.LossCacheMarker, p, "cache_control must be an object")
+	}
+	cc := &ir.CacheControl{}
+	for _, kv := range kvs {
+		switch kv.Key {
+		case "type":
+			cc.Type, _ = jsonx.String(kv.Value)
+		case "ttl":
+			cc.TTL, _ = jsonx.String(kv.Value)
+		}
+	}
+	if cc.Type != "ephemeral" {
+		return nil, env.Lose(ir.LossCacheMarker, p.Key("type"), "cache_control type must be \"ephemeral\"")
+	}
+	if cc.TTL != "" && cc.TTL != "5m" && cc.TTL != "1h" {
+		return nil, env.Lose(ir.LossCacheMarker, p.Key("ttl"), "cache_control ttl must be \"5m\" or \"1h\"")
+	}
+	return cc, nil
 }
 
 // parseContent decodes a content value: string or array of parts.
@@ -419,7 +493,13 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 	switch partType {
 	case "text":
 		text, _ := jsonx.String(fields["text"])
-		return ir.TextPart(text), nil
+		part := ir.TextPart(text)
+		cc, err := parseChatCacheControl(fields["cache_control"], p.Key("cache_control"), env)
+		if err != nil {
+			return ir.Part{}, err
+		}
+		part.Cache = cc
+		return part, nil
 
 	case "refusal":
 		text, _ := jsonx.String(fields["refusal"])
@@ -447,7 +527,11 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 		} else {
 			media.URL = iu.URL
 		}
-		return ir.Part{Type: ir.PartImage, Media: media}, nil
+		cc, err := parseChatCacheControl(fields["cache_control"], p.Key("cache_control"), env)
+		if err != nil {
+			return ir.Part{}, err
+		}
+		return ir.Part{Type: ir.PartImage, Media: media, Cache: cc}, nil
 
 	case "input_audio":
 		audioRaw, ok := fields["input_audio"]
@@ -484,7 +568,11 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 				media.Data = rest[i+8:]
 			}
 		}
-		return ir.Part{Type: ir.PartFile, Media: media}, nil
+		cc, err := parseChatCacheControl(fields["cache_control"], p.Key("cache_control"), env)
+		if err != nil {
+			return ir.Part{}, err
+		}
+		return ir.Part{Type: ir.PartFile, Media: media, Cache: cc}, nil
 
 	case "thinking", "thought":
 		// Reasoning block in some dialects
@@ -592,6 +680,18 @@ func parseTool(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, error) {
 	}
 	if wt.Function.Strict != nil {
 		t.Strict = wt.Function.Strict
+	}
+	// LiteLLM places cache_control next to "function" on a tool definition.
+	if kvs, err := jsonx.Object(raw); err == nil {
+		for _, kv := range kvs {
+			if kv.Key == "cache_control" {
+				cc, err := parseChatCacheControl(kv.Value, p.Key("cache_control"), env)
+				if err != nil {
+					return ir.Tool{}, err
+				}
+				t.Cache = cc
+			}
+		}
 	}
 	return t, nil
 }

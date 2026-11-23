@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Prompt cache markers from Chat Completions clients: `cache_control` on
+  `text` / `image_url` / `file` content parts, on messages (applied to the
+  last content part, LiteLLM convention) and on tool definitions (next to
+  `function`) is carried to Anthropic. Markers on a `tool` message move to the
+  outer `tool_result`. Invalid shapes (non-object, type other than
+  `ephemeral`, TTL other than `5m` / `1h`) are dropped as `cache.marker`
+  losses. Chat, Responses and Gemini upstreams record `cache.marker` losses as
+  before.
+- `anthropic.Dialect.AutoCache` (`AutoCacheMode`: `""` off, `"prefix"`,
+  `"conversation"`) places cache breakpoints automatically when a request
+  carries none of its own. It replaces the previously unimplemented boolean
+  field of the same name.
+- The Anthropic builder enforces the four-breakpoint limit: the first marker in
+  render order and the last three are kept, others are dropped as
+  `cache.marker` losses. Markers on empty text blocks are dropped the same way,
+  and a `1h` marker that follows a `5m` one (rejected by Anthropic) is
+  shortened to `5m`.
+- `bridge/testdata/cache-baseline-v0.1.4.json` pins v0.1.4 request output for
+  requests without cache markers.
+
+### Fixed
+
+- Anthropic `tool_use` / `tool_result` `cache_control` and markers on a single
+  text block inside `tool_result` were silently dropped; they are now kept.
+- Cache markers on Anthropic folded mid-conversation system messages and on
+  Responses `instructions` are now reported as `cache.marker` losses instead of
+  being dropped silently.
+
 - Conversion core covering all 16 directions across four formats: OpenAI Chat
   Completions (`chat`), OpenAI Responses (`responses`), Anthropic Messages
   (`anthropic`), and Gemini `generateContent` (`gemini`).

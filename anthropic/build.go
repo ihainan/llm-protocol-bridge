@@ -36,10 +36,10 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// System prompt.
-	var sysRaw json.RawMessage
+	var sysBlocks []wireContentBlock
 	if len(req.Instructions) > 0 {
 		var sysErr error
-		sysRaw, sysErr = buildContentBlocks(req.Instructions, env)
+		sysBlocks, sysErr = buildSystemBlocks(req.Instructions, env)
 		if sysErr != nil {
 			return nil, sysErr
 		}
@@ -51,7 +51,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	var thinkingRaw json.RawMessage
 	var thinkingEnabled bool
 	var adaptiveEffort ir.Effort
-	messages, err := buildMessages(req.Messages, nameMap, env, dia)
+	merged, err := buildMessageBlocks(req.Messages, nameMap, env, dia)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			allowedSet[ref.Namespace+"\x00"+ref.Name] = true
 		}
 	}
-	var rawTools []json.RawMessage
+	var rawTools []toolEntry
 	for i, t := range req.Tools {
 		if allowedSet != nil && !allowedSet[t.Namespace+"\x00"+t.Name] {
 			continue
@@ -80,11 +80,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			return nil, err
 		}
 		names[wt.Name] = ir.ToolRef{Name: t.Name, Namespace: t.Namespace, Kind: t.Kind}
-		tb, err := jsonx.Marshal(wt)
-		if err != nil {
-			return nil, err
-		}
-		rawTools = append(rawTools, tb)
+		rawTools = append(rawTools, toolEntry{wt: &wt, path: fp})
 	}
 	droppedWebSearch := false
 	for i, bt := range req.Builtins {
@@ -99,7 +95,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 				continue
 			}
 			if bt.Origin == ir.FormatAnthropic && len(bt.Raw) > 0 {
-				rawTools = append(rawTools, bt.Raw)
+				rawTools = append(rawTools, toolEntry{raw: bt.Raw, path: fp})
 			} else if bt.IsCachedWebSearch() {
 				if err := env.Lose(ir.LossCachedWebSearch, fp, "cached web_search (external_web_access: false) dropped for Anthropic"); err != nil {
 					return nil, err
@@ -120,14 +116,14 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 					wsObj["max_uses"] = *wsCfg.MaxUses
 				}
 				tb, _ := jsonx.Marshal(wsObj)
-				rawTools = append(rawTools, tb)
+				rawTools = append(rawTools, toolEntry{raw: tb, path: fp})
 			}
 		case ir.BuiltinWebFetch:
 			if bt.Origin == ir.FormatAnthropic && len(bt.Raw) > 0 {
-				rawTools = append(rawTools, bt.Raw)
+				rawTools = append(rawTools, toolEntry{raw: bt.Raw, path: fp})
 			} else {
 				tb, _ := jsonx.Marshal(map[string]any{"type": "web_fetch_20250910", "name": "web_fetch"})
-				rawTools = append(rawTools, tb)
+				rawTools = append(rawTools, toolEntry{raw: tb, path: fp})
 			}
 		default:
 			return nil, env.Err(ir.Unsupported(fp, string(bt.Kind), "builtin tool not supported by Anthropic"))
@@ -227,14 +223,28 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		}
 	}
 
+	// Prompt cache breakpoints: validate client markers, enforce the
+	// four-breakpoint limit, and apply Dialect.AutoCache.
+	if err := placeCacheBreakpoints(req, dia.AutoCache, env, rawTools, sysBlocks, merged); err != nil {
+		return nil, err
+	}
+
 	// Assemble.
 	out := jsonx.Start(nil)
 	out.Str("model", req.Model)
 
-	if sysRaw != nil {
+	if len(req.Instructions) > 0 {
+		sysRaw, err := renderSystem(sysBlocks)
+		if err != nil {
+			return nil, err
+		}
 		out.Raw("system", sysRaw)
 	}
 
+	messages, err := renderMessages(merged)
+	if err != nil {
+		return nil, err
+	}
 	msgsBytes, err := jsonx.Marshal(messages)
 	if err != nil {
 		return nil, err
@@ -243,7 +253,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	out.Int("max_tokens", int64(maxTok))
 
 	if len(rawTools) > 0 {
-		tb, err := jsonx.Marshal(rawTools)
+		tb, err := renderTools(rawTools)
 		if err != nil {
 			return nil, err
 		}
@@ -382,13 +392,16 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}, nil
 }
 
-// buildMessages converts ir.Messages to wireMessages, merging consecutive
-// messages with the same role (required by the Anthropic Messages API).
-func buildMessages(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env, dia Dialect) ([]wireMessage, error) {
-	type msgBlocks struct {
-		role   string
-		blocks []wireContentBlock
-	}
+// msgBlocks is one Anthropic message kept as structured blocks until the
+// request is assembled.
+type msgBlocks struct {
+	role   string
+	blocks []wireContentBlock
+}
+
+// buildMessageBlocks converts ir.Messages to Anthropic messages, merging
+// consecutive messages with the same role (required by the Anthropic Messages API).
+func buildMessageBlocks(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env, dia Dialect) ([]msgBlocks, error) {
 	var merged []msgBlocks
 	appendBlocks := func(role string, blocks []wireContentBlock) {
 		if len(blocks) == 0 {
@@ -421,9 +434,14 @@ func buildMessages(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env, dia 
 			case "fold":
 				// Handled in Stage 5 (fold into adjacent user message).
 				var sb strings.Builder
-				for _, pt := range m.Parts {
+				for j, pt := range m.Parts {
 					if pt.Type == ir.PartText {
 						sb.WriteString(pt.Text)
+					}
+					if pt.Cache != nil {
+						if err := env.Lose(ir.LossCacheMarker, fp.Key("content").At(j).Key("cache_control"), "cache marker on a folded mid-conversation system message dropped"); err != nil {
+							return nil, err
+						}
 					}
 				}
 				if sb.Len() > 0 {
@@ -441,8 +459,18 @@ func buildMessages(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env, dia 
 		}
 	}
 
+	return merged, nil
+}
+
+// renderMessages marshals structured message blocks into wire messages.
+func renderMessages(merged []msgBlocks) ([]wireMessage, error) {
 	out := make([]wireMessage, 0, len(merged))
 	for _, mb := range merged {
+		for i := range mb.blocks {
+			if mb.blocks[i].Type == "tool_result" {
+				mb.blocks[i].Content = renderToolResultContent(mb.blocks[i].inner)
+			}
+		}
 		content, err := jsonx.Marshal(mb.blocks)
 		if err != nil {
 			return nil, err
@@ -472,11 +500,12 @@ func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.Too
 	switch part.Type {
 	case ir.PartText:
 		b := wireContentBlock{Type: "text", Text: part.Text}
-		b.CacheControl = irCacheToWire(part.Cache)
+		b.setCache(part.Cache, p)
 		return []wireContentBlock{b}, nil
 
 	case ir.PartRefusal:
 		b := wireContentBlock{Type: "text", Text: part.Text}
+		b.setCache(part.Cache, p)
 		return []wireContentBlock{b}, nil
 
 	case ir.PartImage:
@@ -493,7 +522,7 @@ func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.Too
 			return nil, err
 		}
 		b := wireContentBlock{Type: "image", Source: src}
-		b.CacheControl = irCacheToWire(part.Cache)
+		b.setCache(part.Cache, p)
 		return []wireContentBlock{b}, nil
 
 	case ir.PartFile:
@@ -520,7 +549,7 @@ func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.Too
 			Title:   part.Media.Title,
 			Context: part.Media.Context,
 		}
-		b.CacheControl = irCacheToWire(part.Cache)
+		b.setCache(part.Cache, p)
 		return []wireContentBlock{b}, nil
 
 	case ir.PartReasoning:
@@ -563,19 +592,20 @@ func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.Too
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}
-		return []wireContentBlock{{
+		b := wireContentBlock{
 			Type:  "tool_use",
 			ID:    ir.AnthropicSafeID(call.ID),
 			Name:  nameMap.WireName(call.Namespace, call.Name),
 			Input: args,
-		}}, nil
+		}
+		b.setCache(part.Cache, p)
+		return []wireContentBlock{b}, nil
 
 	case ir.PartToolResult:
 		if part.Result == nil {
 			return nil, nil
 		}
 		r := part.Result
-		var content json.RawMessage
 		// Build content blocks from result content.
 		var inner []wireContentBlock
 		for i, cp := range r.Content {
@@ -586,23 +616,17 @@ func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.Too
 			}
 			inner = append(inner, bs...)
 		}
-		if len(inner) == 1 && inner[0].Type == "text" {
-			// Use plain string form when it's a single text block.
-			content, _ = jsonx.Marshal(inner[0].Text)
-		} else if len(inner) > 0 {
-			content, _ = jsonx.Marshal(inner)
-		} else {
-			content = json.RawMessage(`""`)
-		}
 		isErr := r.IsError
 		b := wireContentBlock{
 			Type:      "tool_result",
 			ToolUseID: ir.AnthropicSafeID(r.CallID),
-			Content:   content,
+			Content:   renderToolResultContent(inner),
+			inner:     inner,
 		}
 		if isErr {
 			b.IsError = &isErr
 		}
+		b.setCache(part.Cache, p)
 		return []wireContentBlock{b}, nil
 
 	case ir.PartBuiltinCall, ir.PartBuiltinResult:
@@ -634,7 +658,8 @@ func buildMediaSource(m *ir.Media, defaultMIME string, p ir.Path, env *ir.Env) (
 	return nil, env.Err(ir.Invalid(p, "media has no source (url, data, or file_id)"))
 }
 
-func buildContentBlocks(parts []ir.Part, env *ir.Env) (json.RawMessage, error) {
+// buildSystemBlocks converts instruction parts to system content blocks.
+func buildSystemBlocks(parts []ir.Part, env *ir.Env) ([]wireContentBlock, error) {
 	var blocks []wireContentBlock
 	for i, p := range parts {
 		fp := ir.Root.Key("system").At(i)
@@ -644,13 +669,31 @@ func buildContentBlocks(parts []ir.Part, env *ir.Env) (json.RawMessage, error) {
 		}
 		blocks = append(blocks, bs...)
 	}
-	// If a single text block, use plain string.
+	return blocks, nil
+}
+
+// renderSystem marshals system blocks, using the plain string form for a
+// single text block without a cache marker.
+func renderSystem(blocks []wireContentBlock) (json.RawMessage, error) {
 	if len(blocks) == 1 && blocks[0].Type == "text" && blocks[0].CacheControl == nil {
-		b, err := jsonx.Marshal(blocks[0].Text)
-		return b, err
+		return jsonx.Marshal(blocks[0].Text)
 	}
-	b, err := jsonx.Marshal(blocks)
-	return b, err
+	return jsonx.Marshal(blocks)
+}
+
+// renderToolResultContent renders tool_result content: the plain string form
+// for a single text block without a cache marker, an array otherwise, and ""
+// when empty.
+func renderToolResultContent(inner []wireContentBlock) json.RawMessage {
+	if len(inner) == 1 && inner[0].Type == "text" && inner[0].CacheControl == nil {
+		content, _ := jsonx.Marshal(inner[0].Text)
+		return content
+	}
+	if len(inner) > 0 {
+		content, _ := jsonx.Marshal(inner)
+		return content
+	}
+	return json.RawMessage(`""`)
 }
 
 func buildTool(t ir.Tool, p ir.Path, dia Dialect, env *ir.Env, nameMap *ir.ToolNameMap) (wireTool, error) {

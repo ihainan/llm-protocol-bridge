@@ -23,6 +23,13 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 	// instructions from leading Instructions parts.
 	if len(req.Instructions) > 0 {
+		for i, pt := range req.Instructions {
+			if pt.Cache != nil {
+				if err := env.Lose(ir.LossCacheMarker, ir.Root.Key("instructions").At(i).Key("cache_control"), "prompt cache markers not supported by Responses API"); err != nil {
+					return nil, err
+				}
+			}
+		}
 		out.Str("instructions", partsToText(req.Instructions))
 	}
 
