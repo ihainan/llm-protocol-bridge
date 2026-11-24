@@ -265,3 +265,70 @@ func TestAnthropicDocumentToResponsesFileData(t *testing.T) {
 		t.Fatalf("file_data not a data URI: %s", plan.Body)
 	}
 }
+
+const forcedToolsBody = `{"model":"m","messages":[{"role":"user","content":"plan"}],
+ "tools":[{"type":"function","function":{"name":"todo","parameters":{"type":"object"}}},{"type":"function","function":{"name":"ls","parameters":{"type":"object"}}}],
+ "tool_choice":%s}`
+
+// Models that reject forced tool_choice get it relaxed to auto.
+func TestNoForcedToolChoiceRelaxes(t *testing.T) {
+	strict := &ir.ModelProfile{NoForcedToolChoice: true}
+	cases := []struct {
+		choice, wantTC string
+		wantTools      []string
+		dropTools      []string
+	}{
+		{`{"type":"function","function":{"name":"todo"}}`, `"tool_choice":{"type":"auto"}`, []string{`"name":"todo"`}, []string{`"name":"ls"`}},
+		{`"required"`, `"tool_choice":{"type":"auto"}`, []string{`"name":"todo"`, `"name":"ls"`}, nil},
+	}
+	for _, c := range cases {
+		body := strings.Replace(forcedToolsBody, "%s", c.choice, 1)
+		plan, err := bridge.Convert(ir.FormatChat, ir.FormatAnthropic, []byte(body), bridge.Options{Profile: strict})
+		if err != nil {
+			t.Fatalf("%s: %v", c.choice, err)
+		}
+		got := string(plan.Body)
+		if !strings.Contains(got, c.wantTC) {
+			t.Fatalf("%s: tool_choice not relaxed: %s", c.choice, got)
+		}
+		for _, w := range c.wantTools {
+			if !strings.Contains(got, w) {
+				t.Fatalf("%s: missing tool %s: %s", c.choice, w, got)
+			}
+		}
+		for _, d := range c.dropTools {
+			if strings.Contains(got, d) {
+				t.Fatalf("%s: tool %s should be dropped: %s", c.choice, d, got)
+			}
+		}
+		lost := false
+		for _, l := range plan.Losses {
+			lost = lost || l.Kind == ir.LossForcedToolChoice
+		}
+		if !lost {
+			t.Fatalf("%s: loss not recorded", c.choice)
+		}
+	}
+	// Responses allowed_tools in required mode: the list stays, mode becomes auto.
+	rbody := `{"model":"m","input":"plan","tools":[{"type":"function","name":"todo","parameters":{"type":"object"}},{"type":"function","name":"ls","parameters":{"type":"object"}}],
+	 "tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"ls"}]}}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(rbody), bridge.Options{Profile: strict})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(plan.Body); !strings.Contains(got, `"tool_choice":{"type":"auto"}`) || strings.Contains(got, `"name":"todo"`) || !strings.Contains(got, `"name":"ls"`) {
+		t.Fatalf("allowed_tools not relaxed: %s", got)
+	}
+	// Without the flag nothing changes.
+	body := strings.Replace(forcedToolsBody, "%s", `"required"`, 1)
+	plan, err = bridge.Convert(ir.FormatChat, ir.FormatAnthropic, []byte(body), bridge.Options{})
+	if err != nil || !strings.Contains(string(plan.Body), `"tool_choice":{"type":"any"}`) {
+		t.Fatalf("unflagged model changed: %v %s", err, plan.Body)
+	}
+	// auto and none are left alone even with the flag.
+	body = strings.Replace(forcedToolsBody, "%s", `"none"`, 1)
+	plan, err = bridge.Convert(ir.FormatChat, ir.FormatAnthropic, []byte(body), bridge.Options{Profile: strict})
+	if err != nil || !strings.Contains(string(plan.Body), `"tool_choice":{"type":"none"}`) || len(plan.Losses) != 0 {
+		t.Fatalf("none changed: %v %s %+v", err, plan.Body, plan.Losses)
+	}
+}

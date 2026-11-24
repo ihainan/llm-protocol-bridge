@@ -40,9 +40,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   member is checked by its last member.
 - `bridge/testdata/cache-baseline-v0.1.4.json` pins v0.1.4 request output for
   requests without cache markers.
+- Responses `configuration_update` input items (change reasoning effort or
+  text format mid-conversation) are accepted. A Responses upstream receives
+  them verbatim and in place; other upstreams get the last update as the
+  request-level setting, recorded as a `request.configuration_update` loss.
+- Codex remote compaction items (`compaction`, `compaction_summary`,
+  `compaction_trigger`) are forwarded to Responses upstreams and rejected with
+  an `unsupported` error naming the item for other upstreams.
+- `ir.ModelProfile.NoForcedToolChoice` relaxes a forced `tool_choice` to
+  `auto` for models that reject it (a named tool stays the only tool offered),
+  recorded as a `tool.forced_choice` loss.
+- `ir.Message.Extras`, `ir.Request.TrailingExtras` and `ir.InputExtra` carry
+  Responses input items that have no message equivalent.
 
 ### Fixed
 
+- Anthropic streams: `0` placeholders for input and cache counters in
+  `message_delta` no longer erase the counts from `message_start`.
+- Chat usage: when `prompt_tokens_details.cached_tokens` is `0` or missing, a
+  positive dialect cache field (`Dialect.CacheReadFields`) is used; the two are
+  never added.
+- Responses `input_file.file_data` data URIs are split into media type and
+  data (the prefix used to reach Anthropic's base64 field); `file_url` is
+  carried, and the Responses builder writes `file_data` as a data URI.
+- Non-PDF files sent to Anthropic: text files become text documents, other
+  types fail with an `unsupported` error naming the accepted types instead of
+  an upstream 400.
 - Anthropic `tool_use` / `tool_result` `cache_control` and markers on a single
   text block inside `tool_result` were silently dropped; they are now kept.
 - Cache markers on Anthropic folded mid-conversation system messages and on

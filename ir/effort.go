@@ -157,6 +157,11 @@ type ModelProfile struct {
 	// EffortInTemplateKwargs mirrors the effort into
 	// chat_template_kwargs.reasoning_effort (Chat upstreams).
 	EffortInTemplateKwargs bool `json:"effort_in_template_kwargs,omitempty"`
+	// NoForcedToolChoice marks a model that rejects a forced tool_choice
+	// (Anthropic any/tool). Such a choice is relaxed to auto before sending: a
+	// named tool becomes auto with only that tool offered, and the change is
+	// recorded as a tool.forced_choice loss.
+	NoForcedToolChoice bool `json:"no_forced_tool_choice,omitempty"`
 }
 
 // BudgetEffort reads a budget as an effort with the profile's table.
@@ -297,4 +302,54 @@ func (p *ModelProfile) Resolve(c *ReasoningConfig) ResolvedReasoning {
 	}
 	r.Effort = p.Fit(r.Effort)
 	return r
+}
+
+// IsForced reports whether the choice makes the model call a tool.
+func (tc ToolChoice) IsForced() bool {
+	return tc.Mode == ToolChoiceRequired || tc.Mode == ToolChoiceTool ||
+		(tc.Mode == ToolChoiceAllowed && tc.AllowedMode == ToolChoiceRequired)
+}
+
+// RelaxForcedToolChoice returns req unchanged unless the profile marks the
+// model as rejecting forced tool_choice and the request forces one. Then it
+// returns a copy with tool_choice auto: a named tool (or hosted tool kind)
+// keeps only that tool on offer, required becomes auto, and an allowed list
+// in required mode stays a list in auto mode. The change is recorded as a
+// LossForcedToolChoice.
+func RelaxForcedToolChoice(req *Request, profile *ModelProfile, env *Env) (*Request, error) {
+	if profile == nil || !profile.NoForcedToolChoice || !req.ToolChoice.IsForced() {
+		return req, nil
+	}
+	tc := req.ToolChoice
+	cp := *req
+	var detail string
+	switch tc.Mode {
+	case ToolChoiceTool:
+		cp.Tools, cp.Builtins = nil, nil
+		if tc.Builtin != "" {
+			for _, b := range req.Builtins {
+				if b.Kind == tc.Builtin {
+					cp.Builtins = append(cp.Builtins, b)
+				}
+			}
+		} else {
+			for _, t := range req.Tools {
+				if t.Name == tc.Name && t.Namespace == tc.Namespace {
+					cp.Tools = append(cp.Tools, t)
+				}
+			}
+		}
+		cp.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
+		detail = "the model rejects a forced tool; sent tool_choice auto with only the named tool"
+	case ToolChoiceRequired:
+		cp.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
+		detail = "the model rejects tool_choice any/required; sent auto"
+	case ToolChoiceAllowed:
+		cp.ToolChoice.AllowedMode = ToolChoiceAuto
+		detail = "the model rejects a forced tool_choice; the allowed tools are offered with auto"
+	}
+	if err := env.Lose(LossForcedToolChoice, Root.Key("tool_choice"), detail); err != nil {
+		return nil, err
+	}
+	return &cp, nil
 }

@@ -27,6 +27,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 	// max_tokens: required by Anthropic.
 	profile := env.ModelProfileOr(nil)
+	// Some models reject forced tool_choice outright; relax it before building.
+	req, relaxErr := ir.RelaxForcedToolChoice(req, profile, env)
+	if relaxErr != nil {
+		return nil, relaxErr
+	}
 	maxTok := 0
 	if req.MaxOutputTokens != nil {
 		maxTok = *req.MaxOutputTokens
