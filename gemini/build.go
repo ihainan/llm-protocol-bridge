@@ -44,7 +44,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 		if err != nil {
 			return nil, err
 		}
-		sysContent = &wireContent{Parts: parts}
+		// every instruction part may have been dropped (allowed losses): leave
+		// systemInstruction out rather than sending an empty object
+		if len(parts) > 0 {
+			sysContent = &wireContent{Parts: parts}
+		}
 	}
 
 	// Contents.

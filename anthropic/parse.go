@@ -91,6 +91,9 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 			if !ok {
 				return nil, env.Err(ir.Invalid(fp, "must be a number"))
 			}
+			if f < 0 || f > 1 {
+				return nil, env.Err(ir.Invalid(fp, "must be between 0 and 1"))
+			}
 			req.TopP = &f
 
 		case "top_k":
@@ -100,6 +103,9 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 			n, ok := jsonx.Int(v)
 			if !ok {
 				return nil, env.Err(ir.Invalid(fp, "must be an integer"))
+			}
+			if n < 0 {
+				return nil, env.Err(ir.Invalid(fp, "must not be negative"))
 			}
 			ni := int(n)
 			req.TopK = &ni

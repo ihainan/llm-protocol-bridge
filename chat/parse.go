@@ -88,6 +88,9 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 			if !ok {
 				return nil, env.Err(ir.Invalid(fp, "must be a number"))
 			}
+			if f < 0 || f > 1 {
+				return nil, env.Err(ir.Invalid(fp, "must be between 0 and 1"))
+			}
 			req.TopP = &f
 
 		case "n":
@@ -120,12 +123,18 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 			if !ok {
 				return nil, env.Err(ir.Invalid(fp, "must be a number"))
 			}
+			if f < -2 || f > 2 {
+				return nil, env.Err(ir.Invalid(fp, "must be between -2 and 2"))
+			}
 			req.PresencePenalty = &f
 
 		case "frequency_penalty":
 			f, ok := jsonx.Float(v)
 			if !ok {
 				return nil, env.Err(ir.Invalid(fp, "must be a number"))
+			}
+			if f < -2 || f > 2 {
+				return nil, env.Err(ir.Invalid(fp, "must be between -2 and 2"))
 			}
 			req.FrequencyPenalty = &f
 

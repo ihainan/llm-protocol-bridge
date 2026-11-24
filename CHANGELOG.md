@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Chat, Anthropic and Gemini requests are range-checked like Responses:
+  `top_p` outside 0 to 1, Chat penalties outside -2 to 2, Gemini
+  `temperature` outside 0 to 2 and a negative `top_k` / `topK` are an
+  `invalid_request` (before, only the type was checked). Dropping or clamping
+  applies only to values the client format accepts.
+- A Gemini request whose system instructions are all dropped leaves
+  `systemInstruction` out instead of sending an empty object.
 - Gemini responses no longer carry `"parts": null` or `"candidates": null`:
   an empty `parts` list and an empty `candidates` list are left out, and a
   candidate without parts (the final stream chunk with only `finishReason`)

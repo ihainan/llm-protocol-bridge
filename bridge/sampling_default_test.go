@@ -2,6 +2,7 @@ package bridge_test
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/ihainan/llm-protocol-bridge/bridge"
@@ -96,5 +97,59 @@ func TestLogprobsStillRefusedByDefault(t *testing.T) {
 		`{"model":"m","messages":[{"role":"user","content":"hi"}],"logprobs":true}`), bridge.Options{Model: "m"})
 	if err == nil {
 		t.Fatal("logprobs towards Anthropic: want an error")
+	}
+}
+
+func TestFrequencyPenaltyDroppedTowardsGeminiAndAnthropic(t *testing.T) {
+	for _, up := range []ir.Format{ir.FormatGemini, ir.FormatAnthropic} {
+		plan, err := bridge.Convert(ir.FormatChat, up, []byte(
+			`{"model":"m","messages":[{"role":"user","content":"hi"}],"frequency_penalty":0.5}`), bridge.Options{Model: "m"})
+		if err != nil {
+			t.Fatalf("%s: Convert: %v", up, err)
+		}
+		if !lossKinds(plan.Losses)[ir.LossSamplingPenalty] {
+			t.Errorf("%s: penalty loss not reported: %v", up, plan.Losses)
+		}
+	}
+}
+
+// Dropping or clamping is for values the client format accepts. A value outside
+// the client format's own range is an invalid request whatever the loss policy.
+func TestSamplingOutOfClientRangeIsInvalid(t *testing.T) {
+	cases := []struct {
+		name   string
+		client ir.Format
+		up     ir.Format
+		body   string
+		param  string
+	}{
+		{"chat presence_penalty", ir.FormatChat, ir.FormatAnthropic,
+			`{"model":"m","messages":[{"role":"user","content":"hi"}],"presence_penalty":99}`, "presence_penalty"},
+		{"chat frequency_penalty", ir.FormatChat, ir.FormatGemini,
+			`{"model":"m","messages":[{"role":"user","content":"hi"}],"frequency_penalty":-3}`, "frequency_penalty"},
+		{"chat top_p", ir.FormatChat, ir.FormatAnthropic,
+			`{"model":"m","messages":[{"role":"user","content":"hi"}],"top_p":1.5}`, "top_p"},
+		{"gemini temperature", ir.FormatGemini, ir.FormatAnthropic,
+			`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"temperature":3}}`, "generationConfig.temperature"},
+		{"gemini topP", ir.FormatGemini, ir.FormatAnthropic,
+			`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"topP":1.2}}`, "generationConfig.topP"},
+		{"gemini topK", ir.FormatGemini, ir.FormatChat,
+			`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"topK":-1}}`, "generationConfig.topK"},
+		{"anthropic top_p", ir.FormatAnthropic, ir.FormatChat,
+			`{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"top_p":2}`, "top_p"},
+		{"anthropic top_k", ir.FormatAnthropic, ir.FormatChat,
+			`{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"top_k":-5}`, "top_k"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := bridge.Convert(tc.client, tc.up, []byte(tc.body), bridge.Options{Model: "m"})
+			var e *ir.Error
+			if !errors.As(err, &e) {
+				t.Fatalf("want an *ir.Error, got %v", err)
+			}
+			if e.Code != ir.CodeInvalidRequest || e.Param() != tc.param {
+				t.Errorf("got code %s param %q, want invalid_request %q", e.Code, e.Param(), tc.param)
+			}
+		})
 	}
 }

@@ -594,17 +594,26 @@ func parseGenerationConfig(raw json.RawMessage, p ir.Path, req *ir.Request, env 
 			if !ok {
 				return env.Err(ir.Invalid(fp, "must be a number"))
 			}
+			if f < 0 || f > 2 {
+				return env.Err(ir.Invalid(fp, "must be between 0 and 2"))
+			}
 			req.Temperature = &f
 		case "topP":
 			f, ok := jsonx.Float(v)
 			if !ok {
 				return env.Err(ir.Invalid(fp, "must be a number"))
 			}
+			if f < 0 || f > 1 {
+				return env.Err(ir.Invalid(fp, "must be between 0 and 1"))
+			}
 			req.TopP = &f
 		case "topK":
 			n, ok := jsonx.Int(v)
 			if !ok {
 				return env.Err(ir.Invalid(fp, "must be an integer"))
+			}
+			if n < 0 {
+				return env.Err(ir.Invalid(fp, "must not be negative"))
 			}
 			ni := int(n)
 			req.TopK = &ni
