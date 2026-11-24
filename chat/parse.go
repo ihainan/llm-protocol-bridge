@@ -694,6 +694,13 @@ func parseWireToolCalls(raw json.RawMessage, p ir.Path, env *ir.Env) ([]wireTool
 		if json.Unmarshal(elem, &tc) != nil {
 			return nil, env.Err(ir.Invalid(p.At(i), "invalid tool_call"))
 		}
+		if kvs, err := jsonx.Object(elem); err == nil {
+			for _, kv := range kvs {
+				if kv.Key == "cache_control" {
+					tc.CacheControl = kv.Value
+				}
+			}
+		}
 		tcs = append(tcs, tc)
 	}
 	return tcs, nil

@@ -602,6 +602,16 @@ func TestChatCacheMarkers_ScanLastWinsAndUserData(t *testing.T) {
 	wantPaths(t, "nested markers", cachePaths(t, plan.Body), []string{"messages[0].content[0]=" + eph})
 	wantPaths(t, "nested losses", cacheLosses(plan), []string{"messages[0].cache_control.cache_control"})
 
+	// Keys are matched exactly, as everywhere else: a case variant is not a
+	// marker, and the exact member nested marker is still reported.
+	variant := `{"model":"m","messages":[{"role":"user","content":"u"},{"role":"assistant","tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"},"cache_control":{"type":"ephemeral","cache_control":"ignored"},"CACHE_CONTROL":null}]},{"role":"tool","tool_call_id":"c","content":"r"}]}`
+	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, variant, opts())
+	wantPaths(t, "variant markers", cachePaths(t, plan.Body), []string{"messages[1].content[0]=" + eph})
+	wantPaths(t, "variant losses", cacheLosses(plan), []string{"messages[1].tool_calls[0].cache_control.cache_control"})
+	upper := `{"model":"m","messages":[{"role":"user","content":"u"},{"role":"assistant","tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"},"CACHE_CONTROL":{"type":"ephemeral"}}]},{"role":"tool","tool_call_id":"c","content":"r"}]}`
+	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, upper, opts())
+	wantPaths(t, "upper markers", cachePaths(t, plan.Body), nil)
+
 	userData := `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u"}],
 		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"cache_control":{"type":"string"}}}}},
 			{"type":"function","Function":{"name":"g","Parameters":{"type":"object","properties":{"cache_control":{"type":"string"}}}}}],
