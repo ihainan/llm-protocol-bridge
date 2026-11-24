@@ -38,7 +38,8 @@ type wireContentPart struct {
 	// input_file
 	FileID   string `json:"file_id,omitempty"`
 	Filename string `json:"filename,omitempty"`
-	FileData string `json:"file_data,omitempty"` // base64
+	FileData string `json:"file_data,omitempty"` // data URI
+	FileURL  string `json:"file_url,omitempty"`
 	// refusal
 	Refusal string `json:"refusal,omitempty"`
 }

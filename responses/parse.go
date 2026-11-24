@@ -752,7 +752,13 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 		fileID, _ := jsonx.String(fields["file_id"])
 		filename, _ := jsonx.String(fields["filename"])
 		fileData, _ := jsonx.String(fields["file_data"])
-		media := &ir.Media{FileID: fileID, Filename: filename, Data: fileData}
+		fileURL, _ := jsonx.String(fields["file_url"])
+		media := &ir.Media{FileID: fileID, Filename: filename, Data: fileData, URL: fileURL}
+		// OpenAI sends file_data as a data URI ("data:application/pdf;base64,...").
+		if mediaType, data, ok := parseDataURI(fileData); ok {
+			media.MediaType = mediaType
+			media.Data = data
+		}
 		return ir.Part{Type: ir.PartFile, Media: media}, nil
 
 	default:
@@ -1388,21 +1394,20 @@ func parseResponseFormat(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.Outpu
 	return of, nil
 }
 
-// parseDataURI splits "data:<mediaType>;base64,<data>" into its parts.
+// parseDataURI splits "data:<mediaType>[;param=value...];base64,<data>" into
+// its media type and base64 data.
 func parseDataURI(uri string) (mediaType, data string, ok bool) {
 	rest, found := strings.CutPrefix(uri, "data:")
 	if !found {
 		return "", "", false
 	}
-	semi := strings.Index(rest, ";")
-	if semi < 0 {
+	idx := strings.Index(rest, ";base64,")
+	if idx < 0 {
 		return "", "", false
 	}
-	mt := rest[:semi]
-	rest = rest[semi+1:]
-	rest, found = strings.CutPrefix(rest, "base64,")
-	if !found {
-		return "", "", false
+	header := rest[:idx]
+	if semi := strings.Index(header, ";"); semi >= 0 {
+		header = header[:semi]
 	}
-	return mt, rest, true
+	return header, rest[idx+len(";base64,"):], true
 }

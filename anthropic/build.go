@@ -1,8 +1,11 @@
 package anthropic
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
 	"github.com/ihainan/llm-protocol-bridge/ir"
@@ -537,7 +540,9 @@ func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.Too
 				mt = "text/plain"
 			}
 			src = &wireImageSource{Type: "text", MediaType: mt, Data: part.Media.Text}
-		} else {
+		} else if src, err = inlineDocumentSource(part.Media, p, env); err != nil {
+			return nil, err
+		} else if src == nil {
 			src, err = buildMediaSource(part.Media, "application/pdf", p, env)
 			if err != nil {
 				return nil, err
@@ -639,6 +644,37 @@ func partToBlocksWithNames(part ir.Part, p ir.Path, env *ir.Env, nameMap *ir.Too
 
 func buildImageSource(m *ir.Media, p ir.Path, env *ir.Env) (*wireImageSource, error) {
 	return buildMediaSource(m, "image/jpeg", p, env)
+}
+
+// inlineDocumentSource checks an inline (base64) file before it becomes an
+// Anthropic document. Anthropic documents take PDF as base64 and plain text
+// as a text source only (docs.anthropic.com, PDF support): text files are
+// decoded into a text source, other types are rejected here with a clear
+// error rather than sent upstream to fail. It returns nil for the PDF path
+// (and for file ids and URLs, whose type is unknown here).
+func inlineDocumentSource(m *ir.Media, p ir.Path, env *ir.Env) (*wireImageSource, error) {
+	if m.Data == "" || m.FileID != "" || m.URL != "" {
+		return nil, nil
+	}
+	mt := m.MediaType
+	if mt == "" {
+		mt = ir.MediaTypeFromFilename(m.Filename)
+	}
+	switch {
+	case mt == "" || strings.EqualFold(mt, "application/pdf"):
+		return nil, nil
+	case ir.IsTextMediaType(mt):
+		raw, err := base64.StdEncoding.DecodeString(m.Data)
+		if err == nil && utf8.Valid(raw) {
+			return &wireImageSource{Type: "text", MediaType: "text/plain", Data: string(raw)}, nil
+		}
+	}
+	name := m.Filename
+	if name == "" {
+		name = "the file"
+	}
+	return nil, env.Err(ir.Unsupported(p, "file.media_type",
+		fmt.Sprintf("Anthropic accepts PDF (application/pdf) and plain-text documents only; %s has media type %s", name, mt)))
 }
 
 func buildMediaSource(m *ir.Media, defaultMIME string, p ir.Path, env *ir.Env) (*wireImageSource, error) {

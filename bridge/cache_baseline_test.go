@@ -151,6 +151,20 @@ func runCacheBaseline(t *testing.T) []cacheBaselineCase {
 	return cases
 }
 
+// intentionalBodyChanges lists request bodies that deliberately differ from
+// v0.1.4 for reasons unrelated to cache markers. Each entry pins both the old
+// and the new body so the exception cannot drift.
+var intentionalBodyChanges = func() map[string]struct{ was, now string } {
+	// Responses input_file.file_data is a data URI (OpenAI file inputs guide);
+	// v0.1.4 sent the bare base64 payload.
+	fileWas := `{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"see"},{"type":"input_image","image_url":"https://example.com/a.png"},{"type":"input_file","filename":"a.pdf","file_data":"JVBERi0="}]}]}`
+	fileNow := `{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"see"},{"type":"input_image","image_url":"https://example.com/a.png"},{"type":"input_file","filename":"a.pdf","file_data":"data:application/pdf;base64,JVBERi0="}]}]}`
+	return map[string]struct{ was, now string }{
+		"chat-image-file chat->responses [default]": {fileWas, fileNow},
+		"chat-image-file chat->responses [gateway]": {fileWas, fileNow},
+	}
+}()
+
 // TestCacheBaseline_ByteExactV014 pins request conversion output against
 // v0.1.4 for every request that carries no cache marker (body, error and
 // recorded losses), and for requests carrying at most four markers (body and
@@ -187,8 +201,15 @@ func TestCacheBaseline_ByteExactV014(t *testing.T) {
 		if w.Name != g.Name || w.From != g.From || w.To != g.To || w.Options != g.Options {
 			t.Fatalf("case %d mismatch: baseline %s, current %s %s->%s [%s]", i, label, g.Name, g.From, g.To, g.Options)
 		}
-		if g.Body != w.Body {
-			t.Errorf("%s: body diverged from v0.1.4\n got: %s\nwant: %s", label, g.Body, w.Body)
+		wantBody := w.Body
+		if c, ok := intentionalBodyChanges[label]; ok {
+			if w.Body != c.was {
+				t.Errorf("%s: intentional change no longer matches the baseline it replaces", label)
+			}
+			wantBody = c.now
+		}
+		if g.Body != wantBody {
+			t.Errorf("%s: body diverged from v0.1.4\n got: %s\nwant: %s", label, g.Body, wantBody)
 		}
 		if g.Error != w.Error {
 			t.Errorf("%s: error diverged from v0.1.4\n got: %s\nwant: %s", label, g.Error, w.Error)

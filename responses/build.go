@@ -332,11 +332,22 @@ func userPartsToContent(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireContentP
 			if part.Media == nil {
 				break
 			}
+			fileData := part.Media.Data
+			if fileData != "" && !strings.HasPrefix(fileData, "data:") {
+				mt := part.Media.MediaType
+				if mt == "" {
+					mt = ir.MediaTypeFromFilename(part.Media.Filename)
+				}
+				if mt != "" {
+					fileData = "data:" + mt + ";base64," + fileData
+				}
+			}
 			content = append(content, wireContentPart{
 				Type:     "input_file",
 				FileID:   part.Media.FileID,
 				Filename: part.Media.Filename,
-				FileData: part.Media.Data,
+				FileData: fileData,
+				FileURL:  part.Media.URL,
 			})
 		case ir.PartToolResult:
 			if part.Result == nil {

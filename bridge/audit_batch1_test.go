@@ -202,3 +202,66 @@ func TestCompactionItems(t *testing.T) {
 		}
 	}
 }
+
+// Responses input_file.file_data is a data URI; the prefix must not reach
+// Anthropic's base64 field (Anthropic rejects it).
+func TestResponsesInputFileDataURIToAnthropic(t *testing.T) {
+	body := `{"model":"m","input":[{"role":"user","content":[{"type":"input_text","text":"summarize"},{"type":"input_file","filename":"a.pdf","file_data":"data:application/pdf;base64,JVBERi0="}]}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(body), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(plan.Body)
+	if strings.Contains(got, "data:application/pdf") || !strings.Contains(got, `"source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}`) {
+		t.Fatalf("data URI not split: %s", got)
+	}
+	// Gemini gets the media type and the bare payload too.
+	plan, err = bridge.Convert(ir.FormatResponses, ir.FormatGemini, []byte(body), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := string(plan.Body); strings.Contains(g, "data:application") || !strings.Contains(g, `"mimeType":"application/pdf"`) {
+		t.Fatalf("gemini inline data wrong: %s", g)
+	}
+}
+
+// Non-PDF documents fail in the gateway with the accepted types named,
+// instead of an upstream 400; text files become Anthropic text documents.
+func TestAnthropicDocumentTypes(t *testing.T) {
+	docx := `{"model":"m","input":[{"role":"user","content":[{"type":"input_file","filename":"r.docx","file_data":"data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,UEsDBA=="}]}]}`
+	_, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(docx), bridge.Options{})
+	if err == nil || !strings.Contains(err.Error(), "PDF") || !strings.Contains(err.Error(), "r.docx") {
+		t.Fatalf("want clear unsupported error, got %v", err)
+	}
+	// Bare base64 with only a file name to go by.
+	bare := `{"model":"m","input":[{"role":"user","content":[{"type":"input_file","filename":"sheet.xlsx","file_data":"UEsDBA=="}]}]}`
+	if _, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(bare), bridge.Options{}); err == nil {
+		t.Fatal("xlsx by file name should be rejected")
+	}
+	txt := `{"model":"m","input":[{"role":"user","content":[{"type":"input_file","filename":"n.txt","file_data":"data:text/plain;base64,aGVsbG8gd29ybGQ="}]}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(txt), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Body), `"source":{"type":"text","media_type":"text/plain","data":"hello world"}`) {
+		t.Fatalf("text file not sent as text document: %s", plan.Body)
+	}
+	// Unknown type without a name keeps the previous PDF default.
+	unknown := `{"model":"m","input":[{"role":"user","content":[{"type":"input_file","file_data":"JVBERi0="}]}]}`
+	plan, err = bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(unknown), bridge.Options{})
+	if err != nil || !strings.Contains(string(plan.Body), `"media_type":"application/pdf"`) {
+		t.Fatalf("pdf default changed: %v %s", err, plan.Body)
+	}
+}
+
+// Anthropic -> Responses writes file_data as a data URI.
+func TestAnthropicDocumentToResponsesFileData(t *testing.T) {
+	body := `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}}]}]}`
+	plan, err := bridge.Convert(ir.FormatAnthropic, ir.FormatResponses, []byte(body), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Body), `"file_data":"data:application/pdf;base64,JVBERi0="`) {
+		t.Fatalf("file_data not a data URI: %s", plan.Body)
+	}
+}

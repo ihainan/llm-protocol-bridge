@@ -347,15 +347,19 @@ func irPartToWirePart(part ir.Part, p ir.Path, env *ir.Env, dia Dialect, nameMap
 		if part.Media.Text != "" {
 			return []wirePart{{Text: part.Media.Text}}, nil
 		}
+		mt := part.Media.MediaType
+		if mt == "" && part.Type == ir.PartFile {
+			mt = ir.MediaTypeFromFilename(part.Media.Filename)
+		}
 		if part.Media.URL != "" {
 			return []wirePart{{FileData: &wireFileData{
-				MimeType: part.Media.MediaType,
+				MimeType: mt,
 				FileURI:  part.Media.URL,
 			}}}, nil
 		}
 		if part.Media.Data != "" {
 			return []wirePart{{InlineData: &wireBlob{
-				MimeType: part.Media.MediaType,
+				MimeType: mt,
 				Data:     part.Media.Data,
 			}}}, nil
 		}
