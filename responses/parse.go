@@ -359,7 +359,9 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 
 	// Input must contain at least one non-system/developer message unless continuing
 	// from previous_response_id.
-	if req.PreviousResponseID == "" && len(req.Messages) == 0 && len(req.TrailingExtras) == 0 {
+	// A compaction item alone carries the history; a configuration_update
+	// alone does not.
+	if req.PreviousResponseID == "" && len(req.Messages) == 0 && !hasCompactionExtra(req.TrailingExtras) {
 		return nil, env.Err(ir.Invalid(p.Key("input"), "input must contain at least one user or assistant item"))
 	}
 
@@ -1403,4 +1405,13 @@ func parseDataURI(uri string) (mediaType, data string, ok bool) {
 		return "", "", false
 	}
 	return mt, rest, true
+}
+
+func hasCompactionExtra(extras []ir.InputExtra) bool {
+	for _, ex := range extras {
+		if ex.Type == ir.ExtraCompaction || ex.Type == ir.ExtraCompactionSummary {
+			return true
+		}
+	}
+	return false
 }

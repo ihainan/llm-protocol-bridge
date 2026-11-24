@@ -573,3 +573,31 @@ func TestImageDataURIParamsUnchanged(t *testing.T) {
 		t.Fatalf("image URI changed: %s", plan.Body)
 	}
 }
+
+// Review round 4 regressions.
+
+// A cache marker on a tool the relaxing drops still disables automatic cache
+// placement.
+func TestRelaxForcedToolChoiceKeepsClientMarkedState(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}},{"type":"function","function":{"name":"g","parameters":{"type":"object"}},"cache_control":{"type":"ephemeral"}}],"tool_choice":{"type":"function","function":{"name":"f"}}}`
+	plan, err := bridge.Convert(ir.FormatChat, ir.FormatAnthropic, []byte(body), bridge.Options{
+		Profile:   &ir.ModelProfile{NoForcedToolChoice: true},
+		Anthropic: anthropic.Dialect{AutoCache: anthropic.AutoCachePrefix},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plan.Body), "cache_control") {
+		t.Fatalf("automatic cache marker added: %s", plan.Body)
+	}
+}
+
+// An input of only configuration_update items is still an empty input.
+func TestConfigurationUpdateOnlyInputRejected(t *testing.T) {
+	body := `{"model":"m","input":[{"type":"configuration_update","reasoning":{"effort":"high"}}]}`
+	for _, f := range []ir.Format{ir.FormatChat, ir.FormatAnthropic, ir.FormatGemini, ir.FormatResponses} {
+		if _, err := bridge.Convert(ir.FormatResponses, f, []byte(body), bridge.Options{}); err == nil {
+			t.Fatalf("%s: accepted an input with no messages", f)
+		}
+	}
+}

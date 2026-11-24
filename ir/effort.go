@@ -348,6 +348,11 @@ func RelaxForcedToolChoice(req *Request, profile *ModelProfile, env *Env) (*Requ
 				}
 			}
 		}
+		// A client cache marker on a dropped tool still marks the request:
+		// automatic cache placement must not take over.
+		if !cp.DroppedCacheMarkers && droppedToolHasCacheMarker(req, &cp) {
+			cp.DroppedCacheMarkers = true
+		}
 		cp.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 		detail = "the model rejects a forced tool; sent tool_choice auto with only the named tool"
 	case ToolChoiceRequired:
@@ -361,4 +366,28 @@ func RelaxForcedToolChoice(req *Request, profile *ModelProfile, env *Env) (*Requ
 		return nil, err
 	}
 	return &cp, nil
+}
+
+// droppedToolHasCacheMarker reports whether a tool or builtin in req but not
+// in kept carries a cache marker.
+func droppedToolHasCacheMarker(req, kept *Request) bool {
+	keptTools := map[[2]string]bool{}
+	for _, t := range kept.Tools {
+		keptTools[[2]string{t.Namespace, t.Name}] = true
+	}
+	for _, t := range req.Tools {
+		if t.Cache != nil && !keptTools[[2]string{t.Namespace, t.Name}] {
+			return true
+		}
+	}
+	keptKinds := map[string]bool{}
+	for _, b := range kept.Builtins {
+		keptKinds[string(b.Kind)] = true
+	}
+	for _, b := range req.Builtins {
+		if !keptKinds[string(b.Kind)] && bytes.Contains(b.Raw, []byte(`"cache_control"`)) {
+			return true
+		}
+	}
+	return false
 }
