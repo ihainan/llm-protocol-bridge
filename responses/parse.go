@@ -1100,7 +1100,8 @@ func parseToolsWithSeen(raw json.RawMessage, p ir.Path, env *ir.Env, seen map[st
 			}
 			tools = append(tools, subTools...)
 			builtins = append(builtins, subBuiltins...)
-		case "web_search", "web_search_preview":
+		// the dated names are aliases OpenAI accepts for the same hosted tool
+		case "web_search", "web_search_2025_08_26", "web_search_preview", "web_search_preview_2025_03_11":
 			var cfgBytes json.RawMessage
 			cfgMap := map[string]json.RawMessage{}
 			for k, v := range fields {

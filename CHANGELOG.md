@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Responses requests accept the dated web search tool names
+  `web_search_2025_08_26` and `web_search_preview_2025_03_11` as the hosted web
+  search tool, like `web_search` and `web_search_preview` (before, they were
+  refused as an unsupported tool type).
 - Chat, Anthropic and Gemini requests are range-checked like Responses:
   `top_p` outside 0 to 1, Chat penalties outside -2 to 2, Gemini
   `temperature` outside 0 to 2 and a negative `top_k` / `topK` are an
