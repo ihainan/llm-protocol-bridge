@@ -10,13 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Prompt cache markers from Chat Completions clients: `cache_control` on
-  `text` / `image_url` / `file` content parts, on messages (applied to the
+  `text` / `refusal` / `image_url` / `file` content parts, on assistant
+  `tool_calls` entries, on messages (applied to the
   last content part, LiteLLM convention) and on tool definitions (next to
   `function`) is carried to Anthropic. Markers on a `tool` message move to the
   outer `tool_result`; when several are present only the message-level one (or
   else the last inner one) is kept and the others are `cache.marker` losses.
   Invalid shapes (non-object, type other than `ephemeral`, TTL other than
-  `5m` / `1h`) are dropped as `cache.marker` losses. A `cache_control` member
+  `5m` / `1h`) and markers on `input_audio` / `thinking` parts are dropped as
+  `cache.marker` losses. A `cache_control` member
   repeated within one object is read last-wins, and only the effective member
   is validated. Chat, Responses and Gemini upstreams record `cache.marker`
   losses as before.

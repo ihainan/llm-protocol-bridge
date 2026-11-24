@@ -68,6 +68,9 @@ type wireToolCall struct {
 	Type     string           `json:"type,omitempty"`
 	Function wireFunctionCall `json:"function"`
 	Index    *int             `json:"index,omitempty"` // streaming only
+	// CacheControl is read from client requests only (an Anthropic-style
+	// marker on the call); builders never set it.
+	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
 
 type wireFunctionCall struct {

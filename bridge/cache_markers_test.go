@@ -8,6 +8,7 @@ import (
 
 	"github.com/ihainan/llm-protocol-bridge/anthropic"
 	"github.com/ihainan/llm-protocol-bridge/bridge"
+	"github.com/ihainan/llm-protocol-bridge/chat"
 	"github.com/ihainan/llm-protocol-bridge/ir"
 )
 
@@ -478,11 +479,60 @@ func TestAutoCache_DroppedClientMarkersDisableAutoPlacement(t *testing.T) {
 		}
 	}
 
+	// Markers on parts that cannot carry one are reported, not ignored.
+	thinking := `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u"},{"role":"assistant","content":[{"type":"text","text":"x"},{"type":"thinking","thinking":"t","cache_control":"ephemeral"}]}]}`
+	tp := convertWith(t, ir.FormatChat, ir.FormatAnthropic, thinking, autoOpts(anthropic.AutoCacheConversation))
+	wantPaths(t, "thinking markers", cachePaths(t, tp.Body), nil)
+	wantPaths(t, "thinking losses", cacheLosses(tp), []string{"messages[2].content[1].cache_control"})
+	// Anthropic rejects audio parts outright, so check the parser directly.
+	audio := `{"model":"m","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"},"cache_control":{"type":"ephemeral"}}]}]}`
+	env := &ir.Env{}
+	req, err := chat.ParseRequest([]byte(audio), chat.ParseOptions{Env: env})
+	if err != nil {
+		t.Fatalf("parse audio: %v", err)
+	}
+	if !req.DroppedCacheMarkers || len(env.Losses()) != 1 || env.Losses()[0].Kind != ir.LossCacheMarker {
+		t.Fatalf("audio marker not reported: dropped=%v losses=%v", req.DroppedCacheMarkers, env.Losses())
+	}
+
 	// An explicit null is not a marker: automatic placement still applies.
 	null := `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"text","text":"u","cache_control":null}]}]}`
 	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, null, autoOpts(anthropic.AutoCacheConversation))
 	wantPaths(t, "null", cachePaths(t, plan.Body), []string{
 		"system[0]=" + eph,
 		"messages[0].content[0]=" + eph,
+	})
+}
+
+// refusal parts and assistant tool_calls carry their own markers, like the
+// message-level marker that may land on them.
+func TestChatCacheMarkers_RefusalAndToolCalls(t *testing.T) {
+	body := `{"model":"m","messages":[
+		{"role":"system","content":"s"},
+		{"role":"user","content":"u"},
+		{"role":"assistant","content":[{"type":"refusal","refusal":"no","cache_control":{"type":"ephemeral"}}]},
+		{"role":"user","content":"u2"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"},"cache_control":{"type":"ephemeral","ttl":"5m"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"r"}]}`
+	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, body, autoOpts(anthropic.AutoCacheConversation))
+	wantPaths(t, "markers", cachePaths(t, plan.Body), []string{
+		"messages[1].content[0]=" + eph,
+		`messages[3].content[0]={"ttl":"5m","type":"ephemeral"}`,
+	})
+	wantPaths(t, "losses", cacheLosses(plan), nil)
+
+	// Invalid shapes on either are losses and keep automatic placement off.
+	bad := `{"model":"m","messages":[
+		{"role":"system","content":"s"},
+		{"role":"user","content":"u"},
+		{"role":"assistant","content":[{"type":"refusal","refusal":"no","cache_control":"ephemeral"}]},
+		{"role":"user","content":"u2"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"},"cache_control":{"type":"persistent"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"r"}]}`
+	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, bad, autoOpts(anthropic.AutoCacheConversation))
+	wantPaths(t, "bad markers", cachePaths(t, plan.Body), nil)
+	wantPaths(t, "bad losses", cacheLosses(plan), []string{
+		"messages[2].content[0].cache_control",
+		"messages[4].tool_calls[0].cache_control.type",
 	})
 }

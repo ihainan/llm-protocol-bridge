@@ -395,11 +395,16 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 			}
 			msg.Parts = append(msg.Parts, parts...)
 		}
-		for _, tc := range toolCalls {
+		for i, tc := range toolCalls {
 			part, err := wireToolCallToPart(tc, p.Key("tool_calls"), env)
 			if err != nil {
 				return ir.Message{}, err
 			}
+			cc, err := parseChatCacheControl(tc.CacheControl, p.Key("tool_calls").At(i).Key("cache_control"), env)
+			if err != nil {
+				return ir.Message{}, err
+			}
+			part.Cache = cc
 			msg.Parts = append(msg.Parts, part)
 		}
 
@@ -525,6 +530,17 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 		}
 	}
 
+	// Audio and reasoning parts cannot carry a breakpoint; a marker on them is
+	// reported rather than ignored so automatic placement stays off.
+	switch partType {
+	case "input_audio", "thinking", "thought":
+		if !jsonx.IsNull(fields["cache_control"]) {
+			if err := env.Lose(ir.LossCacheMarker, p.Key("cache_control"), "cache_control is not supported on "+partType+" content parts"); err != nil {
+				return ir.Part{}, err
+			}
+		}
+	}
+
 	switch partType {
 	case "text":
 		text, _ := jsonx.String(fields["text"])
@@ -538,7 +554,11 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 
 	case "refusal":
 		text, _ := jsonx.String(fields["refusal"])
-		return ir.Part{Type: ir.PartRefusal, Text: text}, nil
+		cc, err := parseChatCacheControl(fields["cache_control"], p.Key("cache_control"), env)
+		if err != nil {
+			return ir.Part{}, err
+		}
+		return ir.Part{Type: ir.PartRefusal, Text: text, Cache: cc}, nil
 
 	case "image_url":
 		imgRaw, ok := fields["image_url"]
