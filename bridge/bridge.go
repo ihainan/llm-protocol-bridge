@@ -185,6 +185,18 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 		}
 	}
 
+	// Input extras (configuration_update, compaction) become request-level
+	// settings for a non-Responses upstream. The builders apply them too; doing
+	// it here also gives the Plan, which the response side reads, the applied
+	// request.
+	if upstream != ir.FormatResponses {
+		applied, err := ir.ApplyInputExtras(req, env)
+		if err != nil {
+			return nil, err
+		}
+		req = applied
+	}
+
 	// Per design.md §9.6, StopEmulate does not send native stop sequences to the
 	// upstream (so the upstream cannot strip them before the local filter sees
 	// them) and streams from the upstream so non-streamed clients can be served

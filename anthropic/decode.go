@@ -386,7 +386,10 @@ func keepReportedOverZero(u, seen ir.Usage) ir.Usage {
 	if u.Has(ir.UCacheRead) && u.CacheReadTokens == 0 && seen.CacheReadTokens > 0 {
 		u.CacheReadTokens = seen.CacheReadTokens
 	}
-	if u.Has(ir.UCacheWrite) && u.CacheWriteTokens == 0 && seen.CacheWriteTokens > 0 {
+	if u.Has(ir.UCacheWrite) && u.CacheWriteTokens == 0 && u.Has(ir.UCacheWriteSplit) && u.CacheWrite5mTokens+u.CacheWrite1hTokens > 0 {
+		// A zero aggregate next to a positive split: the split is the count.
+		u.CacheWriteTokens = u.CacheWrite5mTokens + u.CacheWrite1hTokens
+	} else if u.Has(ir.UCacheWrite) && u.CacheWriteTokens == 0 && seen.CacheWriteTokens > 0 {
 		u.CacheWriteTokens = seen.CacheWriteTokens
 		// A zero aggregate also carried no split: keep the earlier one with it.
 		if !u.Has(ir.UCacheWriteSplit) && seen.Has(ir.UCacheWriteSplit) {

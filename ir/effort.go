@@ -333,11 +333,18 @@ func RelaxForcedToolChoice(req *Request, profile *ModelProfile, env *Env) (*Requ
 				}
 			}
 		} else {
-			// A bare name may select a tool inside a namespace (as the tool
-			// name map resolves it); keep every tool it can refer to.
+			// The exact tool; a bare name with no such top-level tool selects
+			// the namespaced tool of that name, as the tool name map resolves it.
 			for _, t := range req.Tools {
-				if t.Name == tc.Name && (t.Namespace == tc.Namespace || tc.Namespace == "") {
+				if t.Name == tc.Name && t.Namespace == tc.Namespace {
 					cp.Tools = append(cp.Tools, t)
+				}
+			}
+			if len(cp.Tools) == 0 && tc.Namespace == "" {
+				for _, t := range req.Tools {
+					if t.Name == tc.Name {
+						cp.Tools = append(cp.Tools, t)
+					}
 				}
 			}
 		}

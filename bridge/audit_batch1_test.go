@@ -456,3 +456,85 @@ func TestCompactionOnlyInput(t *testing.T) {
 		t.Fatalf("compaction dropped: %s", plan.Body)
 	}
 }
+
+// Review round 2 regressions.
+
+// The Plan carries the applied update, so the response side hides reasoning
+// the update turned off.
+func TestConfigurationUpdateReachesResponseSide(t *testing.T) {
+	body := `{"model":"m","reasoning":{"effort":"high"},"input":[{"role":"user","content":"x"},{"type":"configuration_update","reasoning":{"effort":"none"}}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(body), bridge.Options{Profile: &ir.ModelProfile{
+		Style: ir.StyleEffort, Efforts: []ir.Effort{ir.EffortLow, ir.EffortHigh}, Off: ir.OffRule{Mode: ir.OffLowestHidden},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Body), `"reasoning_effort":"low"`) {
+		t.Fatalf("upstream effort: %s", plan.Body)
+	}
+	out, _, err := plan.ConvertResponse([]byte(`{"id":"c","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"secret thought","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "secret thought") {
+		t.Fatalf("hidden reasoning leaked: %s", out)
+	}
+}
+
+// A summary-only first update turns reasoning on, as the same object does at
+// the top level.
+func TestSummaryOnlyUpdateTurnsReasoningOn(t *testing.T) {
+	upd := `{"model":"m","input":[{"role":"user","content":"x"},{"type":"configuration_update","reasoning":{"summary":"auto"}},{"role":"user","content":"y"}]}`
+	top := `{"model":"m","reasoning":{"summary":"auto"},"input":[{"role":"user","content":"x"},{"role":"user","content":"y"}]}`
+	for _, f := range []ir.Format{ir.FormatAnthropic, ir.FormatGemini} {
+		a, err := bridge.Convert(ir.FormatResponses, f, []byte(upd), bridge.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := bridge.Convert(ir.FormatResponses, f, []byte(top), bridge.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(a.Body) != string(b.Body) {
+			t.Fatalf("%s: update %s, top level %s", f, a.Body, b.Body)
+		}
+	}
+}
+
+// A bare name with a top-level tool of that name selects only that tool.
+func TestRelaxForcedToolChoicePrefersTopLevelTool(t *testing.T) {
+	body := `{"model":"m","input":"x","tools":[{"type":"function","name":"f","parameters":{"type":"object"}},{"type":"namespace","name":"ns","tools":[{"type":"function","name":"f","parameters":{"type":"object"}}]}],"tool_choice":{"type":"function","name":"f"}}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(body), bridge.Options{Profile: &ir.ModelProfile{NoForcedToolChoice: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Tools []struct{ Name string } `json:"tools"`
+	}
+	if err := json.Unmarshal(plan.Body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 1 || got.Tools[0].Name != "f" {
+		t.Fatalf("tools: %s", plan.Body)
+	}
+}
+
+// A zero aggregate next to a positive cache_creation split counts the split.
+func TestAnthropicStreamZeroAggregatePositiveSplit(t *testing.T) {
+	plan, err := bridge.Convert(ir.FormatChat, ir.FormatAnthropic,
+		[]byte(`{"model":"claude-4","messages":[{"role":"user","content":"hi"}],"stream":true}`), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := plan.NewStream()
+	sse := "" +
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"m\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1,\"cache_creation_input_tokens\":300,\"cache_creation\":{\"ephemeral_5m_input_tokens\":300,\"ephemeral_1h_input_tokens\":0}}}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20,\"cache_creation_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":500,\"ephemeral_1h_input_tokens\":0}}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	out := feedBridgeSSE(t, s, sse)
+	_, _ = s.End(out, ir.EndDone)
+	u := s.Usage()
+	if u.CacheWriteTokens != 500 || u.CacheWrite5mTokens != 500 || u.PromptTokens() != 510 {
+		t.Fatalf("usage: %+v prompt %d", u, u.PromptTokens())
+	}
+}

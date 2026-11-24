@@ -10,7 +10,8 @@ package ir
 // compaction items can only be read by the Responses upstream that sealed
 // them, so they are rejected.
 //
-// It returns req itself when there are no extras, otherwise a shallow copy.
+// It returns req itself when there are no extras, otherwise a shallow copy
+// without them (so applying it again is a no-op).
 func ApplyInputExtras(req *Request, env *Env) (*Request, error) {
 	extras := req.InputExtras()
 	if len(extras) == 0 {
@@ -39,7 +40,11 @@ func ApplyInputExtras(req *Request, env *Env) (*Request, error) {
 				if upd.Effort != EffortUnset {
 					rc.Effort = upd.Effort
 					rc.Mode = upd.Mode
-					rc.Budget = nil
+					rc.Budget = upd.Budget
+				} else if rc.Mode == ReasoningDefault {
+					// A summary-only update turns reasoning on, as the same
+					// object does at the top level.
+					rc.Mode = upd.Mode
 				}
 				if upd.Summary != "" {
 					rc.Summary = upd.Summary
@@ -53,6 +58,12 @@ func ApplyInputExtras(req *Request, env *Env) (*Request, error) {
 		}
 	}
 	cp := *req
+	cp.TrailingExtras = nil
+	cp.Messages = make([]Message, len(req.Messages))
+	copy(cp.Messages, req.Messages)
+	for i := range cp.Messages {
+		cp.Messages[i].Extras = nil
+	}
 	// The Responses parser stops lifting leading system/developer messages
 	// into the instructions at the first extra, to keep them in place for a
 	// Responses upstream. With the extras consumed here, lift them as it
