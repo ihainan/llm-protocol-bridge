@@ -153,3 +153,28 @@ func TestSamplingOutOfClientRangeIsInvalid(t *testing.T) {
 		})
 	}
 }
+
+// The range ends are valid values: zero and the upper bound pass.
+func TestSamplingRangeEndsAccepted(t *testing.T) {
+	cases := []struct {
+		client ir.Format
+		up     ir.Format
+		body   string
+	}{
+		{ir.FormatChat, ir.FormatResponses,
+			`{"model":"m","messages":[{"role":"user","content":"hi"}],"top_p":0,"temperature":2,"presence_penalty":-2,"frequency_penalty":2}`},
+		{ir.FormatChat, ir.FormatChat,
+			`{"model":"m","messages":[{"role":"user","content":"hi"}],"top_p":1,"temperature":0}`},
+		{ir.FormatAnthropic, ir.FormatGemini,
+			`{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"top_p":1,"top_k":0,"temperature":1}`},
+		{ir.FormatGemini, ir.FormatGemini,
+			`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"temperature":2,"topP":0,"topK":0}}`},
+		{ir.FormatGemini, ir.FormatGemini,
+			`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"temperature":0,"topP":1}}`},
+	}
+	for _, tc := range cases {
+		if _, err := bridge.Convert(tc.client, tc.up, []byte(tc.body), bridge.Options{Model: "m"}); err != nil {
+			t.Errorf("%s -> %s: %v\n%s", tc.client, tc.up, err, tc.body)
+		}
+	}
+}
