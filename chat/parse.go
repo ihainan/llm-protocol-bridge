@@ -449,6 +449,8 @@ func parseChatCacheControl(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.Cac
 		case "type":
 			cc.Type, _ = jsonx.String(kv.Value)
 		case "ttl":
+			// The last ttl member wins, as with encoding/json.
+			cc.TTL, badTTL = "", false
 			if jsonx.IsNull(kv.Value) {
 				break
 			}

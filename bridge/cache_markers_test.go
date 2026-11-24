@@ -164,9 +164,15 @@ func TestChatCacheMarkers_InvalidShapesBecomeLosses(t *testing.T) {
 		{"type":"text","text":"c","cache_control":{"type":"ephemeral","ttl":"10m"}},
 		{"type":"text","text":"d","cache_control":null},
 		{"type":"text","text":"e","cache_control":{"type":"ephemeral","ttl":3600}},
-		{"type":"text","text":"f","cache_control":{"type":"ephemeral","ttl":null}}]}]}`
+		{"type":"text","text":"f","cache_control":{"type":"ephemeral","ttl":null}},
+		{"type":"text","text":"g","cache_control":{"type":"ephemeral","ttl":3600,"ttl":"5m"}},
+		{"type":"text","text":"h","cache_control":{"type":"ephemeral","ttl":"1h","ttl":null}}]}]}`
 	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, body, opts())
-	wantPaths(t, "markers", cachePaths(t, plan.Body), []string{"messages[0].content[5]=" + eph})
+	wantPaths(t, "markers", cachePaths(t, plan.Body), []string{
+		"messages[0].content[5]=" + eph,
+		`messages[0].content[6]={"ttl":"5m","type":"ephemeral"}`,
+		"messages[0].content[7]=" + eph,
+	})
 	wantPaths(t, "losses", cacheLosses(plan), []string{
 		"messages[0].content[0].cache_control",
 		"messages[0].content[1].cache_control.type",
