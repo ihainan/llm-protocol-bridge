@@ -409,3 +409,80 @@ func TestCacheMarkers_TTLOrder(t *testing.T) {
 		"system[0].cache_control.ttl",
 	})
 }
+
+// A repeated cache_control member is read last-wins everywhere: on hosted tool
+// objects (TTL order and limit checks) and on Chat tool definitions (only the
+// effective member is validated).
+func TestCacheMarkers_RepeatedMemberLastWins(t *testing.T) {
+	// The web_search tool declares 5m then 1h; Anthropic reads the 1h, which
+	// follows a 5m breakpoint and must be shortened.
+	dup := `{"model":"m","max_tokens":10,"tools":[{"name":"f","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}},{"type":"web_search_20250305","name":"web_search","cache_control":{"type":"ephemeral","ttl":"5m"},"cache_control":{"type":"ephemeral","ttl":"1h"}}],
+		"messages":[{"role":"user","content":"u"}]}`
+	plan := convertWith(t, ir.FormatAnthropic, ir.FormatAnthropic, dup, opts())
+	wantPaths(t, "builtin markers", cachePaths(t, plan.Body), []string{
+		"tools[0]=" + eph,
+		"tools[1]=" + eph,
+	})
+	if strings.Contains(string(plan.Body), `"1h"`) {
+		t.Fatalf("1h ttl after a 5m breakpoint survived: %s", plan.Body)
+	}
+	wantPaths(t, "builtin losses", cacheLosses(plan), []string{"tools[1].cache_control.ttl"})
+
+	// A last member of null means no marker on that tool.
+	nulled := `{"model":"m","max_tokens":10,"tools":[{"type":"web_search_20250305","name":"web_search","cache_control":{"type":"ephemeral"},"cache_control":null}],"messages":[{"role":"user","content":"u"}]}`
+	plan = convertWith(t, ir.FormatAnthropic, ir.FormatAnthropic, nulled, autoOpts(anthropic.AutoCacheConversation))
+	// The tool object is forwarded verbatim; its effective member is null.
+	wantPaths(t, "nulled builtin", cachePaths(t, plan.Body), []string{
+		"tools[0]=null",
+		"messages[0].content[0]=" + eph,
+	})
+
+	// Chat tool definition: an invalid member overridden by a valid one is
+	// not a loss, even when cache.marker losses are denied.
+	strict := opts()
+	strict.Deny = ir.LossSet{ir.LossCacheMarker: true}
+	tool := `{"model":"m","messages":[{"role":"user","content":"u"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}},"cache_control":{"type":"ephemeral","ttl":3600},"cache_control":{"type":"ephemeral","ttl":"5m"}}]}`
+	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, tool, strict)
+	wantPaths(t, "tool markers", cachePaths(t, plan.Body), []string{`tools[0]={"ttl":"5m","type":"ephemeral"}`})
+	wantPaths(t, "tool losses", cacheLosses(plan), nil)
+
+	// The reverse order leaves the invalid member in effect.
+	rev := `{"model":"m","messages":[{"role":"user","content":"u"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}},"cache_control":{"type":"ephemeral","ttl":"5m"},"cache_control":{"type":"ephemeral","ttl":3600}}]}`
+	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, rev, opts())
+	wantPaths(t, "reverse markers", cachePaths(t, plan.Body), nil)
+	wantPaths(t, "reverse losses", cacheLosses(plan), []string{"tools[0].cache_control.ttl"})
+	if _, err := bridge.Convert(ir.FormatChat, ir.FormatAnthropic, []byte(rev), strict); err == nil {
+		t.Fatal("expected an error when the effective member is invalid and cache.marker losses are denied")
+	}
+}
+
+// A client that wrote cache_control keeps control of placement even when
+// every marker it wrote was invalid and dropped.
+func TestAutoCache_DroppedClientMarkersDisableAutoPlacement(t *testing.T) {
+	cases := map[string]string{
+		"bad type":   `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"text","text":"u","cache_control":{"type":"persistent"}}]}]}`,
+		"non-object": `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"text","text":"u","cache_control":"ephemeral"}]}]}`,
+		"bad ttl":    `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u","cache_control":{"type":"ephemeral","ttl":"10m"}}]}`,
+		"tool def":   `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}},"cache_control":{"type":"ephemeral","ttl":3600}}]}`,
+		"empty text": `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"text","text":"","cache_control":{"type":"ephemeral"}},{"type":"text","text":"u"}]}]}`,
+	}
+	for name, body := range cases {
+		for _, mode := range []anthropic.AutoCacheMode{anthropic.AutoCachePrefix, anthropic.AutoCacheConversation} {
+			plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, body, autoOpts(mode))
+			wantPaths(t, name+"/"+string(mode), cachePaths(t, plan.Body), nil)
+			if len(cacheLosses(plan)) == 0 {
+				t.Errorf("%s/%s: expected the dropped marker to be reported", name, mode)
+			}
+		}
+	}
+
+	// An explicit null is not a marker: automatic placement still applies.
+	null := `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"text","text":"u","cache_control":null}]}]}`
+	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, null, autoOpts(anthropic.AutoCacheConversation))
+	wantPaths(t, "null", cachePaths(t, plan.Body), []string{
+		"system[0]=" + eph,
+		"messages[0].content[0]=" + eph,
+	})
+}

@@ -991,7 +991,9 @@ may send the same object, following the OpenRouter and LiteLLM conventions: on `
 and on a tool definition next to `function`. Markers on a Chat `tool` message are moved
 to the outer `tool_result`, whose breakpoint covers all of its content; the message-level
 marker wins over inner ones, otherwise the last inner one, and each superseded marker is a
-`cache.marker` loss.
+`cache.marker` loss. A `cache_control` member repeated within one object is read
+last-wins, as Anthropic reads it: only the effective member is validated, counted and
+checked for TTL order, and a last member of `null` means no marker.
 
 Anthropic accepts at most four breakpoints per request and rejects a marker on an empty
 text block. The builder drops markers on empty text, then, above four, keeps the first
@@ -1000,9 +1002,10 @@ three (the most recent turns). Anthropic also requires `1h` breakpoints to prece
 ones; a `1h` marker after a `5m` one is shortened to `5m`. Each dropped or shortened
 marker is a `cache.marker` loss.
 
-`anthropic.Dialect.AutoCache` adds breakpoints only when the request carries none, counting
-markers the builder drops (a folded system message, a hosted tool removed by
-`DisableWebSearch`):
+`anthropic.Dialect.AutoCache` adds breakpoints only when the client wrote none. Any
+non-null client `cache_control` disables it, including markers the Chat parser drops as
+invalid (`ir.Request.DroppedCacheMarkers`) and markers the builder drops (a folded system
+message, a hosted tool removed by `DisableWebSearch`):
 
 | Mode           | Breakpoints                                                              |
 | -------------- | ------------------------------------------------------------------------ |

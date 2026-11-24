@@ -24,6 +24,7 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 
 	req := &ir.Request{Source: ir.FormatChat}
 	p := ir.Root
+	lossesBefore := len(env.Losses())
 
 	for _, kv := range kvs {
 		k, v := kv.Key, kv.Value
@@ -211,6 +212,15 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 
 	// Extract leading system/developer messages into Instructions.
 	req.Instructions, req.Messages = extractInstructions(req.Messages)
+
+	// Every marker the parser drops is reported as a LossCacheMarker; remember
+	// that the client wrote one so automatic placement stays off.
+	for _, l := range env.Losses()[lossesBefore:] {
+		if l.Kind == ir.LossCacheMarker {
+			req.DroppedCacheMarkers = true
+			break
+		}
+	}
 
 	return req, nil
 }
@@ -707,16 +717,20 @@ func parseTool(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, error) {
 		t.Strict = wt.Function.Strict
 	}
 	// LiteLLM places cache_control next to "function" on a tool definition.
+	// A repeated member is read last-wins, so only the effective one is
+	// validated.
 	if kvs, err := jsonx.Object(raw); err == nil {
+		var ccRaw json.RawMessage
 		for _, kv := range kvs {
 			if kv.Key == "cache_control" {
-				cc, err := parseChatCacheControl(kv.Value, p.Key("cache_control"), env)
-				if err != nil {
-					return ir.Tool{}, err
-				}
-				t.Cache = cc
+				ccRaw = kv.Value
 			}
 		}
+		cc, err := parseChatCacheControl(ccRaw, p.Key("cache_control"), env)
+		if err != nil {
+			return ir.Tool{}, err
+		}
+		t.Cache = cc
 	}
 	return t, nil
 }

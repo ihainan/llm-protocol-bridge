@@ -98,6 +98,11 @@ type Request struct {
 	Passthrough map[string]json.RawMessage `json:"passthrough,omitempty"`
 	// Source is the format the request was parsed from.
 	Source Format `json:"source,omitempty"`
+	// DroppedCacheMarkers is set by a parser that discarded a client
+	// cache_control marker it could not carry (an invalid shape, or a marker
+	// superseded by another). Automatic cache placement treats the request as
+	// client-marked and adds no breakpoints of its own.
+	DroppedCacheMarkers bool `json:"-"`
 }
 
 // Role is a message author.

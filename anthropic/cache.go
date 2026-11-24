@@ -176,12 +176,16 @@ func placeCacheBreakpoints(req *ir.Request, mode AutoCacheMode, env *ir.Env, too
 
 // requestHasCacheMarker reports whether the client sent any cache marker,
 // including ones the builder could not emit (for example on a folded
-// mid-conversation system message or on a hosted tool the dialect drops).
+// mid-conversation system message or on a hosted tool the dialect drops) and
+// ones the parser dropped as invalid.
 func requestHasCacheMarker(req *ir.Request) bool {
 	for _, t := range req.Tools {
 		if t.Cache != nil {
 			return true
 		}
+	}
+	if req.DroppedCacheMarkers {
+		return true
 	}
 	for _, bt := range req.Builtins {
 		if ok, _ := rawCacheControl(bt.Raw); ok {
@@ -272,27 +276,32 @@ func cacheableBlock(b *wireContentBlock) bool {
 }
 
 // rawCacheControl reports whether a pre-serialised tool object carries a
-// non-null cache_control member, and its ttl.
+// cache_control marker, and its ttl. When the member is repeated the last one
+// wins, as Anthropic (and encoding/json) would read it; a last member of null
+// means no marker.
 func rawCacheControl(raw json.RawMessage) (bool, string) {
 	kvs, err := jsonx.Object(raw)
 	if err != nil {
 		return false, ""
 	}
+	var last json.RawMessage
 	for _, kv := range kvs {
-		if kv.Key != "cache_control" || jsonx.IsNull(kv.Value) {
-			continue
+		if kv.Key == "cache_control" {
+			last = kv.Value
 		}
-		var ttl string
-		if ckvs, err := jsonx.Object(kv.Value); err == nil {
-			for _, c := range ckvs {
-				if c.Key == "ttl" {
-					ttl, _ = jsonx.String(c.Value)
-				}
+	}
+	if last == nil || jsonx.IsNull(last) {
+		return false, ""
+	}
+	var ttl string
+	if ckvs, err := jsonx.Object(last); err == nil {
+		for _, c := range ckvs {
+			if c.Key == "ttl" {
+				ttl, _ = jsonx.String(c.Value)
 			}
 		}
-		return true, ttl
 	}
-	return false, ""
+	return true, ttl
 }
 
 // rawWithoutCacheTTL re-serialises a tool object with the ttl member removed

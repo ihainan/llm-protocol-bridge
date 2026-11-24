@@ -16,18 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outer `tool_result`; when several are present only the message-level one (or
   else the last inner one) is kept and the others are `cache.marker` losses.
   Invalid shapes (non-object, type other than `ephemeral`, TTL other than
-  `5m` / `1h`) are dropped as `cache.marker` losses. Chat, Responses and Gemini upstreams record `cache.marker` losses as
-  before.
+  `5m` / `1h`) are dropped as `cache.marker` losses. A `cache_control` member
+  repeated within one object is read last-wins, and only the effective member
+  is validated. Chat, Responses and Gemini upstreams record `cache.marker`
+  losses as before.
 - `anthropic.Dialect.AutoCache` (`AutoCacheMode`: `""` off, `"prefix"`,
-  `"conversation"`) places cache breakpoints automatically when a request
-  carries none of its own (including markers on hosted tools the dialect
-  drops). It replaces the previously unimplemented boolean
+  `"conversation"`) places cache breakpoints automatically when the client
+  wrote no `cache_control` of its own; markers on hosted tools the dialect
+  drops and markers dropped as invalid (`ir.Request.DroppedCacheMarkers`) also
+  count as client markers. It replaces the previously unimplemented boolean
   field of the same name.
 - The Anthropic builder enforces the four-breakpoint limit: the first marker in
   render order and the last three are kept, others are dropped as
   `cache.marker` losses. Markers on empty text blocks are dropped the same way,
   and a `1h` marker that follows a `5m` one (rejected by Anthropic) is
-  shortened to `5m`.
+  shortened to `5m`; a hosted tool object with a repeated `cache_control`
+  member is checked by its last member.
 - `bridge/testdata/cache-baseline-v0.1.4.json` pins v0.1.4 request output for
   requests without cache markers.
 
