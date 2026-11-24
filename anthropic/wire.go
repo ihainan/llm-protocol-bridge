@@ -9,8 +9,9 @@ type wireMetadata struct {
 }
 
 type wireThinkingConfig struct {
-	Type         string `json:"type"` // "enabled" | "disabled"
+	Type         string `json:"type"` // "enabled" | "disabled" | "adaptive"
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	Display      string `json:"display,omitempty"` // "summarized" | "omitted" | "updates"
 }
 
 // wireMessage is one conversation turn.

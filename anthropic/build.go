@@ -194,7 +194,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 			}
 		} else {
 			var budget int
-			thinkingRaw, thinkingEnabled, budget, adaptiveEffort, err = buildThinking(req.Reasoning, profile, env)
+			thinkingRaw, thinkingEnabled, budget, adaptiveEffort, err = buildThinking(req, req.Reasoning, profile, env)
 			if err != nil {
 				return nil, err
 			}
@@ -207,7 +207,11 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 					maxTok = budget + 4096
 				} else if maxTok > minBudget {
 					budget = maxTok - 1
-					thinkingRaw, _ = jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: budget})
+					thinkingRaw, _ = jsonx.Marshal(wireThinkingConfig{
+						Type:         "enabled",
+						BudgetTokens: budget,
+						Display:      resolveAnthropicDisplay(req, req.Reasoning, profile, false),
+					})
 				} else {
 					return nil, env.Err(ir.Invalid(ir.Root.Key("max_tokens"), "explicit max_tokens is too small to fit Anthropic minimum thinking budget"))
 				}
@@ -708,7 +712,28 @@ func buildToolChoice(tc ir.ToolChoice, parallelToolCalls *bool, nameMap *ir.Tool
 	return nil, nil
 }
 
-func buildThinking(rc *ir.ReasoningConfig, profile *ir.ModelProfile, env *ir.Env) (raw json.RawMessage, enabled bool, budget int, adaptiveEffort ir.Effort, err error) {
+func resolveAnthropicDisplay(req *ir.Request, rc *ir.ReasoningConfig, profile *ir.ModelProfile, adaptive bool) string {
+	if rc != nil && rc.Display != "" {
+		if rc.Display == "shown" {
+			if adaptive {
+				return "summarized"
+			}
+			// Preserve manual-mode wire shape for Gemini includeThoughts:true
+			// on older models where "summarized" is already the upstream default.
+			return ""
+		}
+		return rc.Display
+	}
+	if adaptive && profile != nil && profile.Style == ir.StyleAdaptive && (req == nil || req.Source != ir.FormatAnthropic) {
+		if rc != nil && rc.Summary == "none" {
+			return "omitted"
+		}
+		return "summarized"
+	}
+	return ""
+}
+
+func buildThinking(req *ir.Request, rc *ir.ReasoningConfig, profile *ir.ModelProfile, env *ir.Env) (raw json.RawMessage, enabled bool, budget int, adaptiveEffort ir.Effort, err error) {
 	res := profile.Resolve(rc)
 	if res.Off {
 		if profile != nil {
@@ -717,11 +742,21 @@ func buildThinking(rc *ir.ReasoningConfig, profile *ir.ModelProfile, env *ir.Env
 				return nil, false, 0, "", env.Err(ir.Unsupported(ir.Root.Key("reasoning"), "off", "model does not allow disabling reasoning"))
 			case ir.OffLowestHidden:
 				low := profile.Lowest()
+				if profile.Style == ir.StyleAdaptive {
+					display := resolveAnthropicDisplay(req, rc, profile, true)
+					if rc == nil || rc.Display == "" || rc.Display == "shown" {
+						// Reasoning output is hidden from the client under OffLowestHidden,
+						// so prefer "omitted" unless the client passed an explicit Anthropic display.
+						display = "omitted"
+					}
+					rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "adaptive", Display: display})
+					return rb, true, 0, low, nil
+				}
 				b := profile.EffortBudget(low)
 				if b < 1024 {
 					b = 1024
 				}
-				rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: b})
+				rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: b, Display: resolveAnthropicDisplay(req, rc, profile, false)})
 				return rb, true, b, "", nil
 			}
 		}
@@ -735,7 +770,7 @@ func buildThinking(rc *ir.ReasoningConfig, profile *ir.ModelProfile, env *ir.Env
 		return nil, false, 0, "", nil
 	}
 	if res.Adaptive || (profile != nil && profile.Style == ir.StyleAdaptive) {
-		rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "adaptive"})
+		rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "adaptive", Display: resolveAnthropicDisplay(req, rc, profile, true)})
 		return rb, true, 0, res.Effort, nil
 	}
 	b := 0
@@ -761,7 +796,7 @@ func buildThinking(rc *ir.ReasoningConfig, profile *ir.ModelProfile, env *ir.Env
 	if b < minBudget {
 		b = minBudget
 	}
-	rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: b})
+	rb, _ := jsonx.Marshal(wireThinkingConfig{Type: "enabled", BudgetTokens: b, Display: resolveAnthropicDisplay(req, rc, profile, false)})
 	return rb, true, b, "", nil
 }
 
