@@ -13,13 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `text` / `image_url` / `file` content parts, on messages (applied to the
   last content part, LiteLLM convention) and on tool definitions (next to
   `function`) is carried to Anthropic. Markers on a `tool` message move to the
-  outer `tool_result`. Invalid shapes (non-object, type other than
-  `ephemeral`, TTL other than `5m` / `1h`) are dropped as `cache.marker`
-  losses. Chat, Responses and Gemini upstreams record `cache.marker` losses as
+  outer `tool_result`; when several are present only the message-level one (or
+  else the last inner one) is kept and the others are `cache.marker` losses.
+  Invalid shapes (non-object, type other than `ephemeral`, TTL other than
+  `5m` / `1h`) are dropped as `cache.marker` losses. Chat, Responses and Gemini upstreams record `cache.marker` losses as
   before.
 - `anthropic.Dialect.AutoCache` (`AutoCacheMode`: `""` off, `"prefix"`,
   `"conversation"`) places cache breakpoints automatically when a request
-  carries none of its own. It replaces the previously unimplemented boolean
+  carries none of its own (including markers on hosted tools the dialect
+  drops). It replaces the previously unimplemented boolean
   field of the same name.
 - The Anthropic builder enforces the four-breakpoint limit: the first marker in
   render order and the last three are kept, others are dropped as

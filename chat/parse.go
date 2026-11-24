@@ -332,16 +332,32 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 		// Anthropic caches a tool_result as one block, so markers on inner
 		// content parts (or on the tool message itself) move to the outer
 		// result; a breakpoint at its end covers every inner part.
+		// Only one breakpoint survives: the message-level marker, else the
+		// last inner one. Every superseded marker is recorded as a loss.
 		var resultCache *ir.CacheControl
+		resultIdx := -1
+		supersede := func() error {
+			if resultCache == nil {
+				return nil
+			}
+			return env.Lose(ir.LossCacheMarker, p.Key("content").At(resultIdx).Key("cache_control"),
+				"a tool_result carries one cache breakpoint; this marker was superseded by a later one")
+		}
 		for i := range parts {
 			if parts[i].Cache != nil {
-				resultCache = parts[i].Cache
+				if err := supersede(); err != nil {
+					return ir.Message{}, err
+				}
+				resultCache, resultIdx = parts[i].Cache, i
 				parts[i].Cache = nil
 			}
 		}
 		if cc, err := parseChatCacheControl(msgCacheRaw, p.Key("cache_control"), env); err != nil {
 			return ir.Message{}, err
 		} else if cc != nil {
+			if err := supersede(); err != nil {
+				return ir.Message{}, err
+			}
 			resultCache = cc
 		}
 		msg.Parts = []ir.Part{{
@@ -427,18 +443,25 @@ func parseChatCacheControl(raw json.RawMessage, p ir.Path, env *ir.Env) (*ir.Cac
 		return nil, env.Lose(ir.LossCacheMarker, p, "cache_control must be an object")
 	}
 	cc := &ir.CacheControl{}
+	badTTL := false
 	for _, kv := range kvs {
 		switch kv.Key {
 		case "type":
 			cc.Type, _ = jsonx.String(kv.Value)
 		case "ttl":
-			cc.TTL, _ = jsonx.String(kv.Value)
+			if jsonx.IsNull(kv.Value) {
+				break
+			}
+			var ok bool
+			if cc.TTL, ok = jsonx.String(kv.Value); !ok {
+				badTTL = true
+			}
 		}
 	}
 	if cc.Type != "ephemeral" {
 		return nil, env.Lose(ir.LossCacheMarker, p.Key("type"), "cache_control type must be \"ephemeral\"")
 	}
-	if cc.TTL != "" && cc.TTL != "5m" && cc.TTL != "1h" {
+	if badTTL || (cc.TTL != "" && cc.TTL != "5m" && cc.TTL != "1h") {
 		return nil, env.Lose(ir.LossCacheMarker, p.Key("ttl"), "cache_control ttl must be \"5m\" or \"1h\"")
 	}
 	return cc, nil

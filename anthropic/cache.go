@@ -51,8 +51,7 @@ type cacheSite struct {
 	empty bool   // the marker sits on an empty text block
 	ttl   string // "" (5m default), "5m" or "1h"
 	clear func()
-	// shorten sets the TTL to the 5-minute default; nil for pre-serialised
-	// builtin tools, whose marker is removed instead.
+	// shorten sets the TTL to the 5-minute default.
 	shorten func()
 }
 
@@ -76,7 +75,12 @@ func collectCacheSites(tools []toolEntry, sys []wireContentBlock, msgs []msgBloc
 			continue
 		}
 		if ok, ttl := rawCacheControl(t.raw); ok {
-			sites = append(sites, cacheSite{path: t.path.Key("cache_control"), ttl: ttl, clear: func() { t.raw = rawWithoutCacheControl(t.raw) }})
+			sites = append(sites, cacheSite{
+				path:    t.path.Key("cache_control"),
+				ttl:     ttl,
+				clear:   func() { t.raw = rawWithoutCacheControl(t.raw) },
+				shorten: func() { t.raw = rawWithoutCacheTTL(t.raw) },
+			})
 		}
 	}
 	addBlock := func(b *wireContentBlock) {
@@ -155,11 +159,7 @@ func placeCacheBreakpoints(req *ir.Request, mode AutoCacheMode, env *ir.Env, too
 		if err := env.Lose(ir.LossCacheMarker, s.path.Key("ttl"), "a 1h cache breakpoint must precede 5m breakpoints; shortened to 5m"); err != nil {
 			return err
 		}
-		if s.shorten != nil {
-			s.shorten()
-		} else {
-			s.clear()
-		}
+		s.shorten()
 	}
 	if mode == AutoCacheOff || len(sites) > 0 || requestHasCacheMarker(req) {
 		return nil
@@ -176,10 +176,15 @@ func placeCacheBreakpoints(req *ir.Request, mode AutoCacheMode, env *ir.Env, too
 
 // requestHasCacheMarker reports whether the client sent any cache marker,
 // including ones the builder could not emit (for example on a folded
-// mid-conversation system message).
+// mid-conversation system message or on a hosted tool the dialect drops).
 func requestHasCacheMarker(req *ir.Request) bool {
 	for _, t := range req.Tools {
 		if t.Cache != nil {
+			return true
+		}
+	}
+	for _, bt := range req.Builtins {
+		if ok, _ := rawCacheControl(bt.Raw); ok {
 			return true
 		}
 	}
@@ -288,6 +293,36 @@ func rawCacheControl(raw json.RawMessage) (bool, string) {
 		return true, ttl
 	}
 	return false, ""
+}
+
+// rawWithoutCacheTTL re-serialises a tool object with the ttl member removed
+// from its cache_control object (the 5-minute default), keeping every other
+// member in its original order.
+func rawWithoutCacheTTL(raw json.RawMessage) json.RawMessage {
+	kvs, err := jsonx.Object(raw)
+	if err != nil {
+		return raw
+	}
+	out := jsonx.Start(nil)
+	for _, kv := range kvs {
+		if kv.Key != "cache_control" {
+			out.Raw(kv.Key, kv.Value)
+			continue
+		}
+		ckvs, err := jsonx.Object(kv.Value)
+		if err != nil {
+			out.Raw(kv.Key, kv.Value)
+			continue
+		}
+		cc := jsonx.Start(nil)
+		for _, c := range ckvs {
+			if c.Key != "ttl" {
+				cc.Raw(c.Key, c.Value)
+			}
+		}
+		out.Raw(kv.Key, cc.End())
+	}
+	return out.End()
 }
 
 // rawWithoutCacheControl re-serialises a tool object without cache_control,

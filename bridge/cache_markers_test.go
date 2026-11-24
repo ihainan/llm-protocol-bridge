@@ -140,18 +140,38 @@ func TestChatCacheMarkers_ToolMessageHoisted(t *testing.T) {
 	}
 }
 
+// Markers merged into a tool_result's single breakpoint are recorded as losses.
+func TestChatCacheMarkers_ToolMessageSupersededMarkers(t *testing.T) {
+	body := `{"model":"m","messages":[
+		{"role":"user","content":"q"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"call_1","cache_control":{"type":"ephemeral"},"content":[
+			{"type":"text","text":"r1","cache_control":{"type":"ephemeral","ttl":"1h"}},
+			{"type":"text","text":"r2","cache_control":{"type":"ephemeral"}}]}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]}`
+	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, body, opts())
+	wantPaths(t, "markers", cachePaths(t, plan.Body), []string{"messages[2].content[0]=" + eph})
+	wantPaths(t, "losses", cacheLosses(plan), []string{
+		"messages[2].content[0].cache_control",
+		"messages[2].content[1].cache_control",
+	})
+}
+
 func TestChatCacheMarkers_InvalidShapesBecomeLosses(t *testing.T) {
 	body := `{"model":"m","messages":[{"role":"user","content":[
 		{"type":"text","text":"a","cache_control":"ephemeral"},
 		{"type":"text","text":"b","cache_control":{"type":"persistent"}},
 		{"type":"text","text":"c","cache_control":{"type":"ephemeral","ttl":"10m"}},
-		{"type":"text","text":"d","cache_control":null}]}]}`
+		{"type":"text","text":"d","cache_control":null},
+		{"type":"text","text":"e","cache_control":{"type":"ephemeral","ttl":3600}},
+		{"type":"text","text":"f","cache_control":{"type":"ephemeral","ttl":null}}]}]}`
 	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, body, opts())
-	wantPaths(t, "markers", cachePaths(t, plan.Body), nil)
+	wantPaths(t, "markers", cachePaths(t, plan.Body), []string{"messages[0].content[5]=" + eph})
 	wantPaths(t, "losses", cacheLosses(plan), []string{
 		"messages[0].content[0].cache_control",
 		"messages[0].content[1].cache_control.type",
 		"messages[0].content[2].cache_control.ttl",
+		"messages[0].content[4].cache_control.ttl",
 	})
 	// A caller that denies the loss gets an error instead.
 	strict := opts()
@@ -336,6 +356,13 @@ func TestAutoCache_SingleTurnAndSkips(t *testing.T) {
 	wantPaths(t, "client marked", cachePaths(t, p.Body), nil)
 	wantPaths(t, "client marked losses", cacheLosses(p), []string{"messages[2].content[0].cache_control"})
 
+	// A marker on a hosted tool the dialect drops also disables it.
+	wsMarked := `{"model":"m","max_tokens":10,"tools":[{"type":"web_search_20250305","name":"web_search","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"u"}]}`
+	o = autoOpts(anthropic.AutoCacheConversation)
+	o.Anthropic.DisableWebSearch = true
+	p = convertWith(t, ir.FormatAnthropic, ir.FormatAnthropic, wsMarked, o)
+	wantPaths(t, "dropped builtin marker", cachePaths(t, p.Body), nil)
+
 	if _, err := bridge.Convert(ir.FormatChat, ir.FormatAnthropic, []byte(single), autoOpts("always")); err == nil {
 		t.Fatal("expected an error for an unknown AutoCache mode")
 	}
@@ -368,6 +395,7 @@ func TestCacheMarkers_TTLOrder(t *testing.T) {
 	plan = convertWith(t, ir.FormatAnthropic, ir.FormatAnthropic, bad, opts())
 	wantPaths(t, "reordered", cachePaths(t, plan.Body), []string{
 		"tools[0]=" + eph,
+		"tools[1]=" + eph,
 		"system[0]=" + eph,
 	})
 	wantPaths(t, "reordered losses", cacheLosses(plan), []string{
