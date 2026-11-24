@@ -26,6 +26,9 @@ type StreamDecoder struct {
 	serverToolBytes     int
 	maxBuf              int
 	pendingStop         *ir.Stop
+	// seenUsage accumulates the counters reported so far (message_start and
+	// earlier message_delta events) so zero placeholders cannot erase them.
+	seenUsage ir.Usage
 }
 
 const defaultAnthropicMaxBufferedBytes = 8 << 20
@@ -81,6 +84,7 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		var usage *ir.Usage
 		if se.Message.Usage != nil {
 			u := decodeUsage(se.Message.Usage)
+			d.seenUsage.Merge(u)
 			usage = &u
 		}
 		out = append(out, ir.Event{
@@ -305,7 +309,8 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 			d.pendingStop = &stop
 		}
 		if se.Usage != nil {
-			u := decodeUsage(se.Usage)
+			u := keepReportedOverZero(decodeUsage(se.Usage), d.seenUsage)
+			d.seenUsage.Merge(u)
 			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &u})
 		}
 
@@ -368,6 +373,32 @@ func stopFromAnthropic(reason, seq string) ir.Stop {
 		return ir.Stop{Reason: ir.StopContextWindow, Raw: reason}
 	}
 	return ir.Stop{Reason: ir.StopEndTurn, Raw: reason}
+}
+
+// keepReportedOverZero stops a message_delta's zero placeholders from erasing
+// counters reported earlier in the stream. Some upstreams (Bedrock, several
+// relays) repeat input_tokens / cache_*_input_tokens as 0 in message_delta;
+// a 0 there still counts as reported, but the earlier positive value is kept.
+func keepReportedOverZero(u, seen ir.Usage) ir.Usage {
+	if u.Has(ir.UInput) && u.InputTokens == 0 && seen.InputTokens > 0 {
+		u.InputTokens = seen.InputTokens
+	}
+	if u.Has(ir.UCacheRead) && u.CacheReadTokens == 0 && seen.CacheReadTokens > 0 {
+		u.CacheReadTokens = seen.CacheReadTokens
+	}
+	if u.Has(ir.UCacheWrite) && u.CacheWriteTokens == 0 && seen.CacheWriteTokens > 0 {
+		u.CacheWriteTokens = seen.CacheWriteTokens
+		// A zero aggregate also carried no split: keep the earlier one with it.
+		if !u.Has(ir.UCacheWriteSplit) && seen.Has(ir.UCacheWriteSplit) {
+			u.CacheWrite5mTokens = seen.CacheWrite5mTokens
+			u.CacheWrite1hTokens = seen.CacheWrite1hTokens
+			u.Reported |= ir.UCacheWriteSplit
+		}
+	}
+	if u.Has(ir.UOutput) && u.OutputTokens == 0 && seen.OutputTokens > 0 {
+		u.OutputTokens = seen.OutputTokens
+	}
+	return u
 }
 
 // decodeUsage converts a wireUsage to ir.Usage, marking only fields actually
