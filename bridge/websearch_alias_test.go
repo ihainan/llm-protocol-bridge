@@ -21,6 +21,15 @@ func TestResponsesWebSearchDatedAliases(t *testing.T) {
 			if len(req.Builtins) != 1 || req.Builtins[0].Kind != ir.BuiltinWebSearch {
 				t.Fatalf("builtins: %+v", req.Builtins)
 			}
+			if !strings.Contains(string(req.Builtins[0].Config), `"search_context_size":"low"`) {
+				t.Errorf("config lost: %s", req.Builtins[0].Config)
+			}
+			// the same entry inside additional_tools
+			at := `{"model":"m","input":[{"type":"additional_tools","tools":[{"type":"` + typ + `"}]},{"type":"message","role":"user","content":"hi"}]}`
+			req, err = bridge.Parse(ir.FormatResponses, []byte(at), bridge.Options{})
+			if err != nil || len(req.Builtins) != 1 || req.Builtins[0].Kind != ir.BuiltinWebSearch {
+				t.Fatalf("additional_tools: %v %+v", err, req)
+			}
 			// Responses to Responses keeps the client's own tool entry
 			plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(body), bridge.Options{Model: "m"})
 			if err != nil {
