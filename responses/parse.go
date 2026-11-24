@@ -360,8 +360,8 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 	// Input must contain at least one non-system/developer message unless continuing
 	// from previous_response_id.
 	// A compaction item alone carries the history; a configuration_update
-	// alone does not.
-	if req.PreviousResponseID == "" && len(req.Messages) == 0 && !hasCompactionExtra(req.TrailingExtras) {
+	// alone (or with only system/developer messages) does not.
+	if req.PreviousResponseID == "" && !hasConversation(req.Messages) && !hasCompactionExtra(req.InputExtras()) {
 		return nil, env.Err(ir.Invalid(p.Key("input"), "input must contain at least one user or assistant item"))
 	}
 
@@ -448,8 +448,9 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 	answeredCalls := map[string]bool{}
 
 	type pending struct {
-		role  ir.Role
-		parts []ir.Part
+		role   ir.Role
+		parts  []ir.Part
+		extras []ir.InputExtra // items inside this message (InputExtra.Part > 0)
 	}
 	var cur *pending
 	var pendingExtras []ir.InputExtra
@@ -463,9 +464,20 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 
 	flush := func() {
 		if cur != nil && len(cur.parts) > 0 {
-			appendMsg(ir.Message{Role: cur.role, Parts: cur.parts})
+			appendMsg(ir.Message{Role: cur.role, Parts: cur.parts, Extras: cur.extras})
 		}
 		cur = nil
+	}
+	// addExtra attaches an input extra where it came: inside the message being
+	// gathered (so tool calls around it stay in one message) or before the
+	// next one.
+	addExtra := func(ex ir.InputExtra) {
+		if cur != nil && len(cur.parts) > 0 {
+			ex.Part = len(cur.parts)
+			cur.extras = append(cur.extras, ex)
+			return
+		}
+		pendingExtras = append(pendingExtras, ex)
 	}
 	ensure := func(role ir.Role) *pending {
 		if cur == nil || cur.role != role {
@@ -594,18 +606,16 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 			return nil, nil, env.Err(ir.Unsupported(fp.Key("type"), "item_reference", "item_reference is not supported"))
 
 		case ir.ExtraConfigurationUpdate:
-			flush()
 			ex, err := parseConfigurationUpdate(fields, elem, i, fp, env)
 			if err != nil {
 				return nil, nil, err
 			}
-			pendingExtras = append(pendingExtras, ex)
+			addExtra(ex)
 
 		case ir.ExtraCompaction, ir.ExtraCompactionSummary, ir.ExtraCompactionTrigger:
 			// Codex remote compaction: kept verbatim; only a Responses upstream
 			// can act on it (the build reports it to any other upstream).
-			flush()
-			pendingExtras = append(pendingExtras, ir.InputExtra{Type: itemType, Index: i, Raw: append(json.RawMessage(nil), elem...)})
+			addExtra(ir.InputExtra{Type: itemType, Index: i, Raw: append(json.RawMessage(nil), elem...)})
 
 		default:
 			return nil, nil, env.Err(ir.Invalid(fp.Key("type"), "unknown input item type: "+itemType))
@@ -1410,6 +1420,17 @@ func parseDataURI(uri string) (mediaType, data string, ok bool) {
 func hasCompactionExtra(extras []ir.InputExtra) bool {
 	for _, ex := range extras {
 		if ex.Type == ir.ExtraCompaction || ex.Type == ir.ExtraCompactionSummary {
+			return true
+		}
+	}
+	return false
+}
+
+// hasConversation reports whether msgs hold a message other than a system or
+// developer one.
+func hasConversation(msgs []ir.Message) bool {
+	for _, m := range msgs {
+		if m.Role != ir.RoleSystem && m.Role != ir.RoleDeveloper {
 			return true
 		}
 	}

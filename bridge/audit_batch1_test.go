@@ -601,3 +601,66 @@ func TestConfigurationUpdateOnlyInputRejected(t *testing.T) {
 		}
 	}
 }
+
+// Review round 5 regressions.
+
+// An update between two tool calls keeps them in one assistant message: the
+// missing-result repair sees both results, and a Responses upstream gets the
+// items in their original order.
+func TestUpdateBetweenToolCallsKeepsHistory(t *testing.T) {
+	body := `{"model":"m","tools":[{"type":"function","name":"f","parameters":{"type":"object"}}],"input":[` +
+		`{"type":"function_call","call_id":"c1","name":"f","arguments":"{}"},` +
+		`{"type":"configuration_update","reasoning":{"effort":"high"}},` +
+		`{"type":"function_call","call_id":"c2","name":"f","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"c1","output":"real 1"},` +
+		`{"type":"function_call_output","call_id":"c2","output":"real 2"}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(body), bridge.Options{Repair: ir.RepairSet{ir.RepairMissingResults: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Input []struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(plan.Body, &got); err != nil {
+		t.Fatal(err)
+	}
+	var seq []string
+	for _, it := range got.Input {
+		seq = append(seq, it.Type+":"+it.CallID)
+	}
+	want := "function_call:c1 configuration_update: function_call:c2 function_call_output:c1 function_call_output:c2"
+	if strings.Join(seq, " ") != want {
+		t.Fatalf("items %v, want %s", seq, want)
+	}
+	if strings.Contains(string(plan.Body), "missing tool result") {
+		t.Fatalf("result synthesized: %s", plan.Body)
+	}
+}
+
+// cache_control: null on a dropped tool is no marker.
+func TestRelaxForcedToolChoiceNullCacheControl(t *testing.T) {
+	body := `{"model":"m","max_tokens":32,"messages":[{"role":"user","content":"x"}],"tools":[{"name":"f","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search","cache_control":null}],"tool_choice":{"type":"tool","name":"f"}}`
+	plan, err := bridge.Convert(ir.FormatAnthropic, ir.FormatAnthropic, []byte(body), bridge.Options{
+		Profile:   &ir.ModelProfile{NoForcedToolChoice: true},
+		Anthropic: anthropic.Dialect{AutoCache: anthropic.AutoCachePrefix},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Body), "cache_control") {
+		t.Fatalf("automatic cache marker missing: %s", plan.Body)
+	}
+}
+
+// Only developer messages next to an update is still an empty conversation.
+func TestUpdateWithOnlyDeveloperRejected(t *testing.T) {
+	body := `{"model":"m","input":[{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"developer","content":"do X"}]}`
+	for _, f := range []ir.Format{ir.FormatAnthropic, ir.FormatChat, ir.FormatResponses} {
+		if _, err := bridge.Convert(ir.FormatResponses, f, []byte(body), bridge.Options{}); err == nil {
+			t.Fatalf("%s: accepted", f)
+		}
+	}
+}

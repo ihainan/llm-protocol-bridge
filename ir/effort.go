@@ -385,9 +385,20 @@ func droppedToolHasCacheMarker(req, kept *Request) bool {
 		keptKinds[string(b.Kind)] = true
 	}
 	for _, b := range req.Builtins {
-		if !keptKinds[string(b.Kind)] && bytes.Contains(b.Raw, []byte(`"cache_control"`)) {
+		if !keptKinds[string(b.Kind)] && rawHasCacheControl(b.Raw) {
 			return true
 		}
 	}
 	return false
+}
+
+// rawHasCacheControl reports whether a tool definition carries a non-null
+// cache_control.
+func rawHasCacheControl(raw json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	v, ok := fields["cache_control"]
+	return ok && len(bytes.TrimSpace(v)) > 0 && string(bytes.TrimSpace(v)) != "null"
 }

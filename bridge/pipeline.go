@@ -863,7 +863,10 @@ func dropMessages(req *ir.Request, msgs []ir.Message, drop func(ir.Message) bool
 	var carry []ir.InputExtra
 	for _, m := range msgs {
 		if drop(m) {
-			carry = append(carry, m.Extras...)
+			for _, ex := range m.Extras {
+				ex.Part = 0 // now before the next kept message
+				carry = append(carry, ex)
+			}
 			continue
 		}
 		if len(carry) > 0 {

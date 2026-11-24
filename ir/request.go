@@ -145,6 +145,10 @@ type InputExtra struct {
 	Type string `json:"type"`
 	// Index is the item's position in the client's input array.
 	Index int `json:"index"`
+	// Part is where in the message it is attached to the item came: before
+	// that message's part at this index (0: before the message). An item
+	// between two tool calls keeps the calls in one message.
+	Part int `json:"part,omitempty"`
 	// Raw is the item verbatim.
 	Raw json.RawMessage `json:"raw,omitempty"`
 	// Reasoning and Output are a configuration_update's settings, if any.

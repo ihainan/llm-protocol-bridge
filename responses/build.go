@@ -236,20 +236,43 @@ func buildInputArray(req *ir.Request, nameMap *ir.ToolNameMap, env *ir.Env, omit
 		return jsonx.Marshal(items)
 	}
 	raw := []json.RawMessage{}
-	for i, msg := range req.Messages {
-		for _, ex := range msg.Extras {
-			raw = append(raw, ex.Raw)
+	emit := func(msg ir.Message, p ir.Path) error {
+		if len(msg.Parts) == 0 {
+			return nil
 		}
-		its, err := messageToItems(msg, ir.Root.Key("input").At(i), nameMap, env, omitHistoryReasoning)
+		its, err := messageToItems(msg, p, nameMap, env, omitHistoryReasoning)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, it := range its {
 			b, err := jsonx.Marshal(it)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			raw = append(raw, b)
+		}
+		return nil
+	}
+	for i, msg := range req.Messages {
+		p := ir.Root.Key("input").At(i)
+		// Extras inside the message (Part > 0) split it where they came.
+		start := 0
+		for _, ex := range msg.Extras {
+			cut := min(max(ex.Part, start), len(msg.Parts))
+			if cut > start {
+				seg := msg
+				seg.Parts, seg.Extras = msg.Parts[start:cut], nil
+				if err := emit(seg, p); err != nil {
+					return nil, err
+				}
+				start = cut
+			}
+			raw = append(raw, ex.Raw)
+		}
+		rest := msg
+		rest.Parts, rest.Extras = msg.Parts[start:], nil
+		if err := emit(rest, p); err != nil {
+			return nil, err
 		}
 	}
 	for _, ex := range req.TrailingExtras {
