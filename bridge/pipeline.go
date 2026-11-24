@@ -915,7 +915,11 @@ func repairHistory(req *ir.Request, repair ir.RepairSet) {
 				continue
 			}
 			var parts []ir.Part
-			for _, pt := range msgs[i].Parts {
+			// keptBefore[k]: parts kept from the first k, to move the extras
+			// inside the message (InputExtra.Part) with the parts around them.
+			keptBefore := make([]int, len(msgs[i].Parts)+1)
+			for k, pt := range msgs[i].Parts {
+				keptBefore[k] = len(parts)
 				if pt.Type != ir.PartToolResult || pt.Result == nil {
 					parts = append(parts, pt)
 					continue
@@ -938,6 +942,15 @@ func repairHistory(req *ir.Request, repair ir.RepairSet) {
 					seenResultID[cid] = true
 				}
 				parts = append(parts, pt)
+			}
+			keptBefore[len(msgs[i].Parts)] = len(parts)
+			if len(msgs[i].Extras) > 0 && len(parts) != len(msgs[i].Parts) {
+				extras := make([]ir.InputExtra, len(msgs[i].Extras))
+				for e, ex := range msgs[i].Extras {
+					ex.Part = keptBefore[min(max(ex.Part, 0), len(msgs[i].Parts))]
+					extras[e] = ex
+				}
+				msgs[i].Extras = extras
 			}
 			msgs[i].Parts = parts
 		}

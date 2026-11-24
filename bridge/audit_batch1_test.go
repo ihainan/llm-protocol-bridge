@@ -664,3 +664,33 @@ func TestUpdateWithOnlyDeveloperRejected(t *testing.T) {
 		}
 	}
 }
+
+// Review round 6 regression: removing a duplicate tool result moves the
+// extras inside the message with the parts around them.
+func TestDuplicateResultRemovalKeepsExtraPosition(t *testing.T) {
+	body := `{"model":"m","previous_response_id":"resp_prev","input":[` +
+		`{"type":"function_call_output","call_id":"c1","output":"one"},` +
+		`{"type":"function_call_output","call_id":"c1","output":"one"},` +
+		`{"type":"configuration_update","reasoning":{"effort":"high"}},` +
+		`{"type":"function_call_output","call_id":"c2","output":"two"}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(body), bridge.Options{Repair: ir.RepairSet{ir.RepairDuplicateResults: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Input []struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(plan.Body, &got); err != nil {
+		t.Fatal(err)
+	}
+	var seq []string
+	for _, it := range got.Input {
+		seq = append(seq, it.Type+":"+it.CallID)
+	}
+	if want := "function_call_output:c1 configuration_update: function_call_output:c2"; strings.Join(seq, " ") != want {
+		t.Fatalf("items %v, want %s", seq, want)
+	}
+}
