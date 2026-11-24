@@ -207,6 +207,11 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 				req.Passthrough = map[string]json.RawMessage{}
 			}
 			req.Passthrough[k] = append(json.RawMessage(nil), v...)
+			if k == "cache_control" {
+				if err := loseIgnoredCacheControl(v, fp, "a request-level cache_control is not carried; mark content parts, messages or tools instead", env); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 
@@ -322,6 +327,14 @@ func parseMessage(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, erro
 		return ir.Message{}, env.Err(ir.Invalid(p.Key("role"), "unknown role: "+role))
 	}
 
+	if role != "assistant" {
+		for i, tc := range toolCalls {
+			if err := loseIgnoredCacheControl(tc.CacheControl, p.Key("tool_calls").At(i).Key("cache_control"), "tool_calls are ignored on "+role+" messages", env); err != nil {
+				return ir.Message{}, err
+			}
+		}
+	}
+
 	switch role {
 	case "tool":
 		// A tool message carries a string or content-part array.
@@ -435,13 +448,40 @@ func applyMessageCacheControl(msg *ir.Message, raw json.RawMessage, p ir.Path, e
 	for i := len(msg.Parts) - 1; i >= 0; i-- {
 		switch msg.Parts[i].Type {
 		case ir.PartText, ir.PartRefusal, ir.PartImage, ir.PartFile, ir.PartToolCall:
-			if msg.Parts[i].Cache == nil {
+			own := msg.Parts[i].Cache
+			if own == nil {
 				msg.Parts[i].Cache = cc
+				return nil
 			}
-			return nil
+			if sameCacheControl(own, cc) {
+				return nil
+			}
+			return env.Lose(ir.LossCacheMarker, p, "the last content part carries its own cache marker; the message-level marker is ignored")
 		}
 	}
 	return env.Lose(ir.LossCacheMarker, p, "message has no content part that can carry a cache marker")
+}
+
+// sameCacheControl reports whether two markers are equivalent (an absent TTL
+// is the 5-minute default).
+func sameCacheControl(a, b *ir.CacheControl) bool {
+	ttl := func(c *ir.CacheControl) string {
+		if c.TTL == "" {
+			return "5m"
+		}
+		return c.TTL
+	}
+	return a.Type == b.Type && ttl(a) == ttl(b)
+}
+
+// loseIgnoredCacheControl reports a non-null cache_control at a position the
+// parser cannot carry, so the marker is a visible loss (and keeps automatic
+// placement off) rather than being ignored.
+func loseIgnoredCacheControl(raw json.RawMessage, p ir.Path, detail string, env *ir.Env) error {
+	if jsonx.IsNull(raw) {
+		return nil
+	}
+	return env.Lose(ir.LossCacheMarker, p, detail)
 }
 
 // parseChatCacheControl reads an Anthropic-style cache_control object that
@@ -534,10 +574,8 @@ func parseContentPart(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Part, err
 	// reported rather than ignored so automatic placement stays off.
 	switch partType {
 	case "input_audio", "thinking", "thought":
-		if !jsonx.IsNull(fields["cache_control"]) {
-			if err := env.Lose(ir.LossCacheMarker, p.Key("cache_control"), "cache_control is not supported on "+partType+" content parts"); err != nil {
-				return ir.Part{}, err
-			}
+		if err := loseIgnoredCacheControl(fields["cache_control"], p.Key("cache_control"), "cache_control is not supported on "+partType+" content parts", env); err != nil {
+			return ir.Part{}, err
 		}
 	}
 
@@ -740,10 +778,24 @@ func parseTool(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, error) {
 	// A repeated member is read last-wins, so only the effective one is
 	// validated.
 	if kvs, err := jsonx.Object(raw); err == nil {
-		var ccRaw json.RawMessage
+		var ccRaw, fnRaw json.RawMessage
 		for _, kv := range kvs {
-			if kv.Key == "cache_control" {
+			switch kv.Key {
+			case "cache_control":
 				ccRaw = kv.Value
+			case "function":
+				fnRaw = kv.Value
+			}
+		}
+		if fkvs, err := jsonx.Object(fnRaw); err == nil {
+			var inner json.RawMessage
+			for _, kv := range fkvs {
+				if kv.Key == "cache_control" {
+					inner = kv.Value
+				}
+			}
+			if err := loseIgnoredCacheControl(inner, p.Keys("function", "cache_control"), "cache_control belongs next to function, not inside it", env); err != nil {
+				return ir.Tool{}, err
 			}
 		}
 		cc, err := parseChatCacheControl(ccRaw, p.Key("cache_control"), env)

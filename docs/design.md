@@ -989,8 +989,10 @@ Anthropic `cache_control` (type and `ttl`) is kept on instructions, parts (inclu
 may send the same object, following the OpenRouter and LiteLLM conventions: on `text`,
 `refusal`, `image_url` and `file` content parts, on assistant `tool_calls` entries, on a
 message (applied to its last content part) and on a tool definition next to `function`.
-A marker on an `input_audio` or `thinking` part cannot be carried and is a `cache.marker`
-loss. Markers on a Chat `tool` message are moved
+A marker the parser cannot carry is a `cache.marker` loss rather than being ignored: on an
+`input_audio` or `thinking` part, at request level, inside `function`, on `tool_calls` of a
+non-assistant message, or a message-level marker that differs from the one the target part
+already carries. Markers on a Chat `tool` message are moved
 to the outer `tool_result`, whose breakpoint covers all of its content; the message-level
 marker wins over inner ones, otherwise the last inner one, and each superseded marker is a
 `cache.marker` loss. A `cache_control` member repeated within one object is read

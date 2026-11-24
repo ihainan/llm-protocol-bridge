@@ -536,3 +536,41 @@ func TestChatCacheMarkers_RefusalAndToolCalls(t *testing.T) {
 		"messages[4].tool_calls[0].cache_control.type",
 	})
 }
+
+// Markers at positions the Chat parser cannot carry are cache.marker losses,
+// so they are visible to strict callers and keep automatic placement off.
+func TestChatCacheMarkers_UncarriedPositions(t *testing.T) {
+	cases := []struct {
+		name, body, loss string
+	}{
+		{"request level", `{"model":"m","cache_control":{"type":"ephemeral"},"messages":[{"role":"system","content":"s"},{"role":"user","content":"u"}]}`,
+			"cache_control"},
+		{"user tool_calls", `{"model":"m","messages":[{"role":"user","content":"u","tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"},"cache_control":"invalid"}]}]}`,
+			"messages[0].tool_calls[0].cache_control"},
+		{"inside function", `{"model":"m","messages":[{"role":"user","content":"u"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"},"cache_control":{"type":"ephemeral"}}}]}`,
+			"tools[0].function.cache_control"},
+		{"message vs tool_call", `{"model":"m","messages":[{"role":"user","content":"u"},{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"},"cache_control":{"type":"ephemeral","ttl":"5m"}}],"cache_control":{"type":"ephemeral","ttl":"1h"}},{"role":"tool","tool_call_id":"c","content":"ok"}]}`,
+			"messages[1].cache_control"},
+	}
+	strict := autoOpts(anthropic.AutoCacheConversation)
+	strict.Deny = ir.LossSet{ir.LossCacheMarker: true}
+	for _, c := range cases {
+		plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, c.body, autoOpts(anthropic.AutoCacheConversation))
+		wantPaths(t, c.name+" losses", cacheLosses(plan), []string{c.loss})
+		if c.name != "message vs tool_call" && strings.Contains(string(plan.Body), "cache_control") {
+			t.Errorf("%s: automatic placement ran: %s", c.name, plan.Body)
+		}
+		if _, err := bridge.Convert(ir.FormatChat, ir.FormatAnthropic, []byte(c.body), strict); err == nil {
+			t.Errorf("%s: expected an error when cache.marker losses are denied", c.name)
+		}
+	}
+
+	// The tool_call's own marker wins over a different message-level one.
+	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, cases[3].body, opts())
+	wantPaths(t, "tool_call wins", cachePaths(t, plan.Body), []string{`messages[1].content[0]={"ttl":"5m","type":"ephemeral"}`})
+
+	// An equivalent message-level marker loses nothing.
+	same := `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"u","cache_control":{"type":"ephemeral","ttl":"5m"}}],"cache_control":{"type":"ephemeral"}}]}`
+	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, same, opts())
+	wantPaths(t, "same losses", cacheLosses(plan), nil)
+}
