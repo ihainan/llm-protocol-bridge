@@ -18,9 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   else the last inner one) is kept and the others are `cache.marker` losses.
   Invalid shapes (non-object, type other than `ephemeral`, TTL other than
   `5m` / `1h`) and markers at positions that cannot carry one (`input_audio` /
-  `thinking` parts, request level, inside `function`, `tool_calls` of
-  non-assistant messages, a message-level marker that differs from the part's
-  own) are dropped as `cache.marker` losses. A `cache_control` member
+  `thinking` parts, `tool_calls` of non-assistant messages, a message-level
+  marker that differs from the part's own, and any other position such as
+  request level or inside `image_url` / `file` / `function` objects; parameter
+  schemas, `response_format` and `metadata` are not searched) are dropped as
+  `cache.marker` losses. A `cache_control` member
   repeated within one object is read last-wins, and only the effective member
   is validated. Chat, Responses and Gemini upstreams record `cache.marker`
   losses as before.

@@ -207,12 +207,11 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 				req.Passthrough = map[string]json.RawMessage{}
 			}
 			req.Passthrough[k] = append(json.RawMessage(nil), v...)
-			if k == "cache_control" {
-				if err := loseIgnoredCacheControl(v, fp, "a request-level cache_control is not carried; mark content parts, messages or tools instead", env); err != nil {
-					return nil, err
-				}
-			}
 		}
+	}
+
+	if err := reportUncarriedCacheMarkers(body, env); err != nil {
+		return nil, err
 	}
 
 	// Extract leading system/developer messages into Instructions.
@@ -778,24 +777,10 @@ func parseTool(raw json.RawMessage, p ir.Path, env *ir.Env) (ir.Tool, error) {
 	// A repeated member is read last-wins, so only the effective one is
 	// validated.
 	if kvs, err := jsonx.Object(raw); err == nil {
-		var ccRaw, fnRaw json.RawMessage
+		var ccRaw json.RawMessage
 		for _, kv := range kvs {
-			switch kv.Key {
-			case "cache_control":
+			if kv.Key == "cache_control" {
 				ccRaw = kv.Value
-			case "function":
-				fnRaw = kv.Value
-			}
-		}
-		if fkvs, err := jsonx.Object(fnRaw); err == nil {
-			var inner json.RawMessage
-			for _, kv := range fkvs {
-				if kv.Key == "cache_control" {
-					inner = kv.Value
-				}
-			}
-			if err := loseIgnoredCacheControl(inner, p.Keys("function", "cache_control"), "cache_control belongs next to function, not inside it", env); err != nil {
-				return ir.Tool{}, err
 			}
 		}
 		cc, err := parseChatCacheControl(ccRaw, p.Key("cache_control"), env)

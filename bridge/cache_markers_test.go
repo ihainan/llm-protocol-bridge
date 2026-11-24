@@ -549,6 +549,10 @@ func TestChatCacheMarkers_UncarriedPositions(t *testing.T) {
 			"messages[0].tool_calls[0].cache_control"},
 		{"inside function", `{"model":"m","messages":[{"role":"user","content":"u"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"},"cache_control":{"type":"ephemeral"}}}]}`,
 			"tools[0].function.cache_control"},
+		{"nested image_url", `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png","cache_control":"invalid"}}]}]}`,
+			"messages[1].content[0].image_url.cache_control"},
+		{"tool_call function", `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u","tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}","cache_control":"invalid"}}]}]}`,
+			"messages[1].tool_calls[0].function.cache_control"},
 		{"message vs tool_call", `{"model":"m","messages":[{"role":"user","content":"u"},{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"},"cache_control":{"type":"ephemeral","ttl":"5m"}}],"cache_control":{"type":"ephemeral","ttl":"1h"}},{"role":"tool","tool_call_id":"c","content":"ok"}]}`,
 			"messages[1].cache_control"},
 	}
@@ -566,11 +570,35 @@ func TestChatCacheMarkers_UncarriedPositions(t *testing.T) {
 	}
 
 	// The tool_call's own marker wins over a different message-level one.
-	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, cases[3].body, opts())
+	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, cases[len(cases)-1].body, opts())
 	wantPaths(t, "tool_call wins", cachePaths(t, plan.Body), []string{`messages[1].content[0]={"ttl":"5m","type":"ephemeral"}`})
 
 	// An equivalent message-level marker loses nothing.
 	same := `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"u","cache_control":{"type":"ephemeral","ttl":"5m"}}],"cache_control":{"type":"ephemeral"}}]}`
 	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, same, opts())
 	wantPaths(t, "same losses", cacheLosses(plan), nil)
+}
+
+// Duplicate members are read last-wins by the position scan too, and user data
+// that merely contains a cache_control key (a parameter schema,
+// response_format, metadata) is not a marker.
+func TestChatCacheMarkers_ScanLastWinsAndUserData(t *testing.T) {
+	nulled := `{"model":"m","cache_control":{"type":"ephemeral"},"cache_control":null,"messages":[{"role":"system","content":"s"},{"role":"user","content":"u"}]}`
+	strict := autoOpts(anthropic.AutoCacheConversation)
+	strict.Deny = ir.LossSet{ir.LossCacheMarker: true}
+	plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, nulled, strict)
+	wantPaths(t, "nulled markers", cachePaths(t, plan.Body), []string{
+		"system[0]=" + eph,
+		"messages[0].content[0]=" + eph,
+	})
+
+	userData := `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"cache_control":{"type":"string"}}}}}],
+		"response_format":{"type":"json_schema","json_schema":{"name":"r","schema":{"type":"object","properties":{"cache_control":{"type":"string"}}}}},
+		"metadata":{"cache_control":"x"}}`
+	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, userData, strict)
+	wantPaths(t, "user data losses", cacheLosses(plan), nil)
+	if !strings.Contains(string(plan.Body), `"cache_control":{"type":"ephemeral"}`) {
+		t.Fatalf("automatic placement should still run: %s", plan.Body)
+	}
 }
