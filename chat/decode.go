@@ -144,23 +144,11 @@ func (d *StreamDecoder) Decode(out []ir.Event, ev sse.Event) ([]ir.Event, error)
 		var u wireUsage
 		if json.Unmarshal(chunk.Usage, &u) == nil {
 			mergeChatRawUsage(&d.rawUsage, &u)
-			if len(d.dia.CacheReadFields) > 0 {
-				for _, field := range d.dia.CacheReadFields {
-					if n, ok := lookupIntPath(chunk.Usage, field); ok {
-						v := n
-						d.rawDialectCacheRead = &v
-						break
-					}
-				}
+			if v := lookupFirstCount(chunk.Usage, d.dia.CacheReadFields); v != nil {
+				d.rawDialectCacheRead = v
 			}
-			if len(d.dia.CacheWriteFields) > 0 {
-				for _, field := range d.dia.CacheWriteFields {
-					if n, ok := lookupIntPath(chunk.Usage, field); ok {
-						v := n
-						d.rawDialectCacheWrite = &v
-						break
-					}
-				}
+			if v := lookupFirstCount(chunk.Usage, d.dia.CacheWriteFields); v != nil {
+				d.rawDialectCacheWrite = v
 			}
 			merged := decodeUsageMerged(&d.rawUsage, d.rawDialectCacheRead, d.rawDialectCacheWrite, d.dia)
 			out = append(out, ir.Event{Type: ir.EvUsage, Usage: &merged})
@@ -480,26 +468,30 @@ func decodeUsageRaw(raw json.RawMessage, dia Dialect) (ir.Usage, bool) {
 
 // decodeUsage decodes a wire usage object into ir.Usage using the dialect.
 func decodeUsage(u *wireUsage, raw json.RawMessage, dia Dialect) ir.Usage {
-	var diaRead, diaWrite *int
-	if len(dia.CacheReadFields) > 0 && len(raw) > 0 {
-		for _, field := range dia.CacheReadFields {
-			if n, ok := lookupIntPath(raw, field); ok {
-				v := n
-				diaRead = &v
-				break
-			}
+	return decodeUsageMerged(u, lookupFirstCount(raw, dia.CacheReadFields), lookupFirstCount(raw, dia.CacheWriteFields), dia)
+}
+
+// lookupFirstCount returns the first positive count among the dialect field
+// paths, or the first one present when none is positive, or nil.
+func lookupFirstCount(raw json.RawMessage, fields []string) *int {
+	if len(raw) == 0 {
+		return nil
+	}
+	var first *int
+	for _, field := range fields {
+		n, ok := lookupIntPath(raw, field)
+		if !ok {
+			continue
+		}
+		if n > 0 {
+			return &n
+		}
+		if first == nil {
+			v := n
+			first = &v
 		}
 	}
-	if len(dia.CacheWriteFields) > 0 && len(raw) > 0 {
-		for _, field := range dia.CacheWriteFields {
-			if n, ok := lookupIntPath(raw, field); ok {
-				v := n
-				diaWrite = &v
-				break
-			}
-		}
-	}
-	return decodeUsageMerged(u, diaRead, diaWrite, dia)
+	return first
 }
 
 func decodeUsageMerged(u *wireUsage, diaRead, diaWrite *int, dia Dialect) ir.Usage {
@@ -509,12 +501,20 @@ func decodeUsageMerged(u *wireUsage, diaRead, diaWrite *int, dia Dialect) ir.Usa
 		out.Reported |= ir.UOutput
 	}
 
-	// Cache read: standard prompt_tokens_details.cached_tokens, else dialect fallbacks.
-	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens != nil {
+	// Cache read: standard prompt_tokens_details.cached_tokens wins when it is
+	// positive. When it is missing or 0, a positive dialect field is used
+	// instead (Moonshot sends cached_tokens:0 in the details and the real count
+	// at the top of usage); the two are never added.
+	std := u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens != nil
+	switch {
+	case std && *u.PromptTokensDetails.CachedTokens > 0:
 		out.CacheReadTokens = *u.PromptTokensDetails.CachedTokens
 		out.Reported |= ir.UCacheRead
-	} else if diaRead != nil {
+	case diaRead != nil && (*diaRead > 0 || !std):
 		out.CacheReadTokens = *diaRead
+		out.Reported |= ir.UCacheRead
+	case std:
+		out.CacheReadTokens = 0
 		out.Reported |= ir.UCacheRead
 	}
 

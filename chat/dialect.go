@@ -37,10 +37,13 @@ type Dialect struct {
 	PromptExcludesCache bool
 
 	// CacheReadFields lists alternative field paths for cached input tokens,
-	// tried in order when prompt_tokens_details.cached_tokens is absent.
+	// used when prompt_tokens_details.cached_tokens is absent or 0. The first
+	// positive one wins; it is never added to the standard count. When the
+	// cached counts exceed prompt_tokens (Anthropic-style names from relays in
+	// front of Claude), prompt_tokens is read as excluding them.
 	CacheReadFields []string
 
-	// CacheWriteFields lists the field path for cache-write tokens.
+	// CacheWriteFields lists field paths for cache-write tokens (first positive wins).
 	CacheWriteFields []string
 
 	// ReasoningExcludedFromCompletion: when true, reasoning tokens are not
