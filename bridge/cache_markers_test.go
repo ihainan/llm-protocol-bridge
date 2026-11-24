@@ -553,6 +553,10 @@ func TestChatCacheMarkers_UncarriedPositions(t *testing.T) {
 			"messages[1].content[0].image_url.cache_control"},
 		{"tool_call function", `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u","tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}","cache_control":"invalid"}}]}]}`,
 			"messages[1].tool_calls[0].function.cache_control"},
+		{"escaped key", `{"model":"m","\u0063ache_control":{"type":"ephemeral"},"messages":[{"role":"system","content":"s"},{"role":"user","content":"u"}]}`,
+			"cache_control"},
+		{"inside a marker", `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"text","text":"u","cache_control":{"type":"persistent","cache_control":"invalid"}}]}]}`,
+			"messages[1].content[0].cache_control.type|messages[1].content[0].cache_control.cache_control"},
 		{"message vs tool_call", `{"model":"m","messages":[{"role":"user","content":"u"},{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"},"cache_control":{"type":"ephemeral","ttl":"5m"}}],"cache_control":{"type":"ephemeral","ttl":"1h"}},{"role":"tool","tool_call_id":"c","content":"ok"}]}`,
 			"messages[1].cache_control"},
 	}
@@ -560,7 +564,7 @@ func TestChatCacheMarkers_UncarriedPositions(t *testing.T) {
 	strict.Deny = ir.LossSet{ir.LossCacheMarker: true}
 	for _, c := range cases {
 		plan := convertWith(t, ir.FormatChat, ir.FormatAnthropic, c.body, autoOpts(anthropic.AutoCacheConversation))
-		wantPaths(t, c.name+" losses", cacheLosses(plan), []string{c.loss})
+		wantPaths(t, c.name+" losses", cacheLosses(plan), strings.Split(c.loss, "|"))
 		if c.name != "message vs tool_call" && strings.Contains(string(plan.Body), "cache_control") {
 			t.Errorf("%s: automatic placement ran: %s", c.name, plan.Body)
 		}
@@ -592,8 +596,15 @@ func TestChatCacheMarkers_ScanLastWinsAndUserData(t *testing.T) {
 		"messages[0].content[0]=" + eph,
 	})
 
+	// A valid marker keeps working while a marker nested inside it is reported.
+	nested := `{"model":"m","messages":[{"role":"user","content":"u","cache_control":{"type":"ephemeral","cache_control":"invalid"}}]}`
+	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, nested, opts())
+	wantPaths(t, "nested markers", cachePaths(t, plan.Body), []string{"messages[0].content[0]=" + eph})
+	wantPaths(t, "nested losses", cacheLosses(plan), []string{"messages[0].cache_control.cache_control"})
+
 	userData := `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u"}],
-		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"cache_control":{"type":"string"}}}}}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"cache_control":{"type":"string"}}}}},
+			{"type":"function","Function":{"name":"g","Parameters":{"type":"object","properties":{"cache_control":{"type":"string"}}}}}],
 		"response_format":{"type":"json_schema","json_schema":{"name":"r","schema":{"type":"object","properties":{"cache_control":{"type":"string"}}}}},
 		"metadata":{"cache_control":"x"}}`
 	plan = convertWith(t, ir.FormatChat, ir.FormatAnthropic, userData, strict)

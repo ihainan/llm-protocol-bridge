@@ -3,6 +3,7 @@ package chat
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 
 	"github.com/ihainan/llm-protocol-bridge/internal/jsonx"
 	"github.com/ihainan/llm-protocol-bridge/ir"
@@ -27,7 +28,9 @@ const (
 // (tool parameters, response_format) and metadata are user data and are not
 // searched. Requests that never mention cache_control are not walked.
 func reportUncarriedCacheMarkers(body []byte, env *ir.Env) error {
-	if !bytes.Contains(body, []byte(`"cache_control"`)) {
+	// Keys may be written with \u escapes, so a body containing one is
+	// walked too (an extra pass only; it reports nothing without a marker).
+	if !bytes.Contains(body, []byte("cache_control")) && !bytes.Contains(body, []byte(`\u`)) {
 		return nil
 	}
 	return walkCacheMarkers(body, ir.Root, scopeOther, true, env)
@@ -62,14 +65,20 @@ func walkCacheMarkers(raw json.RawMessage, p ir.Path, scope cacheScope, root boo
 					return err
 				}
 			}
+			// Members nested inside a marker are not read either.
+			if err := walkCacheMarkers(v, p.Key(k), scopeOther, false, env); err != nil {
+				return err
+			}
 			continue
 		}
-		if root && (k == "response_format" || k == "metadata") || scope == scopeFunction && k == "parameters" {
+		// Tool definitions are decoded with encoding/json, whose field
+		// matching ignores case, so the schema is skipped the same way.
+		if root && (k == "response_format" || k == "metadata") || scope == scopeFunction && strings.EqualFold(k, "parameters") {
 			continue
 		}
 		child := scopeOther
 		switch {
-		case scope == scopeTool && k == "function":
+		case scope == scopeTool && strings.EqualFold(k, "function"):
 			child = scopeFunction
 		case root && k == "messages":
 			if err := walkScopedArray(v, p.Key(k), scopeMessage, env); err != nil {
