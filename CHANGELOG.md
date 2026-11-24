@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `sampling.top_k`, `sampling.penalty` and `sampling.clamp` are allowed by
+  default (`ir.DefaultAllowed`): a `top_k` towards Chat Completions or
+  Responses, a penalty towards Anthropic / Gemini / Responses, a temperature
+  above Anthropic's maximum, and `temperature` / `top_p` / `top_k` while
+  Anthropic thinking is on are dropped or clamped and reported as losses
+  instead of failing the request. Gemini CLI sends `topK` and `topP` on every
+  request. Add the keys to `Options.Deny` for the previous behaviour.
+  `sampling.logprobs` stays denied.
+
+### Fixed
+
+- Gemini responses no longer carry `"parts": null` or `"candidates": null`:
+  an empty `parts` list and an empty `candidates` list are left out, and a
+  candidate without parts (the final stream chunk with only `finishReason`)
+  has no `content`, as the Gemini API sends it. Gemini CLI read `.length` of
+  these and failed at the end of every converted stream.
+
 ### Added
 
 - Prompt cache markers from Chat Completions clients: `cache_control` on

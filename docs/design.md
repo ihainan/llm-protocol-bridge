@@ -722,9 +722,10 @@ key (`ir.LossKind`):
 | `tool.cached_web_search`     | Responses `web_search` with `external_web_access: false` dropped | allowed |
 | `request.unknown_field`      | an unknown request parameter (8.4)                         | allowed |
 | `sampling.seed`              | `seed` towards an upstream without it (best effort anyway) | allowed |
-| `sampling.penalty`           | non-zero penalties towards an upstream without them        | error   |
+| `sampling.top_k`             | `top_k` towards an upstream without it                     | allowed |
+| `sampling.penalty`           | non-zero penalties towards an upstream without them        | allowed |
 | `sampling.logprobs`          | `logprobs: true` / `top_logprobs > 0` towards an upstream without them | error |
-| `sampling.clamp`             | a sampling value outside the upstream's range, clamped (9.10) | error |
+| `sampling.clamp`             | a sampling value outside the upstream's range, clamped, or one Anthropic thinking forbids, dropped (9.10) | allowed |
 | `stop.limit`                 | more stop sequences than the upstream accepts              | error   |
 
 Neutral values are not losses and are dropped silently: a penalty of 0,
@@ -1052,8 +1053,12 @@ Responses it is `unsupported`.
 `temperature`, `top_p`, `top_k`, penalties, `seed` and logprobs are mapped where the
 upstream has them and range-checked against the client format's rules. Ranges are not
 rescaled; a value valid for the client but outside the upstream's range is
-`unsupported`, unless the caller allows the `sampling.clamp` loss, in which case the
-value is clamped to the upstream's range and the loss is reported.
+clamped to the upstream's range and reported as a `sampling.clamp` loss (an error when
+the caller denies it). Sampling hints the upstream cannot take at all (`top_k`,
+penalties, or `temperature` / `top_p` while Anthropic thinking is on) are dropped and
+reported the same way (`sampling.top_k`, `sampling.penalty`, `sampling.clamp`):
+they tune the output and do not change what the client asked for. Logprobs are
+refused by default, since the client expects data the upstream cannot return.
 
 ### 9.11 Responses state
 

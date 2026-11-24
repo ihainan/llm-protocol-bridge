@@ -95,10 +95,10 @@ column shows the behaviour when the caller passes `bridge.Options{}`.
 | `output.builtin_activity`  | Hosted builtin call/result cannot be carried     | allowed   |
 | `output.media`             | Non-text output media cannot be carried          | allowed   |
 | `sampling.seed`            | `seed` cannot be carried                          | allowed   |
-| `sampling.top_k`            | `top_k` cannot be carried                         | denied    |
-| `sampling.penalty`         | `presence_penalty` / `frequency_penalty` dropped | denied    |
+| `sampling.top_k`           | `top_k` cannot be carried                         | allowed   |
+| `sampling.penalty`         | `presence_penalty` / `frequency_penalty` dropped | allowed   |
 | `sampling.logprobs`        | `logprobs` cannot be carried                      | denied    |
-| `sampling.clamp`           | `temperature` clamped to the target's max        | denied    |
+| `sampling.clamp`           | `temperature` / `top_p` clamped or dropped for the target | allowed |
 | `stop.limit`               | Extra stop sequences beyond the target's limit   | denied    |
 
 Losses marked *denied* by default return an error unless the caller explicitly

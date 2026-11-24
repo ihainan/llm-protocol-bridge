@@ -16,8 +16,10 @@ type wireRequest struct {
 
 // wireContent is one conversation turn.
 type wireContent struct {
-	Role  string     `json:"role,omitempty"` // user | model
-	Parts []wirePart `json:"parts"`
+	Role string `json:"role,omitempty"` // user | model
+	// Parts is left out when empty rather than sent as null: Gemini CLI (and the
+	// google-genai types) read parts.length on every candidate content.
+	Parts []wirePart `json:"parts,omitempty"`
 }
 
 // wirePart is one part of a content.
@@ -125,7 +127,9 @@ type wireSafetySetting struct {
 
 // wireResponse is the non-streaming generateContent response.
 type wireResponse struct {
-	Candidates     []wireCandidate     `json:"candidates"`
+	// Candidates is left out when empty (a usage-only stream chunk) rather than
+	// sent as null, which Gemini CLI dereferences.
+	Candidates     []wireCandidate     `json:"candidates,omitempty"`
 	PromptFeedback *wirePromptFeedback `json:"promptFeedback,omitempty"`
 	UsageMetadata  *wireUsage          `json:"usageMetadata,omitempty"`
 	ModelVersion   string              `json:"modelVersion,omitempty"`
@@ -138,8 +142,10 @@ type wirePromptFeedback struct {
 
 // wireCandidate is one response candidate.
 type wireCandidate struct {
-	Index             int                `json:"index"`
-	Content           wireContent        `json:"content"`
+	Index int `json:"index"`
+	// Content is left out when the candidate carries no parts (the final
+	// chunk with only finishReason), as the Gemini API does.
+	Content           wireContent        `json:"content,omitzero"`
 	FinishReason      string             `json:"finishReason,omitempty"`
 	SafetyRatings     []wireSafetyRating `json:"safetyRatings,omitempty"`
 	GroundingMetadata *wireGroundingMeta `json:"groundingMetadata,omitempty"`

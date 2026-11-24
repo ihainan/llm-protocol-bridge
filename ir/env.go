@@ -69,11 +69,19 @@ var DefaultAllowed = LossSet{
 	LossReasoningSummary:   true,
 	LossReasoningDisplay:   true,
 	LossSamplingSeed:       true,
-	LossCitations:          true,
-	LossBuiltinActivity:    true,
-	LossOutputMedia:        true,
-	LossConfigUpdate:       true,
-	LossForcedToolChoice:   true,
+	// Sampling hints the target cannot take (top_k on Chat / Responses, penalties
+	// on Anthropic / Gemini / Responses, temperature or top_p that Anthropic
+	// thinking forbids or caps) are dropped: they tune the output, they do not
+	// change what the client asked for. Logprobs stay refused: the client expects
+	// data in the response that the target cannot produce.
+	LossSamplingTopK:     true,
+	LossSamplingClamp:    true,
+	LossSamplingPenalty:  true,
+	LossCitations:        true,
+	LossBuiltinActivity:  true,
+	LossOutputMedia:      true,
+	LossConfigUpdate:     true,
+	LossForcedToolChoice: true,
 }
 
 // LossSet is a set of loss keys.
