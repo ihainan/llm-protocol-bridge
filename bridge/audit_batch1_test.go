@@ -1,11 +1,16 @@
 package bridge_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/ihainan/llm-protocol-bridge/anthropic"
 	"github.com/ihainan/llm-protocol-bridge/bridge"
+	"github.com/ihainan/llm-protocol-bridge/chat"
+	"github.com/ihainan/llm-protocol-bridge/gemini"
 	"github.com/ihainan/llm-protocol-bridge/ir"
+	"github.com/ihainan/llm-protocol-bridge/responses"
 )
 
 // Anthropic upstreams (Bedrock, several relays) repeat input and cache counters
@@ -330,5 +335,124 @@ func TestNoForcedToolChoiceRelaxes(t *testing.T) {
 	plan, err = bridge.Convert(ir.FormatChat, ir.FormatAnthropic, []byte(body), bridge.Options{Profile: strict})
 	if err != nil || !strings.Contains(string(plan.Body), `"tool_choice":{"type":"none"}`) || len(plan.Losses) != 0 {
 		t.Fatalf("none changed: %v %s %+v", err, plan.Body, plan.Losses)
+	}
+}
+
+// Review round 1 regressions.
+
+// The format builders themselves apply or reject extras, so a caller that
+// parses and builds without bridge.Convert does not silently drop them.
+func TestDirectBuildersHandleExtras(t *testing.T) {
+	sealed := `{"model":"m","input":[{"type":"compaction","encrypted_content":"gAAAA"},{"role":"user","content":"next"}]}`
+	req, err := responses.ParseRequest([]byte(sealed), responses.ParseOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := anthropic.BuildRequest(req, anthropic.BuildOptions{}); err == nil {
+		t.Fatal("anthropic builder dropped a compaction item")
+	}
+	if _, err := chat.BuildRequest(req, chat.BuildOptions{}); err == nil {
+		t.Fatal("chat builder dropped a compaction item")
+	}
+	if _, err := gemini.BuildRequest(req, gemini.BuildOptions{}); err == nil {
+		t.Fatal("gemini builder dropped a compaction item")
+	}
+	upd := `{"model":"m","input":[{"role":"user","content":"x"},{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"user","content":"y"}]}`
+	req, err = responses.ParseRequest([]byte(upd), responses.ParseOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chat.BuildRequest(req, chat.BuildOptions{Env: &ir.Env{Deny: ir.LossSet{ir.LossConfigUpdate: true}}}); err == nil {
+		t.Fatal("denied configuration_update loss not reported")
+	}
+}
+
+// Responses -> Responses keeps tool-output file data as a data URI.
+func TestToolOutputFileDataURIRoundTrip(t *testing.T) {
+	body := `{"model":"m","input":[{"type":"function_call","call_id":"c1","name":"f","arguments":"{}"},{"type":"function_call_output","call_id":"c1","output":[{"type":"input_file","filename":"a.pdf","file_data":"data:application/pdf;base64,JVBERi0="},{"type":"input_file","file_url":"https://example.com/b.pdf"}]}],"tools":[{"type":"function","name":"f","parameters":{"type":"object"}}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(body), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(plan.Body)
+	if !strings.Contains(got, `"file_data":"data:application/pdf;base64,JVBERi0="`) || !strings.Contains(got, `"file_url":"https://example.com/b.pdf"`) {
+		t.Fatalf("tool output file changed: %s", got)
+	}
+}
+
+// A bare tool_choice name selects a namespaced tool; relaxing keeps it.
+func TestRelaxForcedToolChoiceNamespacedBareName(t *testing.T) {
+	body := `{"model":"m","input":"x","tools":[{"type":"namespace","name":"ns","tools":[{"type":"function","name":"f","parameters":{"type":"object"}}]},{"type":"function","name":"g","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"f"}}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(body), bridge.Options{Profile: &ir.ModelProfile{NoForcedToolChoice: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Tools      []json.RawMessage     `json:"tools"`
+		ToolChoice struct{ Type string } `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(plan.Body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 1 || got.ToolChoice.Type != "auto" {
+		t.Fatalf("namespaced tool lost: %s", plan.Body)
+	}
+}
+
+// Partial updates accumulate in input order.
+func TestConfigurationUpdatesAccumulate(t *testing.T) {
+	body := `{"model":"m","reasoning":{"effort":"low"},"input":[{"role":"user","content":"x"},{"type":"configuration_update","reasoning":{"effort":"high"}},{"type":"configuration_update","reasoning":{"summary":"detailed"}},{"role":"user","content":"y"}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(body), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Body), `"reasoning_effort":"high"`) {
+		t.Fatalf("earlier effort update lost: %s", plan.Body)
+	}
+}
+
+// A developer message after an extra stays in place for a Responses
+// upstream, and still becomes the system prompt for other upstreams.
+func TestDeveloperAfterExtraKeepsOrder(t *testing.T) {
+	body := `{"model":"m","input":[{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"developer","content":"do X"},{"role":"user","content":"next"}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(body), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rb struct {
+		Instructions *json.RawMessage              `json:"instructions"`
+		Input        []struct{ Type, Role string } `json:"input"`
+	}
+	if err := json.Unmarshal(plan.Body, &rb); err != nil {
+		t.Fatal(err)
+	}
+	if rb.Instructions != nil || len(rb.Input) != 3 || rb.Input[0].Type != "configuration_update" || rb.Input[1].Role != "developer" {
+		t.Fatalf("order changed: %s", plan.Body)
+	}
+	plan, err = bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(body), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ab struct {
+		System   json.RawMessage `json:"system"`
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(plan.Body, &ab); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ab.System), "do X") || strings.Contains(string(ab.Messages), "do X") {
+		t.Fatalf("developer message not lifted for Anthropic: %s", plan.Body)
+	}
+}
+
+// An input holding only a compaction item is a valid continuation.
+func TestCompactionOnlyInput(t *testing.T) {
+	body := `{"model":"m","input":[{"type":"compaction","id":"cmp_1","encrypted_content":"gAAAA"}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(body), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Body), `"type":"compaction"`) {
+		t.Fatalf("compaction dropped: %s", plan.Body)
 	}
 }

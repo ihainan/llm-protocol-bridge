@@ -20,6 +20,10 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	if req.PreviousResponseID != "" {
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported by the Responses format"))
 	}
+	req, extrasErr := ir.ApplyInputExtras(req, env)
+	if extrasErr != nil {
+		return nil, extrasErr
+	}
 
 	nameMap := ir.BuildToolNameMap(req.Tools)
 	names := map[string]ir.ToolRef{}

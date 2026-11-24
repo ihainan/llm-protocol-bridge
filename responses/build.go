@@ -332,21 +332,11 @@ func userPartsToContent(parts []ir.Part, p ir.Path, env *ir.Env) ([]wireContentP
 			if part.Media == nil {
 				break
 			}
-			fileData := part.Media.Data
-			if fileData != "" && !strings.HasPrefix(fileData, "data:") {
-				mt := part.Media.MediaType
-				if mt == "" {
-					mt = ir.MediaTypeFromFilename(part.Media.Filename)
-				}
-				if mt != "" {
-					fileData = "data:" + mt + ";base64," + fileData
-				}
-			}
 			content = append(content, wireContentPart{
 				Type:     "input_file",
 				FileID:   part.Media.FileID,
 				Filename: part.Media.Filename,
-				FileData: fileData,
+				FileData: fileDataURI(part.Media),
 				FileURL:  part.Media.URL,
 			})
 		case ir.PartToolResult:
@@ -689,14 +679,12 @@ func buildToolOutputValue(r *ir.ToolResult, fp ir.Path, env *ir.Env) (json.RawMe
 			if cp.Media == nil {
 				continue
 			}
-			if cp.Media.URL != "" && cp.Media.FileID == "" && cp.Media.Data == "" {
-				return nil, env.Err(ir.Unsupported(cfp, "file.url", "Responses input_file in tool output does not support URLs"))
-			}
 			cparts = append(cparts, wireContentPart{
 				Type:     "input_file",
 				FileID:   cp.Media.FileID,
 				Filename: cp.Media.Filename,
-				FileData: cp.Media.Data,
+				FileData: fileDataURI(cp.Media),
+				FileURL:  cp.Media.URL,
 			})
 		default:
 			return nil, env.Err(ir.Unsupported(cfp, string(cp.Type), "tool result part type not supported by Responses"))
@@ -732,4 +720,22 @@ func partsToText(parts []ir.Part) string {
 func writeFloat(f float64) json.RawMessage {
 	b, _ := json.Marshal(f)
 	return b
+}
+
+// fileDataURI renders input_file.file_data as a data URI. Data parsed from a
+// data URI comes back as one; bare base64 with no known media type is kept
+// as it was.
+func fileDataURI(m *ir.Media) string {
+	data := m.Data
+	if data == "" || strings.HasPrefix(data, "data:") {
+		return data
+	}
+	mt := m.MediaType
+	if mt == "" {
+		mt = ir.MediaTypeFromFilename(m.Filename)
+	}
+	if mt == "" {
+		return data
+	}
+	return "data:" + mt + ";base64," + data
 }

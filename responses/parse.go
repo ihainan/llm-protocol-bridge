@@ -84,25 +84,16 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 		// so Instructions holds one part per instructions/message entry (joined
 		// with "\n\n" when building Chat Completions).
 		i := 0
-		var liftedExtras []ir.InputExtra
-		for i < len(msgs) && (msgs[i].Role == ir.RoleSystem || msgs[i].Role == ir.RoleDeveloper) {
+		// Lifting stops at an input extra (configuration_update, compaction):
+		// a system message after one stays in place, keeping the input order.
+		for i < len(msgs) && (msgs[i].Role == ir.RoleSystem || msgs[i].Role == ir.RoleDeveloper) && len(msgs[i].Extras) == 0 {
 			txt := ir.TextOf(msgs[i].Parts, "\n")
 			if txt != "" {
 				req.Instructions = append(req.Instructions, ir.TextPart(txt))
 			}
-			liftedExtras = append(liftedExtras, msgs[i].Extras...)
 			i++
 		}
 		req.Messages = msgs[i:]
-		// Extras that preceded a lifted system message now precede the first
-		// remaining message (or trail the input when none remains).
-		if len(liftedExtras) > 0 {
-			if len(req.Messages) > 0 {
-				req.Messages[0].Extras = append(liftedExtras, req.Messages[0].Extras...)
-			} else {
-				req.TrailingExtras = append(liftedExtras, req.TrailingExtras...)
-			}
-		}
 	}
 
 	// tools: top-level tools merged with any input[].additional_tools blocks.
@@ -368,7 +359,7 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 
 	// Input must contain at least one non-system/developer message unless continuing
 	// from previous_response_id.
-	if req.PreviousResponseID == "" && len(req.Messages) == 0 {
+	if req.PreviousResponseID == "" && len(req.Messages) == 0 && len(req.TrailingExtras) == 0 {
 		return nil, env.Err(ir.Invalid(p.Key("input"), "input must contain at least one user or assistant item"))
 	}
 

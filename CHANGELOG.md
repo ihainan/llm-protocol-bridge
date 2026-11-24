@@ -51,7 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `auto` for models that reject it (a named tool stays the only tool offered),
   recorded as a `tool.forced_choice` loss.
 - `ir.Message.Extras`, `ir.Request.TrailingExtras` and `ir.InputExtra` carry
-  Responses input items that have no message equivalent.
+  Responses input items that have no message equivalent;
+  `ir.ApplyInputExtras` folds them into request-level settings and is called by
+  the Anthropic, Chat and Gemini builders.
 
 ### Fixed
 
@@ -62,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never added.
 - Responses `input_file.file_data` data URIs are split into media type and
   data (the prefix used to reach Anthropic's base64 field); `file_url` is
-  carried, and the Responses builder writes `file_data` as a data URI.
+  carried, and the Responses builder writes `file_data` as a data URI (also
+  inside tool outputs, which now accept `file_url` too).
 - Non-PDF files sent to Anthropic: text files become text documents, other
   types fail with an `unsupported` error naming the accepted types instead of
   an upstream 400.
