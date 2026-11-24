@@ -856,6 +856,84 @@ func validateToolCall(call *ir.ToolCall) string {
 }
 
 // repairHistory applies caller-enabled ir.Repair transformations to a copy of req.Messages.
+// dropMessages removes the messages drop selects. Input extras attached to a
+// dropped message move to the next kept message, or to req.TrailingExtras.
+func dropMessages(req *ir.Request, msgs []ir.Message, drop func(ir.Message) bool) []ir.Message {
+	kept := make([]ir.Message, 0, len(msgs))
+	var carry []ir.InputExtra
+	for _, m := range msgs {
+		if drop(m) {
+			carry = append(carry, m.Extras...)
+			continue
+		}
+		if len(carry) > 0 {
+			m.Extras = append(append([]ir.InputExtra(nil), carry...), m.Extras...)
+			carry = nil
+		}
+		kept = append(kept, m)
+	}
+	if len(carry) > 0 {
+		req.TrailingExtras = append(carry, req.TrailingExtras...)
+	}
+	return kept
+}
+
+// applyInputExtras returns a copy of req with the last configuration_update
+// applied as request-level settings, for upstreams that have no such item. It
+// rejects compaction items, which only the Responses upstream that sealed them
+// can read.
+func applyInputExtras(req *ir.Request, extras []ir.InputExtra, env *ir.Env) (*ir.Request, error) {
+	var lastReasoning, lastOutput *ir.InputExtra
+	for i := range extras {
+		ex := &extras[i]
+		p := ir.Root.Key("input").At(ex.Index)
+		switch ex.Type {
+		case ir.ExtraCompactionTrigger:
+			return nil, env.Err(ir.Unsupported(p.Key("type"), "compaction_trigger",
+				"remote compaction (compaction_trigger) needs an OpenAI Responses upstream; this model cannot produce a compaction item, so configure the client to compact the conversation locally"))
+		case ir.ExtraCompaction, ir.ExtraCompactionSummary:
+			return nil, env.Err(ir.Unsupported(p.Key("type"), ex.Type,
+				"the input carries a compaction item sealed by an OpenAI Responses upstream, which this model cannot read; continue on the model that produced it or start a new conversation"))
+		case ir.ExtraConfigurationUpdate:
+			if ex.Reasoning != nil {
+				lastReasoning = ex
+			}
+			if ex.Output != nil {
+				lastOutput = ex
+			}
+		}
+	}
+	cp := *req
+	if lastReasoning != nil {
+		if err := env.Lose(ir.LossConfigUpdate, ir.Root.Key("input").At(lastReasoning.Index).Key("reasoning"),
+			"configuration_update applied as the request-level reasoning setting"); err != nil {
+			return nil, err
+		}
+		rc := ir.ReasoningConfig{}
+		if req.Reasoning != nil {
+			rc = *req.Reasoning
+		}
+		upd := lastReasoning.Reasoning
+		if upd.Effort != ir.EffortUnset {
+			rc.Effort = upd.Effort
+			rc.Budget = nil
+			rc.Mode = upd.Mode
+		}
+		if upd.Summary != "" {
+			rc.Summary = upd.Summary
+		}
+		cp.Reasoning = &rc
+	}
+	if lastOutput != nil {
+		if err := env.Lose(ir.LossConfigUpdate, ir.Root.Key("input").At(lastOutput.Index).Key("text"),
+			"configuration_update applied as the request-level text format"); err != nil {
+			return nil, err
+		}
+		cp.Output = lastOutput.Output
+	}
+	return &cp, nil
+}
+
 func repairHistory(req *ir.Request, repair ir.RepairSet) {
 	if req == nil || len(repair) == 0 || len(req.Messages) == 0 {
 		return
@@ -865,14 +943,9 @@ func repairHistory(req *ir.Request, repair ir.RepairSet) {
 
 	// 1. drop_empty_assistant
 	if repair[ir.RepairEmptyAssistant] {
-		filtered := msgs[:0]
-		for _, m := range msgs {
-			if m.Role == ir.RoleAssistant && len(m.Parts) == 0 {
-				continue
-			}
-			filtered = append(filtered, m)
-		}
-		msgs = filtered
+		msgs = dropMessages(req, msgs, func(m ir.Message) bool {
+			return m.Role == ir.RoleAssistant && len(m.Parts) == 0
+		})
 	}
 
 	// Track known call IDs from assistant turns.
@@ -922,14 +995,9 @@ func repairHistory(req *ir.Request, repair ir.RepairSet) {
 			msgs[i].Parts = parts
 		}
 		// Drop any user message that became empty after removing duplicate tool results.
-		nonEmpty := msgs[:0]
-		for _, m := range msgs {
-			if m.Role == ir.RoleUser && len(m.Parts) == 0 {
-				continue
-			}
-			nonEmpty = append(nonEmpty, m)
-		}
-		msgs = nonEmpty
+		msgs = dropMessages(req, msgs, func(m ir.Message) bool {
+			return m.Role == ir.RoleUser && len(m.Parts) == 0
+		})
 	}
 
 	// 4. synthesize_missing_results

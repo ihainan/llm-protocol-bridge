@@ -72,24 +72,37 @@ func ParseRequest(body []byte, opts ParseOptions) (*ir.Request, error) {
 	// input: string or array (may include additional_tools items declaring extra tools).
 	var extraTools []additionalToolBlock
 	if v, ok := fields["input"]; ok && !jsonx.IsNull(v) {
-		msgs, et, err := parseInput(v, p.Key("input"), env, req.PreviousResponseID != "")
+		var trailing []ir.InputExtra
+		msgs, et, err := parseInput(v, p.Key("input"), env, req.PreviousResponseID != "", &trailing)
 		if err != nil {
 			return nil, err
 		}
 		extraTools = et
+		req.TrailingExtras = trailing
 		// Extract leading system/developer messages into Instructions.
 		// Within a single leading message, join multiple text parts with "\n"
 		// so Instructions holds one part per instructions/message entry (joined
 		// with "\n\n" when building Chat Completions).
 		i := 0
+		var liftedExtras []ir.InputExtra
 		for i < len(msgs) && (msgs[i].Role == ir.RoleSystem || msgs[i].Role == ir.RoleDeveloper) {
 			txt := ir.TextOf(msgs[i].Parts, "\n")
 			if txt != "" {
 				req.Instructions = append(req.Instructions, ir.TextPart(txt))
 			}
+			liftedExtras = append(liftedExtras, msgs[i].Extras...)
 			i++
 		}
 		req.Messages = msgs[i:]
+		// Extras that preceded a lifted system message now precede the first
+		// remaining message (or trail the input when none remains).
+		if len(liftedExtras) > 0 {
+			if len(req.Messages) > 0 {
+				req.Messages[0].Extras = append(liftedExtras, req.Messages[0].Extras...)
+			} else {
+				req.TrailingExtras = append(liftedExtras, req.TrailingExtras...)
+			}
+		}
 	}
 
 	// tools: top-level tools merged with any input[].additional_tools blocks.
@@ -412,13 +425,13 @@ type additionalToolBlock struct {
 }
 
 // parseInput handles the input field (string or array).
-func parseInput(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool) ([]ir.Message, []additionalToolBlock, error) {
+func parseInput(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool, trailing *[]ir.InputExtra) ([]ir.Message, []additionalToolBlock, error) {
 	switch jsonx.Kind(raw) {
 	case '"':
 		s, _ := jsonx.String(raw)
 		return []ir.Message{{Role: ir.RoleUser, Parts: []ir.Part{ir.TextPart(s)}}}, nil, nil
 	case '[':
-		return parseInputItems(raw, p, env, hasPrevRespID)
+		return parseInputItems(raw, p, env, hasPrevRespID, trailing)
 	}
 	return nil, nil, env.Err(ir.Invalid(p, "must be a string or array"))
 }
@@ -427,7 +440,10 @@ func parseInput(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool)
 // additional_tools declarations embedded in input[].
 // It groups consecutive function_call and reasoning items into one assistant
 // message, and groups consecutive function_call_output items into one user message.
-func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool) ([]ir.Message, []additionalToolBlock, error) {
+// Items without a message equivalent (configuration_update, compaction, ...)
+// are attached as ir.InputExtra to the message that follows them, or returned
+// through trailing when no message follows.
+func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID bool, trailing *[]ir.InputExtra) ([]ir.Message, []additionalToolBlock, error) {
 	elems, ok := jsonx.Array(raw)
 	if !ok {
 		return nil, nil, env.Err(ir.Invalid(p, "must be an array"))
@@ -443,10 +459,18 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 		parts []ir.Part
 	}
 	var cur *pending
+	var pendingExtras []ir.InputExtra
+	appendMsg := func(m ir.Message) {
+		if len(pendingExtras) > 0 {
+			m.Extras = append(pendingExtras, m.Extras...)
+			pendingExtras = nil
+		}
+		msgs = append(msgs, m)
+	}
 
 	flush := func() {
 		if cur != nil && len(cur.parts) > 0 {
-			msgs = append(msgs, ir.Message{Role: cur.role, Parts: cur.parts})
+			appendMsg(ir.Message{Role: cur.role, Parts: cur.parts})
 		}
 		cur = nil
 	}
@@ -480,7 +504,7 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 			if err != nil {
 				return nil, nil, err
 			}
-			msgs = append(msgs, msg)
+			appendMsg(msg)
 
 		case "reasoning":
 			c := ensure(ir.RoleAssistant)
@@ -576,12 +600,52 @@ func parseInputItems(raw json.RawMessage, p ir.Path, env *ir.Env, hasPrevRespID 
 		case "item_reference":
 			return nil, nil, env.Err(ir.Unsupported(fp.Key("type"), "item_reference", "item_reference is not supported"))
 
+		case ir.ExtraConfigurationUpdate:
+			flush()
+			ex, err := parseConfigurationUpdate(fields, elem, i, fp, env)
+			if err != nil {
+				return nil, nil, err
+			}
+			pendingExtras = append(pendingExtras, ex)
+
+		case ir.ExtraCompaction, ir.ExtraCompactionSummary, ir.ExtraCompactionTrigger:
+			// Codex remote compaction: kept verbatim; only a Responses upstream
+			// can act on it (the build reports it to any other upstream).
+			flush()
+			pendingExtras = append(pendingExtras, ir.InputExtra{Type: itemType, Index: i, Raw: append(json.RawMessage(nil), elem...)})
+
 		default:
 			return nil, nil, env.Err(ir.Invalid(fp.Key("type"), "unknown input item type: "+itemType))
 		}
 	}
 	flush()
+	if len(pendingExtras) > 0 && trailing != nil {
+		*trailing = append(*trailing, pendingExtras...)
+	}
 	return msgs, extraTools, nil
+}
+
+// parseConfigurationUpdate reads a configuration_update input item, which
+// changes reasoning (and optionally the text format) for this response and
+// the following ones until another update (OpenAI Reasoning guide, "Change
+// reasoning mid-conversation").
+func parseConfigurationUpdate(fields map[string]json.RawMessage, elem json.RawMessage, index int, p ir.Path, env *ir.Env) (ir.InputExtra, error) {
+	ex := ir.InputExtra{Type: ir.ExtraConfigurationUpdate, Index: index, Raw: append(json.RawMessage(nil), elem...)}
+	if v, ok := fields["reasoning"]; ok && !jsonx.IsNull(v) {
+		rc, err := parseReasoning(v, p.Key("reasoning"), env)
+		if err != nil {
+			return ex, err
+		}
+		ex.Reasoning = rc
+	}
+	if v, ok := fields["text"]; ok && !jsonx.IsNull(v) {
+		of, err := parseTextFormat(v, p.Key("text"), env)
+		if err != nil {
+			return ex, err
+		}
+		ex.Output = of
+	}
+	return ex, nil
 }
 
 func parseMessageItem(fields map[string]json.RawMessage, p ir.Path, env *ir.Env) (ir.Message, error) {

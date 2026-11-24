@@ -123,3 +123,82 @@ func TestChatCacheAnthropicNamesFromRelay(t *testing.T) {
 		t.Fatalf("inclusive relay usage: %+v", u)
 	}
 }
+
+const cfgUpdateBody = `{"model":"m","reasoning":{"effort":"low"},"input":[
+ {"role":"user","content":"draft a plan"},
+ {"type":"message","role":"assistant","content":[{"type":"output_text","text":"plan"}]},
+ {"type":"configuration_update","reasoning":{"effort":"medium"}},
+ {"role":"user","content":"more"},
+ {"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},
+ {"type":"configuration_update","reasoning":{"effort":"high"}},
+ {"role":"user","content":"analyze failure modes"}]}`
+
+// configuration_update changes reasoning mid-conversation (OpenAI Reasoning
+// guide). Other upstreams get the last update as the request-level effort.
+func TestConfigurationUpdateAppliedForChatUpstream(t *testing.T) {
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatChat, []byte(cfgUpdateBody), bridge.Options{})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	body := string(plan.Body)
+	if !strings.Contains(body, `"reasoning_effort":"high"`) || strings.Contains(body, "configuration_update") {
+		t.Fatalf("effort not applied: %s", body)
+	}
+	found := false
+	for _, l := range plan.Losses {
+		if l.Kind == ir.LossConfigUpdate {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("loss not recorded: %+v", plan.Losses)
+	}
+}
+
+// A Responses upstream receives the items verbatim, in place, with the
+// request-level effort unchanged (which keeps the cached prompt prefix).
+func TestConfigurationUpdateKeptForResponsesUpstream(t *testing.T) {
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(cfgUpdateBody), bridge.Options{})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	body := string(plan.Body)
+	if !strings.Contains(body, `"effort":"low"`) {
+		t.Fatalf("request-level effort changed: %s", body)
+	}
+	i1 := strings.Index(body, `"effort":"medium"`)
+	i2 := strings.Index(body, `"text":"more"`)
+	i3 := strings.Index(body, `"effort":"high"`)
+	i4 := strings.Index(body, `"text":"analyze failure modes"`)
+	if i1 < 0 || i2 < 0 || i3 < 0 || i4 < 0 || !(i1 < i2 && i2 < i3 && i3 < i4) {
+		t.Fatalf("updates not kept in place: %s", body)
+	}
+}
+
+func TestConfigurationUpdateInvalidEffortRejected(t *testing.T) {
+	_, err := bridge.Convert(ir.FormatResponses, ir.FormatChat,
+		[]byte(`{"model":"m","input":[{"type":"configuration_update","reasoning":{"effort":"warp"}},{"role":"user","content":"x"}]}`), bridge.Options{})
+	if err == nil || !strings.Contains(err.Error(), "effort") {
+		t.Fatalf("want effort error, got %v", err)
+	}
+}
+
+// Codex remote compaction items: kept for Responses upstreams, a clear
+// unsupported error (naming the item) for others instead of a parse failure.
+func TestCompactionItems(t *testing.T) {
+	trigger := `{"model":"m","input":[{"role":"user","content":"hi"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"yo"}]},{"type":"compaction_trigger"}]}`
+	sealed := `{"model":"m","input":[{"type":"compaction","id":"cmp_1","encrypted_content":"gAAAA"},{"role":"user","content":"next"}]}`
+	for _, tc := range []struct{ body, want string }{{trigger, "compaction_trigger"}, {sealed, "compaction"}} {
+		_, err := bridge.Convert(ir.FormatResponses, ir.FormatAnthropic, []byte(tc.body), bridge.Options{})
+		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "unknown input item") {
+			t.Fatalf("%s: want clear unsupported error, got %v", tc.want, err)
+		}
+		plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(tc.body), bridge.Options{})
+		if err != nil {
+			t.Fatalf("%s to Responses: %v", tc.want, err)
+		}
+		if !strings.Contains(string(plan.Body), `"type":"`+tc.want+`"`) {
+			t.Fatalf("%s not forwarded: %s", tc.want, plan.Body)
+		}
+	}
+}

@@ -34,11 +34,7 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 	}
 
 	// input items.
-	items, err := buildInputItems(req.Messages, nameMap, env, opts.OmitHistoryReasoning)
-	if err != nil {
-		return nil, err
-	}
-	itemsBytes, err := jsonx.Marshal(items)
+	itemsBytes, err := buildInputArray(req, nameMap, env, opts.OmitHistoryReasoning)
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +222,40 @@ func BuildRequest(req *ir.Request, opts BuildOptions) (*Built, error) {
 
 	body := out.End()
 	return &Built{Body: body, Model: req.Model, Stream: req.Stream, Names: names}, nil
+}
+
+// buildInputArray renders the input array: each message's items, preceded by
+// the Responses input extras (configuration_update, compaction, ...) that came
+// before it in the client's input, verbatim, then the trailing extras.
+func buildInputArray(req *ir.Request, nameMap *ir.ToolNameMap, env *ir.Env, omitHistoryReasoning bool) (json.RawMessage, error) {
+	if len(req.InputExtras()) == 0 {
+		items, err := buildInputItems(req.Messages, nameMap, env, omitHistoryReasoning)
+		if err != nil {
+			return nil, err
+		}
+		return jsonx.Marshal(items)
+	}
+	raw := []json.RawMessage{}
+	for i, msg := range req.Messages {
+		for _, ex := range msg.Extras {
+			raw = append(raw, ex.Raw)
+		}
+		its, err := messageToItems(msg, ir.Root.Key("input").At(i), nameMap, env, omitHistoryReasoning)
+		if err != nil {
+			return nil, err
+		}
+		for _, it := range its {
+			b, err := jsonx.Marshal(it)
+			if err != nil {
+				return nil, err
+			}
+			raw = append(raw, b)
+		}
+	}
+	for _, ex := range req.TrailingExtras {
+		raw = append(raw, ex.Raw)
+	}
+	return jsonx.Marshal(raw)
 }
 
 func buildInputItems(msgs []ir.Message, nameMap *ir.ToolNameMap, env *ir.Env, omitHistoryReasoning bool) ([]wireInputItem, error) {

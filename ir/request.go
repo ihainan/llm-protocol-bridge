@@ -103,6 +103,8 @@ type Request struct {
 	// superseded by another). Automatic cache placement treats the request as
 	// client-marked and adds no breakpoints of its own.
 	DroppedCacheMarkers bool `json:"-"`
+	// TrailingExtras are Responses input extras after the last message.
+	TrailingExtras []InputExtra `json:"trailing_extras,omitempty"`
 }
 
 // Role is a message author.
@@ -123,6 +125,41 @@ type Message struct {
 	Name  string `json:"name,omitempty"`
 	// Phase is a Responses assistant message phase: commentary | final_answer.
 	Phase string `json:"phase,omitempty"`
+	// Extras are the Responses input items with no message equivalent
+	// (configuration_update, compaction, ...) that came right before this
+	// message. Only a Responses upstream receives them, verbatim.
+	Extras []InputExtra `json:"extras,omitempty"`
+}
+
+// Responses input item types kept as InputExtra.
+const (
+	ExtraConfigurationUpdate = "configuration_update"
+	ExtraCompaction          = "compaction"
+	ExtraCompactionSummary   = "compaction_summary"
+	ExtraCompactionTrigger   = "compaction_trigger"
+)
+
+// InputExtra is a Responses input item that has no message equivalent.
+type InputExtra struct {
+	// Type is the item type, e.g. "configuration_update".
+	Type string `json:"type"`
+	// Index is the item's position in the client's input array.
+	Index int `json:"index"`
+	// Raw is the item verbatim.
+	Raw json.RawMessage `json:"raw,omitempty"`
+	// Reasoning and Output are a configuration_update's settings, if any.
+	Reasoning *ReasoningConfig `json:"reasoning,omitempty"`
+	Output    *OutputFormat    `json:"output,omitempty"`
+}
+
+// InputExtras returns every extra of the request in input order: those
+// attached to messages, then the trailing ones.
+func (r *Request) InputExtras() []InputExtra {
+	var out []InputExtra
+	for _, m := range r.Messages {
+		out = append(out, m.Extras...)
+	}
+	return append(out, r.TrailingExtras...)
 }
 
 // PartType is the kind of a Part.

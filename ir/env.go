@@ -41,6 +41,8 @@ const (
 	LossCitations          LossKind = "output.citations"
 	LossBuiltinActivity    LossKind = "output.builtin_activity"
 	LossOutputMedia        LossKind = "output.media"
+	LossConfigUpdate       LossKind = "request.configuration_update"
+	LossForcedToolChoice   LossKind = "tool.forced_choice"
 )
 
 // DefaultAllowed lists the losses tolerated unless the caller denies them.
@@ -70,6 +72,8 @@ var DefaultAllowed = LossSet{
 	LossCitations:          true,
 	LossBuiltinActivity:    true,
 	LossOutputMedia:        true,
+	LossConfigUpdate:       true,
+	LossForcedToolChoice:   true,
 }
 
 // LossSet is a set of loss keys.

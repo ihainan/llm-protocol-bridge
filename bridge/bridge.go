@@ -151,6 +151,19 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 	env := upstreamEnv(opts, upstream)
 	env.Style = ir.StyleFor(client)
 
+	// Responses input extras (configuration_update, compaction items) reach a
+	// Responses upstream verbatim; any other upstream gets the last update as
+	// request-level settings, and cannot take compaction items at all.
+	if upstream != ir.FormatResponses {
+		if extras := req.InputExtras(); len(extras) > 0 {
+			r, err := applyInputExtras(req, extras, env)
+			if err != nil {
+				return nil, err
+			}
+			req = r
+		}
+	}
+
 	// Reject stateful previous_response_id across non-Responses upstreams.
 	if req.PreviousResponseID != "" && upstream != ir.FormatResponses {
 		return nil, env.Err(ir.Unsupported(ir.Root.Key("previous_response_id"), "previous_response_id", "previous_response_id is only supported for Responses-to-Responses requests"))

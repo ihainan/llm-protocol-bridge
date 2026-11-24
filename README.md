@@ -82,6 +82,7 @@ column shows the behaviour when the caller passes `bridge.Options{}`.
 | `request.verbosity`        | `verbosity` cannot be carried                     | allowed   |
 | `request.max_tool_calls`   | `max_tool_calls` cannot be carried                | allowed   |
 | `request.unknown_field`    | Unknown parameter ignored on parse               | allowed   |
+| `request.configuration_update` | Responses `configuration_update` applied as the request-level setting | allowed |
 | `cache.marker`             | Cache-control marker cannot be carried           | allowed   |
 | `image.detail`             | Image `detail` hint cannot be carried            | allowed   |
 | `tool.strict`              | Tool `strict` flag cannot be carried             | allowed   |
@@ -89,6 +90,7 @@ column shows the behaviour when the caller passes `bridge.Options{}`.
 | `tool.deferred`            | Deferred tool-call mode cannot be carried        | allowed   |
 | `tool.cached_web_search`   | Cached web-search state cannot be carried        | allowed   |
 | `tool.schema`              | JSON Schema constraints dropped on OpenAPI downgrade | allowed |
+| `tool.forced_choice`       | Forced `tool_choice` relaxed to `auto` for a model that rejects it | allowed |
 | `output.citations`         | Citation metadata cannot be carried              | allowed   |
 | `output.builtin_activity`  | Hosted builtin call/result cannot be carried     | allowed   |
 | `output.media`             | Non-text output media cannot be carried          | allowed   |
