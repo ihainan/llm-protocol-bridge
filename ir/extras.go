@@ -17,9 +17,6 @@ func ApplyInputExtras(req *Request, env *Env) (*Request, error) {
 	if len(extras) == 0 {
 		return req, nil
 	}
-	var rc *ReasoningConfig
-	var out *OutputFormat
-	lastReasoning, lastOutput := -1, -1
 	for _, ex := range extras {
 		p := Root.Key("input").At(ex.Index)
 		switch ex.Type {
@@ -29,34 +26,9 @@ func ApplyInputExtras(req *Request, env *Env) (*Request, error) {
 		case ExtraCompaction, ExtraCompactionSummary:
 			return nil, env.Err(Unsupported(p.Key("type"), ex.Type,
 				"the input carries a compaction item sealed by an OpenAI Responses upstream, which this model cannot read; continue on the model that produced it or start a new conversation"))
-		case ExtraConfigurationUpdate:
-			if upd := ex.Reasoning; upd != nil {
-				if rc == nil {
-					rc = &ReasoningConfig{}
-					if req.Reasoning != nil {
-						*rc = *req.Reasoning
-					}
-				}
-				if upd.Effort != EffortUnset {
-					rc.Effort = upd.Effort
-					rc.Mode = upd.Mode
-					rc.Budget = upd.Budget
-				} else if rc.Mode == ReasoningDefault {
-					// A summary-only update turns reasoning on, as the same
-					// object does at the top level.
-					rc.Mode = upd.Mode
-				}
-				if upd.Summary != "" {
-					rc.Summary = upd.Summary
-				}
-				lastReasoning = ex.Index
-			}
-			if ex.Output != nil {
-				out = ex.Output
-				lastOutput = ex.Index
-			}
 		}
 	}
+	rc, out, lastReasoning, lastOutput := foldConfigurationUpdates(req)
 	cp := *req
 	cp.TrailingExtras = nil
 	cp.Messages = make([]Message, len(req.Messages))
@@ -98,4 +70,62 @@ func ApplyInputExtras(req *Request, env *Env) (*Request, error) {
 		cp.Output = out
 	}
 	return &cp, nil
+}
+
+// WithInputExtraSettings returns req with the settings its configuration_update
+// items leave in effect (reasoning, text format) at the request level, keeping
+// the items themselves. It records no loss and rejects nothing: it describes
+// what a Responses upstream, which receives the items, will apply, for the
+// response side. req itself is returned when there is no update.
+func WithInputExtraSettings(req *Request) *Request {
+	rc, out, _, _ := foldConfigurationUpdates(req)
+	if rc == nil && out == nil {
+		return req
+	}
+	cp := *req
+	if rc != nil {
+		cp.Reasoning = rc
+	}
+	if out != nil {
+		cp.Output = out
+	}
+	return &cp
+}
+
+// foldConfigurationUpdates applies the configuration_update items in input
+// order to the request's reasoning and output settings; nil when no update
+// sets them. It also returns the input index of the last update of each.
+func foldConfigurationUpdates(req *Request) (rc *ReasoningConfig, out *OutputFormat, lastReasoning, lastOutput int) {
+	lastReasoning, lastOutput = -1, -1
+	for _, ex := range req.InputExtras() {
+		if ex.Type != ExtraConfigurationUpdate {
+			continue
+		}
+		if upd := ex.Reasoning; upd != nil {
+			if rc == nil {
+				rc = &ReasoningConfig{}
+				if req.Reasoning != nil {
+					*rc = *req.Reasoning
+				}
+			}
+			if upd.Effort != EffortUnset {
+				rc.Effort = upd.Effort
+				rc.Mode = upd.Mode
+				rc.Budget = upd.Budget
+			} else if rc.Mode == ReasoningDefault {
+				// A summary-only update turns reasoning on, as the same
+				// object does at the top level.
+				rc.Mode = upd.Mode
+			}
+			if upd.Summary != "" {
+				rc.Summary = upd.Summary
+			}
+			lastReasoning = ex.Index
+		}
+		if ex.Output != nil {
+			out = ex.Output
+			lastOutput = ex.Index
+		}
+	}
+	return rc, out, lastReasoning, lastOutput
 }

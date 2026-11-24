@@ -189,12 +189,19 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 	// settings for a non-Responses upstream. The builders apply them too; doing
 	// it here also gives the Plan, which the response side reads, the applied
 	// request.
+	// planReq is what the response side reads: for a Responses upstream the
+	// items go upstream as they are, and the settings they leave in effect
+	// are recorded here.
+	planReq := req
 	if upstream != ir.FormatResponses {
 		applied, err := ir.ApplyInputExtras(req, env)
 		if err != nil {
 			return nil, err
 		}
 		req = applied
+		planReq = req
+	} else {
+		planReq = ir.WithInputExtraSettings(req)
 	}
 
 	// Per design.md §9.6, StopEmulate does not send native stop sequences to the
@@ -259,7 +266,7 @@ func Build(req *ir.Request, client, upstream Format, opts Options) (*Plan, error
 	return &Plan{
 		Client:         client,
 		Upstream:       upstream,
-		Request:        req,
+		Request:        planReq,
 		Body:           body,
 		Model:          model,
 		ClientModel:    req.Model,

@@ -538,3 +538,38 @@ func TestAnthropicStreamZeroAggregatePositiveSplit(t *testing.T) {
 		t.Fatalf("usage: %+v prompt %d", u, u.PromptTokens())
 	}
 }
+
+// Review round 3 regressions.
+
+// Responses -> Responses: the items go upstream unchanged, and the response
+// side applies the settings they leave in effect.
+func TestConfigurationUpdateResponsesUpstreamResponseSide(t *testing.T) {
+	body := `{"model":"m","reasoning":{"effort":"none","summary":"auto"},"input":[{"role":"user","content":"x"},{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"user","content":"y"}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(body), bridge.Options{Profile: &ir.ModelProfile{Off: ir.OffRule{Mode: ir.OffLowestHidden}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Body), `"type":"configuration_update"`) {
+		t.Fatalf("update not forwarded: %s", plan.Body)
+	}
+	out, _, err := plan.ConvertResponse([]byte(`{"id":"resp_1","object":"response","status":"completed","model":"m","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"visible thought"}]},{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "visible thought") {
+		t.Fatalf("reasoning the update turned on was hidden: %s", out)
+	}
+}
+
+// Image data URIs with parameters keep their bytes on Responses -> Responses.
+func TestImageDataURIParamsUnchanged(t *testing.T) {
+	uri := "data:image/png;foo=bar;base64,aGVsbG8="
+	body := `{"model":"m","input":[{"role":"user","content":[{"type":"input_image","image_url":"` + uri + `"}]}]}`
+	plan, err := bridge.Convert(ir.FormatResponses, ir.FormatResponses, []byte(body), bridge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Body), uri) {
+		t.Fatalf("image URI changed: %s", plan.Body)
+	}
+}
